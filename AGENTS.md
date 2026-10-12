@@ -2,11 +2,11 @@
 
 ## Project context
 
-B-CamSync (B = Brown) is a reusable library for high-precision software synchronization of distributed cameras, intended for Brown lab projects and external researchers. It combines network clock synchronization with closed-loop frame-phase control.
+B-CamSync (B = Brown) is an independent camera library above camera drivers, intended for Brown lab projects and external researchers. Users initialize cameras and obtain synchronized frames through the library. The library owns camera access and encapsulates driver interaction, timestamp handling, network clock synchronization, and closed-loop frame-phase control.
 
-The starting reference is the RPi implementation in the sibling `bapd8_acquisition` repository. That implementation coordinates two Pi 4 nodes, each managing a B0267 synchronization board and four cameras. Eight-camera experiments do not establish support for arbitrary numbers of independently controlled nodes. The new library's architecture, public API, packaging, and supported hardware remain to be decided through implementation work and explicit user decisions.
+The starting implementation reference is the RPi synchronization code in the sibling `bapd8_acquisition` repository. That implementation coordinates two Pi 4 nodes, each managing a B0267 synchronization board and four cameras. Design B-CamSync around reusable camera initialization and frame acquisition, independently of BAPD8's application scenario. The detailed architecture, public API, packaging, and supported hardware remain to be decided through implementation work and explicit user decisions.
 
-B-CamSync owns reusable synchronization functionality. BAPD8 retains its naturalistic nursing-home acquisition application, including recording, privacy controls, retention, segmentation, and data transfer. Do not modify the reference repository unless the user explicitly requests it. When consulting it, follow its local instructions and limit exploration to RPi and relevant shared components; exclude legacy Jetson and Pico code and platform-specific materials.
+BAPD8 retains its acquisition application, including recording, privacy controls, retention, segmentation, and data transfer, in its own repository. Do not modify the reference repository unless the user explicitly requests it. When consulting it, follow its local instructions and limit exploration to RPi and relevant shared components; exclude legacy Jetson and Pico code and platform-specific materials.
 
 ## Repository language
 
@@ -38,7 +38,7 @@ B-CamSync owns reusable synchronization functionality. BAPD8 retains its natural
 - Do not create separate project-memory files, implementation plans, task logs, progress reports, code inventories, or prose specifications that duplicate code and tests.
 - Put interface contracts in types and concise API docstrings, and executable usage examples alongside code. Do not use standalone documents as runtime dependencies or prerequisites for understanding ordinary implementation work.
 - Update a decision note only when its underlying decision changes. Do not require documentation churn for every code change.
-- Separate measured results from targets and readiness thresholds. Do not imply universal sub-millisecond accuracy from hardware-specific experiments.
+- Attribute measured results to their experiments and state targets and readiness thresholds separately. Keep explanations factual and direct; avoid unsolicited defensive caveats or speculative rebuttals.
 
 ## Git workflow
 
