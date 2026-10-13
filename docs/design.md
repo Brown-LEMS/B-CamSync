@@ -29,7 +29,7 @@ Application integration mode and hardware backend are separate dimensions. Integ
 
 Applications consume frames locally on the node hosting their cameras. Across nodes, B-CamSync exchanges synchronization observations, control requests, completion feedback, and status. Remote image delivery is outside the first implementation scope.
 
-Each node operates its own acquisition and continuous synchronization runtime for its local units. The group reference and follower relationships are defined by the topology; local and remote observations participate in the same synchronization model. Public frame access presents the local camera views, while group status describes the relevant synchronization state.
+Each node operates local acquisition, timing observation, and correction execution for its units. One coordinator per synchronization group performs phase estimation and correction decisions centrally, using local and remote observations. Nodes hosting followers execute the coordinator's commands and return completion feedback. Public frame access presents the local camera views, while group status describes the relevant synchronization state.
 
 ## Synchronization model
 
@@ -40,7 +40,9 @@ The model separates four concepts:
 - A node hosts one or more synchronization units and provides their local clock domain.
 - A synchronization group identifies the units whose frame phases are aligned, within one node or across several nodes.
 
-Each group has an explicitly selected reference unit. Every other unit follows that reference and maintains its own measurement and correction state. Reference and follower roles belong to units, independently of node roles: a node can host both a reference board and a follower board.
+Each group has one reference (master) unit and the remaining units are followers (slaves). Any enumerated unit may be selected as the reference when establishing the group. Selection is independent of unit order or physical placement; all followers align to the selected reference. Reference and follower roles belong to units, independently of node roles: a node can host both a reference board and a follower board.
+
+Synchronization computation is centralized in one group coordinator, which maintains separate measurement and correction state for each follower against the same reference. Each node supplies local timing and executes local controls; a complete phase controller is not independently run on every node. The coordinator's placement and the network clock reference are deployment concerns separate from the unit's phase-reference role.
 
 | Configuration | Units | Clock arrangement | Phase arrangement |
 | --- | --- | --- | --- |
@@ -78,4 +80,4 @@ That implementation provides phase estimation and control in `rpi/phase_sync.py`
 
 ## Current design status
 
-The independent library boundary, synchronization topology model, core/integration separation, and multi-backend direction are established. Both managed and external acquisition are intended integration modes; the first implementation provides managed acquisition for Arducam on Raspberry Pi with local frame consumption and inter-node synchronization communication. Detailed API signatures, backend contracts, internal runtime architecture, packaging, and supported device/platform combinations remain to be decided. This repository currently contains project guidance and this design document; library code has not yet been extracted.
+The independent library boundary, synchronization topology model, centralized computation with a freely selectable reference unit, core/integration separation, and multi-backend direction are established. Both managed and external acquisition are intended integration modes; the first implementation provides managed acquisition for Arducam on Raspberry Pi with local frame consumption and inter-node synchronization communication. Detailed API signatures, backend contracts, coordinator placement, clock provisioning, internal runtime architecture, packaging, and supported device/platform combinations remain to be decided. This repository currently contains project guidance and this design document; library code has not yet been extracted.
