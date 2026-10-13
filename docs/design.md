@@ -84,6 +84,10 @@ Node clock alignment and inter-node transport belong to the shared runtime bound
 
 The backend boundary does not prescribe Python or native implementation. Public API and backend responsibilities are established first; concrete language bindings, threading, and buffer delivery are implementation decisions. Start with the Arducam implementation and a clear backend contract; additional backends can be added when concrete devices are introduced.
 
+## Language interfaces
+
+The intended user-facing interfaces are C++ and Python. A public C API is outside the intended scope. Both interfaces share the same synchronization and acquisition implementation, frame ownership rules, and lifecycle semantics. The native implementation language and Python binding technology remain under consideration.
+
 ## Implementation background
 
 The starting implementation reference is the RPi synchronization code in the sibling `bapd8_acquisition` repository. It coordinates two Pi 4 nodes, each managing a B0267 synchronization board and four cameras. Reported optical observations were below 0.25 ms and typically around 0.15 ms.
