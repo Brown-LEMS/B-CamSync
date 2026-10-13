@@ -1,4 +1,6 @@
 #include "bcamsync/session.hpp"
+#include "bcamsync/phase.hpp"
+#include <algorithm>
 #include <arpa/inet.h>
 #include <atomic>
 #include <ctime>
@@ -50,17 +52,20 @@ class SyntheticBackend final : public AcquisitionBackend {
         require(probe_->running, "stopped backend cannot supply timing");
         ++probe_->snapshots;
         std::this_thread::sleep_for(std::chrono::milliseconds(probe_->snapshot_delay_ms.load()));
-        const auto now = timestamp();
+        return snapshot_at(timestamp());
+    }
+    TimingSnapshot snapshot_at(std::int64_t now) const {
         const auto period = 1000000000LL / unit_.fps;
         const auto last = static_cast<std::uint64_t>(now / period);
+        const auto count = std::min<std::uint64_t>(last, 240);
         TimingSnapshot result;
         result.unit_id = unit_.id;
         result.snapshot_timestamp_ns = now;
         if (probe_->empty_timing)
             return result;
-        for (std::uint64_t i = 0; i < 240; ++i) {
+        for (std::uint64_t i = 0; i < count; ++i) {
             FrameTiming f;
-            f.camera_sequence = last - 239 + i;
+            f.camera_sequence = last - count + 1 + i;
             f.timestamp_ns = static_cast<std::int64_t>(f.camera_sequence) * period;
             f.sensor_timestamp_ns = f.timestamp_ns;
             f.requested_duration_us = f.reported_duration_us = period / 1000;
@@ -326,9 +331,23 @@ void startup_deadline() {
     session.stop();
     require(!probe->running, "startup fault releases the acquisition backend");
 }
+void early_boot_history() {
+    auto config = configuration(false);
+    auto probe = std::make_shared<Probe>();
+    SyntheticBackend backend(config.units.front(), probe);
+    backend.start("early-boot", 1, false);
+    for (const auto now : {25000000LL, 1000000000LL, 5975000000LL, 6000000000LL})
+        validate_timing(backend.snapshot_at(now), now);
+    bool pending = false;
+    try { validate_timing(backend.snapshot_at(1), 1); }
+    catch (const WindowPending&) { pending = true; }
+    require(pending, "Before the first frame, early-boot timing is pending");
+    backend.stop();
+}
 } // namespace
 int main() {
     try {
+        early_boot_history();
         malformed_sessions();
         local_session();
         network_session();
