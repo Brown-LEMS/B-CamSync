@@ -48,12 +48,14 @@ struct Config {
     double clock_max_offset_ms = 0.1, clock_max_age_seconds = 10.0;
     double request_timeout_seconds = 2.0, startup_timeout_seconds = 60.0;
     void validate() const;
-    const NodeConfig &node(const std::string &id) const;
-    const UnitConfig &unit(const std::string &id) const;
+    const NodeConfig& node(const std::string& id) const;
+    const UnitConfig& unit(const std::string& id) const;
     std::string reference_node() const;
-    static Config from_file(const std::string &path);
+    static Config from_file(const std::string& path);
 };
-struct FrameStorage { std::vector<std::uint8_t> pixels; };
+struct FrameStorage {
+    std::vector<std::uint8_t> pixels;
+};
 /// Views retain immutable packed storage; rows may have a wider stride than a view.
 struct FramePacket {
     std::string unit_id;
@@ -62,8 +64,8 @@ struct FramePacket {
     unsigned width = 0, height = 0, views = 0;
     std::shared_ptr<const FrameStorage> storage;
     unsigned view_width() const;
-    const std::uint8_t *view_data(unsigned index) const;
+    const std::uint8_t* view_data(unsigned index) const;
 };
 std::int64_t monotonic_ns();
 std::int64_t realtime_ns();
-}
+} // namespace bcamsync
