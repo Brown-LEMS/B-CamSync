@@ -1,5 +1,5 @@
 #pragma once
-#include "bcamsync/types.hpp"
+#include "bcamsync/timing.hpp"
 #include <array>
 #include <optional>
 #include <stdexcept>
