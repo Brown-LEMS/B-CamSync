@@ -33,10 +33,15 @@ const UnitConfig& Config::unit(const std::string& id) const {
 std::string Config::reference_node() const { return unit(reference_unit).node_id; }
 void Config::validate() const {
     const auto valid_id = [](const std::string& s) {
-        return !s.empty() && s.size() <= 64 && std::all_of(s.begin(), s.end(), [](unsigned char x) {
-            return (x >= 'a' && x <= 'z') || (x >= 'A' && x <= 'Z') || (x >= '0' && x <= '9') ||
-                   x == '-' || x == '_';
-        });
+        const auto alphanumeric = [](unsigned char x) {
+            return (x >= 'a' && x <= 'z') || (x >= 'A' && x <= 'Z') || (x >= '0' && x <= '9');
+        };
+        return !s.empty() && s.size() <= 64 &&
+               alphanumeric(static_cast<unsigned char>(s.front())) &&
+               std::all_of(s.begin(), s.end(), [](unsigned char x) {
+                   return (x >= 'a' && x <= 'z') || (x >= 'A' && x <= 'Z') ||
+                          (x >= '0' && x <= '9') || x == '-' || x == '_';
+               });
     };
     if (!valid_id(group_id) || nodes.empty() || nodes.size() > 32 || units.empty() ||
         units.size() > 64)
@@ -72,7 +77,7 @@ void Config::validate() const {
             throw std::invalid_argument("node has no units: " + n.id);
     for (double v : {clock_max_offset_ms, clock_max_age_seconds, request_timeout_seconds,
                      startup_timeout_seconds})
-        if (!std::isfinite(v) || v <= 0)
+        if (!std::isfinite(v) || v <= 0 || v > 86400)
             throw std::invalid_argument("invalid timeout/clock setting");
     if (clock_max_offset_ms > 0.1 || request_timeout_seconds > 5 || startup_timeout_seconds > 600)
         throw std::invalid_argument("clock gate or timeout exceeds bounds");
