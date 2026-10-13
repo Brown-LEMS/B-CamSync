@@ -175,33 +175,7 @@ TimingSnapshot snapshot_from_json(const Json& j) {
     return s;
 }
 Json topology_json(const Config& c) {
-    Json ns = Json::array(), us = Json::array();
-    for (const auto& n : c.nodes)
-        ns.push_back({{"id", n.id}, {"address", n.address}, {"port", n.port}});
-    for (const auto& u : c.units)
-        us.push_back({{"id", u.id},
-                      {"node_id", u.node_id},
-                      {"camera_id", u.camera_id},
-                      {"width", u.width},
-                      {"height", u.height},
-                      {"views", u.views},
-                      {"fps", u.fps},
-                      {"format", u.raw_format},
-                      {"shift", u.r16_shift},
-                      {"exposure", u.exposure_us},
-                      {"gain", u.analogue_gain},
-                      {"queue", u.queue_capacity},
-                      {"pool", u.pool_capacity},
-                      {"pipeline", u.pipeline_config},
-                      {"fake_phase", u.fake_initial_phase_us},
-                      {"fake_drift", u.fake_drift_ppm}});
-    return {{"group", c.group_id},
-            {"reference", c.reference_unit},
-            {"nodes", ns},
-            {"units", us},
-            {"backend", c.backend},
-            {"offset", c.clock_max_offset_ms},
-            {"age", c.clock_max_age_seconds}};
+    return Json::parse(c.to_json());
 }
 Json status_json(const GroupStatus& s) {
     Json us = Json::array();

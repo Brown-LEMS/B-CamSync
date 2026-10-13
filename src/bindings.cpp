@@ -42,7 +42,7 @@ py::array frame_view(const FrameHandle& frame, unsigned index) {
 PYBIND11_MODULE(_native, module) {
     module.doc() = "B-CamSync native acquisition and synchronization";
     module.def("enumerate_arducam_cameras", &enumerate_arducam_cameras,
-               py::arg("pipeline_config") = "", py::call_guard<py::gil_scoped_release>(),
+               py::arg("profile") = "arducam_b0267_pi4", py::call_guard<py::gil_scoped_release>(),
                "List exact local libcamera camera IDs before creating a session.");
     py::class_<NodeConfig>(module, "NodeConfig")
         .def(py::init<>())
@@ -59,13 +59,12 @@ PYBIND11_MODULE(_native, module) {
         .def_readwrite("height", &UnitConfig::height)
         .def_readwrite("views", &UnitConfig::views)
         .def_readwrite("fps", &UnitConfig::fps)
-        .def_readwrite("raw_format", &UnitConfig::raw_format)
-        .def_readwrite("r16_shift", &UnitConfig::r16_shift)
+        .def_readwrite("profile", &UnitConfig::profile)
         .def_readwrite("exposure_us", &UnitConfig::exposure_us)
         .def_readwrite("analogue_gain", &UnitConfig::analogue_gain)
+        .def_readwrite("auto_gain", &UnitConfig::auto_gain)
         .def_readwrite("queue_capacity", &UnitConfig::queue_capacity)
         .def_readwrite("pool_capacity", &UnitConfig::pool_capacity)
-        .def_readwrite("pipeline_config", &UnitConfig::pipeline_config)
         .def_readwrite("fake_initial_phase_us", &UnitConfig::fake_initial_phase_us)
         .def_readwrite("fake_drift_ppm", &UnitConfig::fake_drift_ppm);
     py::class_<Config>(module, "Config")
@@ -83,6 +82,7 @@ PYBIND11_MODULE(_native, module) {
         .def("node", &Config::node, py::arg("node_id"), py::return_value_policy::copy)
         .def("unit", &Config::unit, py::arg("unit_id"), py::return_value_policy::copy)
         .def("reference_node", &Config::reference_node)
+        .def("to_json", &Config::to_json)
         .def_static(
             "from_file",
             [](const std::filesystem::path& path) { return Config::from_file(path.string()); },
@@ -113,6 +113,12 @@ PYBIND11_MODULE(_native, module) {
                                [](const FrameHandle& f) { return f.packet->sensor_timestamp_ns; })
         .def_property_readonly("timestamp_ns",
                                [](const FrameHandle& f) { return f.packet->timestamp_ns; })
+        .def_property_readonly("requested_exposure_us", [](const FrameHandle& f) { return f.packet->requested_exposure_us; })
+        .def_property_readonly("exposure_us", [](const FrameHandle& f) { return f.packet->exposure_us; })
+        .def_property_readonly("requested_gain", [](const FrameHandle& f) { return f.packet->requested_gain; })
+        .def_property_readonly("analogue_gain", [](const FrameHandle& f) { return f.packet->analogue_gain; })
+        .def_property_readonly("gain_locked", [](const FrameHandle& f) { return f.packet->gain_locked; })
+        .def_property_readonly("gain_state", [](const FrameHandle& f) { return f.packet->gain_state; })
         .def_property_readonly("width", [](const FrameHandle& f) { return f.packet->width; })
         .def_property_readonly("height", [](const FrameHandle& f) { return f.packet->height; })
         .def("view", &frame_view, py::arg("index"),

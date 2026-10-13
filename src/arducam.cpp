@@ -1,6 +1,7 @@
 #include "bcamsync/actuator.hpp"
 #include "bcamsync/backend.hpp"
 #include "bcamsync/frame_queue.hpp"
+#include "gain_warmup.hpp"
 
 #include <libcamera/camera.h>
 #include <libcamera/camera_manager.h>
@@ -20,18 +21,29 @@
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <map>
+#include <iostream>
 #include <mutex>
 #include <stdexcept>
+#include <sstream>
 #include <thread>
 #include <utility>
 
 namespace bcamsync {
 namespace {
 constexpr std::int64_t second_ns = 1000000000LL;
+constexpr const char *arducam_profile = "arducam_b0267_pi4";
+constexpr const char *pi4_pipeline = "/usr/share/libcamera/pipeline/rpi/vc4/rpi_apps.yaml";
+std::mutex progress_mutex;
+
+const char *profile_pipeline(const std::string &profile) {
+    if (profile != arducam_profile) throw std::invalid_argument("Unknown Arducam profile: " + profile);
+    return pi4_pipeline;
+}
 
 std::int64_t boot_ns() {
     timespec value{};
@@ -131,7 +143,21 @@ class ArducamBackend final : public AcquisitionBackend {
     std::unique_ptr<libcamera::FrameBufferAllocator> allocator_;
     std::vector<std::unique_ptr<libcamera::Request>> requests_;
     std::map<libcamera::FrameBuffer *, std::unique_ptr<Mapping>> mappings_;
-    std::map<libcamera::Request *, PhaseActuator::Submission> submitted_;
+    struct Submission {
+        PhaseActuator::Submission phase;
+        int exposure_us = 0;
+        float gain = 1.0F;
+    };
+    struct Completion {
+        libcamera::Request *request = nullptr;
+        libcamera::FrameBuffer *buffer = nullptr;
+        Submission submission;
+        FrameTiming timing;
+        int exposure_us = 0;
+        float gain = 0;
+        bool startup = false;
+    };
+    std::map<libcamera::Request *, Submission> submitted_;
     libcamera::Stream *raw_ = nullptr;
     unsigned stride_ = 0;
     std::int64_t minimum_duration_ = 0, maximum_duration_ = 0;
@@ -139,6 +165,12 @@ class ArducamBackend final : public AcquisitionBackend {
     std::atomic<bool> running_{false};
     mutable std::mutex lifecycle_mutex_;
     std::unique_ptr<PhaseActuator> actuator_;
+    std::unique_ptr<detail::GainWarmup> gain_warmup_;
+    FrameStorage metering_storage_;
+    float requested_gain_ = 1.0F;
+    bool gain_locked_ = false;
+    std::string gain_state_ = "waiting_controls";
+    std::int64_t next_manual_progress_ = 0;
     std::string session_id_;
     std::uint64_t round_id_ = 0, sequence_ = 0;
     std::int64_t last_sensor_ = 0, last_timestamp_ = 0;
@@ -148,10 +180,11 @@ class ArducamBackend final : public AcquisitionBackend {
     std::deque<FrameTiming> timing_;
     FrameQueue images_;
     std::string fault_;
+    bool camera_ready_ = false;
 
     std::mutex delivery_mutex_;
     std::condition_variable delivery_changed_;
-    std::deque<libcamera::Request *> deliveries_;
+    std::deque<Completion> deliveries_;
     bool delivery_stop_ = true;
     std::thread copier_;
 
@@ -179,9 +212,43 @@ class ArducamBackend final : public AcquisitionBackend {
                 fail("Camera cancelled a running request");
                 return;
             }
+            if (request->status() != libcamera::Request::RequestComplete)
+                throw std::runtime_error("Incomplete camera request");
+            Completion completion;
+            completion.request = request;
+            completion.buffer = request->buffers().at(raw_);
+            const auto &metadata = completion.buffer->metadata();
+            completion.startup = metadata.status == libcamera::FrameMetadata::FrameStartup;
+            if (!completion.startup) {
+                if (metadata.status != libcamera::FrameMetadata::FrameSuccess)
+                    throw std::runtime_error("Unsuccessful camera raw buffer");
+                const auto sensor = request->metadata().get(libcamera::controls::SensorTimestamp);
+                const auto duration = request->metadata().get(libcamera::controls::FrameDuration);
+                const auto exposure = request->metadata().get(libcamera::controls::ExposureTime);
+                const auto gain = request->metadata().get(libcamera::controls::AnalogueGain);
+                if (!sensor || !duration || !exposure || !gain)
+                    throw std::runtime_error("Camera requires sensor timestamp, duration, exposure, and analogue-gain metadata");
+                if (*duration <= 0 || *exposure <= 0 || !std::isfinite(*gain) || *gain <= 0)
+                    throw std::runtime_error("Camera reported invalid frame controls");
+                completion.submission = submitted_.at(request);
+                auto &timing = completion.timing;
+                timing.camera_sequence = metadata.sequence;
+                timing.sensor_timestamp_ns = *sensor;
+                timing.timestamp_ns = *sensor;
+                if (common_time_) {
+                    const auto before = boot_ns(), real = realtime_ns(), after = boot_ns();
+                    timing.mapping_span_ns = after - before;
+                    timing.timestamp_ns += real - (before + (after - before) / 2);
+                }
+                timing.requested_duration_us = completion.submission.phase.duration_us;
+                timing.reported_duration_us = *duration;
+                timing.correction_id = completion.submission.phase.correction_id;
+                completion.exposure_us = *exposure;
+                completion.gain = *gain;
+            }
             std::lock_guard<std::mutex> lock(delivery_mutex_);
             if (delivery_stop_) return;
-            deliveries_.push_back(request);
+            deliveries_.push_back(completion);
             delivery_changed_.notify_one();
         } catch (const std::exception &error) { fail(error.what()); }
         catch (...) { fail("Unknown camera completion callback failure"); }
@@ -191,41 +258,79 @@ class ArducamBackend final : public AcquisitionBackend {
         if (!running_.load()) return;
         request->reuse(libcamera::Request::ReuseBuffers);
         const auto control = actuator_->next(1000000 / config_.fps, monotonic_ns());
-        submitted_.at(request) = control;
+        submitted_.at(request) = {control, config_.exposure_us, requested_gain_};
         const std::int64_t limits[]{control.duration_us, control.duration_us};
         request->controls().set(libcamera::controls::FrameDurationLimits, libcamera::Span<const std::int64_t, 2>(limits));
+        request->controls().set(libcamera::controls::ExposureTime, config_.exposure_us);
+        request->controls().set(libcamera::controls::AnalogueGain, requested_gain_);
         if (camera_->queueRequest(request) < 0) throw std::runtime_error("Camera request submission failed");
     }
 
-    void process(libcamera::Request *request) {
-        if (!running_.load()) return;
-        if (request->status() != libcamera::Request::RequestComplete) throw std::runtime_error("Incomplete camera request");
-        auto *buffer = request->buffers().at(raw_);
-        const auto &metadata = buffer->metadata();
-        if (metadata.status == libcamera::FrameMetadata::FrameStartup) { requeue(request); return; }
-        if (metadata.status != libcamera::FrameMetadata::FrameSuccess) throw std::runtime_error("Unsuccessful camera raw buffer");
-        const auto sensor = request->metadata().get(libcamera::controls::SensorTimestamp);
-        const auto duration = request->metadata().get(libcamera::controls::FrameDuration);
-        if (!sensor || !duration) throw std::runtime_error("Camera requires SensorTimestamp and FrameDuration metadata");
-        const auto submission = submitted_.at(request);
-        FrameTiming timing;
-        timing.camera_sequence = metadata.sequence;
-        timing.sensor_timestamp_ns = *sensor;
-        timing.timestamp_ns = *sensor;
-        if (common_time_) {
-            const auto before = boot_ns(), real = realtime_ns(), after = boot_ns();
-            timing.mapping_span_ns = after - before;
-            timing.timestamp_ns += real - (before + (after - before) / 2);
+    void copy_pixels(libcamera::FrameBuffer *buffer, FrameStorage &storage) {
+        DmaRead access(buffer->planes().front().fd.get());
+        const auto *source = mappings_.at(buffer)->pixels;
+        if (stride_ == config_.width) std::memcpy(storage.pixels.data(), source, storage.pixels.size());
+        else for (unsigned y = 0; y < config_.height; ++y)
+            std::memcpy(storage.pixels.data() + static_cast<std::size_t>(y) * config_.width,
+                        source + static_cast<std::size_t>(y) * stride_, config_.width);
+        access.finish();
+    }
+
+    void gain_progress(const Completion &completion) const {
+        std::ostringstream message;
+        message << "B-CamSync " << config_.id << " gain warmup: state=" << gain_state_
+                << ", brightness=" << (gain_warmup_ ? gain_warmup_->brightness : 0)
+                << ", requested_gain=" << requested_gain_ << ", reported_gain=" << completion.gain
+                << ", exposure_us=" << completion.exposure_us << ", locked=" << gain_locked_ << '\n';
+        std::lock_guard<std::mutex> lock(progress_mutex);
+        std::clog << message.str() << std::flush;
+    }
+
+    void warmup(const Completion &completion) {
+        bool report = false;
+        if (gain_warmup_) {
+            copy_pixels(completion.buffer, metering_storage_);
+            report = gain_warmup_->observe(metering_storage_.pixels.data(), config_.width, config_.height,
+                                          completion.timing.sensor_timestamp_ns, completion.gain,
+                                          completion.exposure_us, config_.exposure_us);
+            requested_gain_ = gain_warmup_->requested;
+            gain_locked_ = gain_warmup_->locked;
+            gain_state_ = gain_warmup_->state;
+        } else {
+            gain_locked_ = std::abs(completion.gain - requested_gain_) <= 0.05F * requested_gain_ &&
+                           std::abs(completion.exposure_us - config_.exposure_us) <= 100;
+            gain_state_ = gain_locked_ ? "manual" : "waiting_controls";
+            report = gain_locked_ || completion.timing.sensor_timestamp_ns >= next_manual_progress_;
+            if (report) next_manual_progress_ = completion.timing.sensor_timestamp_ns + 500000000;
         }
+        if (report) gain_progress(completion);
+        if (gain_locked_) {
+            sequence_ = 0;
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            timing_.clear();
+            camera_ready_ = true;
+            timing_changed_.notify_all();
+        }
+    }
+
+    void process(const Completion &completion) {
+        if (!running_.load()) return;
+        if (completion.startup) { requeue(completion.request); return; }
+        const auto &timing = completion.timing;
         if (timing.sensor_timestamp_ns <= last_sensor_ || timing.timestamp_ns <= last_timestamp_)
             throw std::runtime_error("Camera sensor or common time stopped increasing");
         last_sensor_ = timing.sensor_timestamp_ns;
         last_timestamp_ = timing.timestamp_ns;
-        timing.requested_duration_us = submission.duration_us;
-        timing.reported_duration_us = *duration;
-        timing.correction_id = submission.correction_id;
+        if (!gain_locked_) {
+            warmup(completion);
+            requeue(completion.request);
+            return;
+        }
+        if (std::abs(completion.gain - requested_gain_) > 0.05F * requested_gain_ ||
+            std::abs(completion.exposure_us - config_.exposure_us) > 100)
+            throw std::runtime_error("Camera exposure or gain changed after startup readiness");
         const auto sequence = sequence_++;
-        actuator_->completed(submission, sequence, timing.timestamp_ns);
+        actuator_->completed(completion.submission.phase, sequence, timing.timestamp_ns);
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
             timing_.push_back(timing);
@@ -234,20 +339,7 @@ class ArducamBackend final : public AcquisitionBackend {
         }
         auto storage = images_.acquire_storage();
         if (storage) {
-            DmaRead access(buffer->planes().front().fd.get());
-            const auto *source = mappings_.at(buffer)->pixels;
-            if (config_.raw_format == "R8" && stride_ == config_.width)
-                std::memcpy(storage->pixels.data(), source, storage->pixels.size());
-            else for (unsigned y = 0; y < config_.height; ++y) {
-                const auto *row = source + static_cast<std::size_t>(y) * stride_;
-                auto *out = storage->pixels.data() + static_cast<std::size_t>(y) * config_.width;
-                if (config_.raw_format == "R8") std::memcpy(out, row, config_.width);
-                else for (unsigned x = 0; x < config_.width; ++x) {
-                    const unsigned value = row[2 * x] | (static_cast<unsigned>(row[2 * x + 1]) << 8);
-                    out[x] = static_cast<std::uint8_t>(std::min(255U, value >> config_.r16_shift));
-                }
-            }
-            access.finish();
+            copy_pixels(completion.buffer, *storage);
             auto packet = std::make_shared<FramePacket>();
             packet->unit_id = config_.id;
             packet->sequence = sequence;
@@ -256,24 +348,30 @@ class ArducamBackend final : public AcquisitionBackend {
             packet->width = config_.width;
             packet->height = config_.height;
             packet->views = config_.views;
+            packet->requested_exposure_us = completion.submission.exposure_us;
+            packet->exposure_us = completion.exposure_us;
+            packet->requested_gain = completion.submission.gain;
+            packet->analogue_gain = completion.gain;
+            packet->gain_locked = gain_locked_;
+            packet->gain_state = gain_state_;
             packet->storage = std::move(storage);
             images_.publish(std::move(packet));
         }
-        requeue(request);
+        requeue(completion.request);
     }
 
     void copy_loop() noexcept {
         try {
             while (true) {
-                libcamera::Request *request;
+                Completion completion;
                 {
                     std::unique_lock<std::mutex> lock(delivery_mutex_);
                     delivery_changed_.wait(lock, [&] { return delivery_stop_ || !deliveries_.empty(); });
                     if (delivery_stop_) return;
-                    request = deliveries_.front();
+                    completion = deliveries_.front();
                     deliveries_.pop_front();
                 }
-                process(request);
+                process(completion);
             }
         } catch (const std::exception &error) { fail(error.what()); }
         catch (...) { fail("Unknown camera copier failure"); }
@@ -320,6 +418,8 @@ class ArducamBackend final : public AcquisitionBackend {
         acquired_ = false;
         camera_.reset();
         raw_ = nullptr;
+        gain_warmup_.reset();
+        metering_storage_.pixels.clear();
     }
 
 public:
@@ -336,10 +436,15 @@ public:
         common_time_ = common_time;
         sequence_ = 0;
         last_sensor_ = last_timestamp_ = 0;
+        requested_gain_ = config_.auto_gain ? 1.0F : config_.analogue_gain;
+        gain_locked_ = false;
+        gain_state_ = "waiting_controls";
+        next_manual_progress_ = 0;
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
             fault_.clear();
             timing_.clear();
+            camera_ready_ = false;
         }
         try {
             camera_ = manager_->camera_manager.get(config_.camera_id);
@@ -354,7 +459,7 @@ public:
             viewfinder.pixelFormat = libcamera::formats::YUV420;
             viewfinder.bufferCount = 8;
             raw.size = {config_.width, config_.height};
-            raw.pixelFormat = config_.raw_format == "R8" ? libcamera::formats::R8 : libcamera::formats::R16;
+            raw.pixelFormat = libcamera::formats::R8;
             raw.bufferCount = 8;
             configuration_->sensorConfig = libcamera::SensorConfiguration();
             configuration_->sensorConfig->outputSize = {config_.width, config_.height};
@@ -365,13 +470,30 @@ public:
             if (camera_->configure(configuration_.get())) throw std::runtime_error("Cannot configure camera");
             raw_ = raw.stream();
             stride_ = raw.stride;
-            if (stride_ < config_.width * (config_.raw_format == "R8" ? 1U : 2U)) throw std::runtime_error("Raw camera stride is too short");
+            if (stride_ < config_.width) throw std::runtime_error("Raw camera stride is too short");
             const auto limits = camera_->controls().find(&libcamera::controls::FrameDurationLimits);
             if (limits == camera_->controls().end()) throw std::runtime_error("Camera does not provide frame-period control");
             minimum_duration_ = std::max<std::int64_t>(limits->second.min().get<std::int64_t>(), config_.exposure_us);
             maximum_duration_ = limits->second.max().get<std::int64_t>();
             const std::int64_t baseline = 1000000 / config_.fps;
             if (baseline < minimum_duration_ || baseline > maximum_duration_) throw std::runtime_error("Configured frame period is outside camera limits");
+            const auto exposure_limits = camera_->controls().find(&libcamera::controls::ExposureTime);
+            const auto gain_limits = camera_->controls().find(&libcamera::controls::AnalogueGain);
+            if (exposure_limits == camera_->controls().end() || gain_limits == camera_->controls().end())
+                throw std::runtime_error("Camera requires manual exposure and analogue-gain controls");
+            if (config_.exposure_us < exposure_limits->second.min().get<std::int32_t>() ||
+                config_.exposure_us > exposure_limits->second.max().get<std::int32_t>())
+                throw std::runtime_error("Configured exposure is outside camera limits");
+            const float gain_minimum = gain_limits->second.min().get<float>();
+            const float gain_maximum = gain_limits->second.max().get<float>();
+            if (!std::isfinite(gain_minimum) || !std::isfinite(gain_maximum) ||
+                gain_minimum <= 0 || gain_minimum > gain_maximum ||
+                requested_gain_ < gain_minimum || requested_gain_ > gain_maximum)
+                throw std::runtime_error("Configured analogue gain is outside camera limits");
+            if (config_.auto_gain) {
+                gain_warmup_ = std::make_unique<detail::GainWarmup>(gain_minimum, gain_maximum);
+                metering_storage_.pixels.resize(static_cast<std::size_t>(config_.width) * config_.height);
+            }
             allocator_ = std::make_unique<libcamera::FrameBufferAllocator>(camera_);
             if (allocator_->allocate(viewfinder.stream()) < 0 || allocator_->allocate(raw_) < 0) throw std::runtime_error("Cannot allocate camera buffers");
             const auto &raw_buffers = allocator_->buffers(raw_);
@@ -389,7 +511,11 @@ public:
                 auto request = camera_->createRequest();
                 if (!request || request->addBuffer(raw_, buffer) < 0 || request->addBuffer(viewfinder.stream(), viewfinder_buffers[i].get()) < 0)
                     throw std::runtime_error("Cannot create camera request");
-                submitted_.emplace(request.get(), PhaseActuator::Submission{baseline, 0, false, round});
+                submitted_.emplace(request.get(), Submission{{baseline, 0, false, round}, config_.exposure_us, requested_gain_});
+                const std::int64_t initial_duration[]{baseline, baseline};
+                request->controls().set(libcamera::controls::FrameDurationLimits, libcamera::Span<const std::int64_t, 2>(initial_duration));
+                request->controls().set(libcamera::controls::ExposureTime, config_.exposure_us);
+                request->controls().set(libcamera::controls::AnalogueGain, requested_gain_);
                 requests_.push_back(std::move(request));
             }
             images_.open(static_cast<std::size_t>(config_.width) * config_.height, config_.queue_capacity, config_.pool_capacity);
@@ -398,7 +524,7 @@ public:
             controls.set(libcamera::controls::FrameDurationLimits, libcamera::Span<const std::int64_t, 2>(durations));
             controls.set(libcamera::controls::AeEnable, false);
             controls.set(libcamera::controls::ExposureTime, config_.exposure_us);
-            controls.set(libcamera::controls::AnalogueGain, config_.analogue_gain);
+            controls.set(libcamera::controls::AnalogueGain, requested_gain_);
             camera_->requestCompleted.connect(this, &ArducamBackend::complete);
             connected_ = true;
             if (camera_->start(&controls)) throw std::runtime_error("Cannot start camera");
@@ -410,6 +536,14 @@ public:
             running_.store(true);
             copier_ = std::thread([this] { copy_loop(); });
             for (const auto &request : requests_) if (camera_->queueRequest(request.get()) < 0) throw std::runtime_error("Initial camera request submission failed");
+            {
+                std::unique_lock<std::mutex> lock(state_mutex_);
+                const bool settled = timing_changed_.wait_for(lock, std::chrono::seconds(20), [&] {
+                    return camera_ready_ || !fault_.empty() || !running_.load();
+                });
+                if (!fault_.empty()) throw std::runtime_error(fault_);
+                if (!settled || !camera_ready_) throw std::runtime_error("Camera controls did not settle within 20 seconds");
+            }
         } catch (...) { stop_locked(false); throw; }
     }
 
@@ -451,18 +585,22 @@ public:
 
 std::vector<std::unique_ptr<AcquisitionBackend>> make_arducam_backends(const std::vector<UnitConfig> &units) {
     if (units.empty()) return {};
-    const auto &pipeline = units.front().pipeline_config;
-    for (const auto &unit : units) if (unit.pipeline_config != pipeline)
-        throw std::invalid_argument("All local Arducam units must share one pipeline configuration");
-    auto manager = std::make_shared<Manager>(pipeline);
+    for (const auto &unit : units) {
+        profile_pipeline(unit.profile);
+        if (unit.width != 5120 || unit.height != 800 || unit.views != 4)
+            throw std::invalid_argument("Arducam B0267 Pi4 profile requires 5120x800 with four views");
+        if (unit.auto_gain && unit.analogue_gain != 1.0F)
+            throw std::invalid_argument("Startup analogue-gain calibration must start at 1x");
+    }
+    auto manager = std::make_shared<Manager>(profile_pipeline(units.front().profile));
     std::vector<std::unique_ptr<AcquisitionBackend>> result;
     result.reserve(units.size());
     for (const auto &unit : units) result.push_back(std::make_unique<ArducamBackend>(unit, manager));
     return result;
 }
 
-std::vector<std::string> enumerate_arducam_cameras(const std::string &pipeline_config) {
-    Manager manager(pipeline_config);
+std::vector<std::string> enumerate_arducam_cameras(const std::string &profile) {
+    Manager manager(profile_pipeline(profile));
     const auto cameras = manager.camera_manager.cameras();
     std::vector<std::string> ids;
     ids.reserve(cameras.size());

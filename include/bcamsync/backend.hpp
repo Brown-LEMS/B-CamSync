@@ -19,5 +19,5 @@ public:
 /// One node factory shares its SDK manager between all local units.
 std::vector<std::unique_ptr<AcquisitionBackend>> make_arducam_backends(const std::vector<UnitConfig> &units);
 /// Enumerate exact SDK camera IDs before creating a session; devices are not started.
-std::vector<std::string> enumerate_arducam_cameras(const std::string &pipeline_config = "");
+std::vector<std::string> enumerate_arducam_cameras(const std::string &profile = "arducam_b0267_pi4");
 }

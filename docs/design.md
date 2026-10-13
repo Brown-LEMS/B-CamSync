@@ -76,6 +76,11 @@ The first direct-link implementation uses a dedicated static IPv4 subnet and a p
 
 ## Backend layering
 
+Acquisition configuration, backend/platform profiles, startup gain calibration, frame metadata, and optional developer-host management belong to the managed access layer. The synchronization core consumes only timing snapshots and returns phase-control decisions; it does not read acquisition configuration files, meter images, manage camera brightness, or depend on a developer host. `timing.hpp` defines that boundary separately from acquisition configuration and image types.
+
+The initial Arducam profile fixes output to 8-bit grayscale. Its Raspberry Pi 4 implementation owns R8 packing, full-board geometry, and the VC4 pipeline selection. User configuration selects the profile and desired board-wide frame rate, exposure, and gain policy. Following the BAPD8 startup practice, automatic gain meters the four views with trimmed means and their median, adjusts sensor analogue gain toward 96 with a 10 percent deadband, and locks after three settled half-second observations. The selected gain range is 1×–8× intersected with sensor limits, and startup has a 20-second settling deadline. Exposure remains fixed. Calibration finishes before timing observations enter phase synchronization; requested and reported exposure/gain remain acquisition metadata, outside core timing types.
+
+
 The library provides a common programming model for nodes, synchronization units, camera views, synchronization groups, and acquired frames. Applications initialize and use these objects through B-CamSync. Backend implementations map concrete camera SDKs, drivers, and platform facilities to that model. Arducam is the first implementation target.
 
 The shared layer owns topology, group membership, reference selection, synchronization estimation and policy, and public lifecycle and frame-access semantics. A backend owns device discovery and binding, device configuration, acquisition, pixel buffers and view layout, timestamp interpretation, and execution and completion reporting of synchronization controls. Existing acquisition systems can implement the same acquisition boundary when that integration mode is introduced.

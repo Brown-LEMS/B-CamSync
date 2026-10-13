@@ -76,7 +76,7 @@ void topology() {
     invalid([](Config& x) { x.units[0].fps = 0; });
     invalid([](Config& x) { x.units[1].fps = 30; });
     invalid([](Config& x) { x.units[0].pool_capacity = x.units[0].queue_capacity + 1; });
-    invalid([](Config& x) { x.units[0].raw_format = "RGB"; });
+    invalid([](Config& x) { x.units[0].profile = "unknown"; });
     invalid([](Config& x) { x.units[0].analogue_gain = std::numeric_limits<float>::quiet_NaN(); });
     invalid([](Config& x) { x.units[0].exposure_us = 25000; });
     invalid([](Config& x) { x.request_timeout_seconds = std::numeric_limits<double>::infinity(); });
@@ -139,6 +139,20 @@ void configuration_files() {
     require(c.unit("board").width == 16 && c.nodes[0].port == 59100,
             "configuration loads capture and endpoint fields");
     require(c.unit("board").views == 4 && c.unit("board").fps == 40, "configuration defaults");
+    require(c.unit("board").profile == "arducam_b0267_pi4" && c.unit("board").auto_gain,
+            "default board profile selects startup gain calibration");
+    auto manual = c;
+    manual.units[0].auto_gain = false;
+    manual.units[0].analogue_gain = 2.0F;
+    file.write(manual.to_json());
+    const auto restored = Config::from_file(file.path);
+    require(!restored.units[0].auto_gain && restored.units[0].analogue_gain == 2.0F,
+            "manual gain policy survives resolved configuration exchange");
+    require(restored.to_json() == manual.to_json(), "resolved configuration round trip is complete");
+    auto legacy = text;
+    legacy.insert(legacy.find("\"width\""), "\"raw_format\":\"R8\",");
+    file.write(legacy);
+    rejects([&] { Config::from_file(file.path); });
     file.write("{malformed");
     rejects([&] { Config::from_file(file.path); });
     file.write("{}");

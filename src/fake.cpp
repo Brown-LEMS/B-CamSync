@@ -87,6 +87,10 @@ class FakeBackend final : public AcquisitionBackend {
                     packet->sequence = sequence;
                     packet->sensor_timestamp_ns = timing.sensor_timestamp_ns;
                     packet->timestamp_ns = timing.timestamp_ns;
+                    packet->requested_exposure_us = packet->exposure_us = config_.exposure_us;
+                    packet->requested_gain = packet->analogue_gain = config_.analogue_gain;
+                    packet->gain_locked = true;
+                    packet->gain_state = "fake";
                     packet->width = config_.width;
                     packet->height = config_.height;
                     packet->views = config_.views;

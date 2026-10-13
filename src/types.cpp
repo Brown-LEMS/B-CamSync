@@ -69,9 +69,11 @@ void Config::validate() const {
             u.exposure_us >= 1000000 / static_cast<int>(u.fps) - 1000 ||
             !std::isfinite(u.analogue_gain) || u.analogue_gain <= 0 || u.queue_capacity < 1 ||
             u.queue_capacity > 64 || u.pool_capacity < u.queue_capacity + 2 ||
-            u.pool_capacity > 128 || (u.raw_format != "R8" && u.raw_format != "R16") ||
-            u.r16_shift > 8)
+            u.pool_capacity > 128)
             throw std::invalid_argument("invalid capture settings for " + u.id);
+        if (backend == "arducam" &&
+            u.profile != "arducam_b0267_pi4")
+            throw std::invalid_argument("unknown Arducam capture profile for " + u.id);
         if (u.fake_initial_phase_us < -1000000 || u.fake_initial_phase_us > 1000000 ||
             !std::isfinite(u.fake_drift_ppm) || std::abs(u.fake_drift_ppm) > 1000)
             throw std::invalid_argument("invalid fake timing settings for " + u.id);
@@ -118,13 +120,14 @@ Config Config::from_file(const std::string& path) {
         SET(height);
         SET(views);
         SET(fps);
-        SET(raw_format);
-        SET(r16_shift);
+        if (v.contains("raw_format") || v.contains("r16_shift") || v.contains("pipeline_config"))
+            throw std::invalid_argument("select a capture profile instead of raw/pipeline overrides");
+        SET(profile);
         SET(exposure_us);
         SET(analogue_gain);
+        SET(auto_gain);
         SET(queue_capacity);
         SET(pool_capacity);
-        SET(pipeline_config);
 #undef SET
         if (v.contains("fake")) {
             const auto& fake = v.at("fake");
@@ -141,6 +144,25 @@ Config Config::from_file(const std::string& path) {
 #undef SET
     c.validate();
     return c;
+}
+std::string Config::to_json() const {
+    validate();
+    nlohmann::json ns = nlohmann::json::array(), us = nlohmann::json::array();
+    for (const auto& n : nodes)
+        ns.push_back({{"id", n.id}, {"address", n.address}, {"interface", n.interface}, {"port", n.port}});
+    for (const auto& u : units) {
+        nlohmann::json unit = {{"id", u.id}, {"node_id", u.node_id}, {"camera_id", u.camera_id},
+            {"width", u.width}, {"height", u.height}, {"views", u.views}, {"fps", u.fps},
+            {"profile", u.profile}, {"exposure_us", u.exposure_us}, {"analogue_gain", u.analogue_gain},
+            {"auto_gain", u.auto_gain}, {"queue_capacity", u.queue_capacity}, {"pool_capacity", u.pool_capacity}};
+        if (backend == "fake")
+            unit["fake"] = {{"initial_phase_us", u.fake_initial_phase_us}, {"drift_ppm", u.fake_drift_ppm}};
+        us.push_back(std::move(unit));
+    }
+    return nlohmann::json({{"group_id", group_id}, {"reference_unit", reference_unit}, {"backend", backend},
+        {"nodes", ns}, {"units", us}, {"clock_max_offset_ms", clock_max_offset_ms},
+        {"clock_max_age_seconds", clock_max_age_seconds}, {"request_timeout_seconds", request_timeout_seconds},
+        {"startup_timeout_seconds", startup_timeout_seconds}}).dump();
 }
 const std::uint8_t* FramePacket::view_data(unsigned index) const {
     if (!storage || !views || !width || !height || width % views || index >= views ||

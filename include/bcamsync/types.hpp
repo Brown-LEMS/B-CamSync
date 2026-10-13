@@ -9,12 +9,13 @@ namespace bcamsync {
 struct UnitConfig {
     std::string id, node_id, camera_id;
     unsigned width = 5120, height = 800, views = 4, fps = 40;
-    std::string raw_format = "R8";
-    unsigned r16_shift = 8;
+    /// Backend-owned sensor, raw packing, and pipeline selection.
+    std::string profile = "arducam_b0267_pi4";
     int exposure_us = 10000;
     float analogue_gain = 1.0F;
+    /// Calibrate sensor gain at startup, then lock it before phase synchronization.
+    bool auto_gain = true;
     unsigned queue_capacity = 4, pool_capacity = 12;
-    std::string pipeline_config;
     std::int64_t fake_initial_phase_us = 0;
     double fake_drift_ppm = 0;
 };
@@ -34,6 +35,8 @@ struct Config {
     const UnitConfig& unit(const std::string& id) const;
     std::string reference_node() const;
     static Config from_file(const std::string& path);
+    /// Resolved acquisition configuration for optional management clients.
+    std::string to_json() const;
 };
 struct FrameStorage {
     std::vector<std::uint8_t> pixels;
@@ -43,6 +46,10 @@ struct FramePacket {
     std::string unit_id;
     std::uint64_t sequence = 0, dropped_before = 0;
     std::int64_t sensor_timestamp_ns = 0, timestamp_ns = 0;
+    int requested_exposure_us = 0, exposure_us = 0;
+    float requested_gain = 0, analogue_gain = 0;
+    bool gain_locked = false;
+    std::string gain_state;
     unsigned width = 0, height = 0, views = 0;
     std::shared_ptr<const FrameStorage> storage;
     unsigned view_width() const;
