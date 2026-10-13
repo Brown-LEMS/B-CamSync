@@ -36,6 +36,8 @@ struct UnitConfig {
     float analogue_gain = 1.0F;
     unsigned queue_capacity = 4, pool_capacity = 12;
     std::string pipeline_config;
+    std::int64_t fake_initial_phase_us = 0;
+    double fake_drift_ppm = 0;
 };
 struct NodeConfig {
     std::string id, address, interface;
@@ -43,6 +45,7 @@ struct NodeConfig {
 };
 struct Config {
     std::string group_id, reference_unit;
+    std::string backend = "arducam";
     std::vector<NodeConfig> nodes;
     std::vector<UnitConfig> units;
     double clock_max_offset_ms = 0.1, clock_max_age_seconds = 10.0;

@@ -1,4 +1,5 @@
 #include "bcamsync/session.hpp"
+#include "bcamsync/fake.hpp"
 #include "bcamsync/phase.hpp"
 #include "process.hpp"
 #include "wire.hpp"
@@ -62,6 +63,8 @@ std::vector<std::unique_ptr<AcquisitionBackend>> validated_backends(const Config
                                                                     const std::string& node) {
     c.validate();
     c.node(node);
+    if (c.backend == "fake")
+        return make_fake_backends(local_units(c, node));
     return make_arducam_backends(local_units(c, node));
 }
 void clock_health(const Config& c, const std::string& node) {
@@ -533,7 +536,7 @@ class Session::Impl {
 };
 Session::Session(Config config, std::string node)
     : Session(config, node, validated_backends(config, node)) {
-    impl_->fixture = false;
+    impl_->fixture = impl_->config.backend == "fake";
 }
 Session::Session(Config config, std::string node,
                  std::vector<std::unique_ptr<AcquisitionBackend>> bs)

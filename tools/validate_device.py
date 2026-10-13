@@ -88,8 +88,17 @@ def validate_run(config, node: str, duration: float, run: int, report: dict) -> 
     try:
         progress(f"Run {run}: starting {len(units)} local boards")
         session.start()
-        if not session.wait_ready(config.startup_timeout_seconds + 10):
-            raise RuntimeError("Synchronization readiness timed out")
+        deadline = time.monotonic() + config.startup_timeout_seconds + 10
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError("Synchronization readiness timed out")
+            if session.wait_ready(min(5, remaining)):
+                break
+            state = session.status()
+            if state.state == "stopped":
+                raise RuntimeError("Session stopped before synchronization readiness")
+            progress(f"Run {run}: {state.state}; {time.monotonic() - started:.1f}s since start")
         report["startup_seconds"] = time.monotonic() - started
         progress(f"Run {run}: synchronization ready in {report['startup_seconds']:.2f}s")
         began = time.monotonic()
@@ -203,6 +212,9 @@ def main() -> int:
     try:
         config = Config.from_file(args.config)
         result["group_id"] = config.group_id
+        result["backend"] = config.backend
+        if config.backend == "fake":
+            result["measurement_kind"] = "software_fake_frame_delivery_and_control"
         result["reference_unit"] = config.reference_unit
         for index in range(1, args.repeat + 1):
             report = {}

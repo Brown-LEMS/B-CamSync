@@ -46,6 +46,8 @@ void Config::validate() const {
     if (!valid_id(group_id) || nodes.empty() || nodes.size() > 32 || units.empty() ||
         units.size() > 64)
         throw std::invalid_argument("invalid group identity or topology size");
+    if (backend != "arducam" && backend != "fake")
+        throw std::invalid_argument("unknown acquisition backend: " + backend);
     std::set<std::string> ids, addresses, devices;
     for (const auto& n : nodes) {
         in_addr a{};
@@ -70,6 +72,9 @@ void Config::validate() const {
             u.pool_capacity > 128 || (u.raw_format != "R8" && u.raw_format != "R16") ||
             u.r16_shift > 8)
             throw std::invalid_argument("invalid capture settings for " + u.id);
+        if (u.fake_initial_phase_us < -1000000 || u.fake_initial_phase_us > 1000000 ||
+            !std::isfinite(u.fake_drift_ppm) || std::abs(u.fake_drift_ppm) > 1000)
+            throw std::invalid_argument("invalid fake timing settings for " + u.id);
     }
     for (const auto& n : nodes)
         if (std::none_of(units.begin(), units.end(),
@@ -91,6 +96,7 @@ Config Config::from_file(const std::string& path) {
     Config c;
     c.group_id = j.at("group_id").get<std::string>();
     c.reference_unit = j.at("reference_unit").get<std::string>();
+    c.backend = j.value("backend", c.backend);
     for (const auto& v : j.at("nodes")) {
         NodeConfig n;
         n.id = v.at("id");
@@ -120,6 +126,11 @@ Config Config::from_file(const std::string& path) {
         SET(pool_capacity);
         SET(pipeline_config);
 #undef SET
+        if (v.contains("fake")) {
+            const auto& fake = v.at("fake");
+            u.fake_initial_phase_us = fake.value("initial_phase_us", u.fake_initial_phase_us);
+            u.fake_drift_ppm = fake.value("drift_ppm", u.fake_drift_ppm);
+        }
         c.units.push_back(u);
     }
 #define SET(name) c.name = j.value(#name, c.name)

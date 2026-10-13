@@ -65,11 +65,14 @@ PYBIND11_MODULE(_native, module) {
         .def_readwrite("analogue_gain", &UnitConfig::analogue_gain)
         .def_readwrite("queue_capacity", &UnitConfig::queue_capacity)
         .def_readwrite("pool_capacity", &UnitConfig::pool_capacity)
-        .def_readwrite("pipeline_config", &UnitConfig::pipeline_config);
+        .def_readwrite("pipeline_config", &UnitConfig::pipeline_config)
+        .def_readwrite("fake_initial_phase_us", &UnitConfig::fake_initial_phase_us)
+        .def_readwrite("fake_drift_ppm", &UnitConfig::fake_drift_ppm);
     py::class_<Config>(module, "Config")
         .def(py::init<>())
         .def_readwrite("group_id", &Config::group_id)
         .def_readwrite("reference_unit", &Config::reference_unit)
+        .def_readwrite("backend", &Config::backend)
         .def_readwrite("nodes", &Config::nodes)
         .def_readwrite("units", &Config::units)
         .def_readwrite("clock_max_offset_ms", &Config::clock_max_offset_ms)

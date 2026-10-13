@@ -192,10 +192,16 @@ Json topology_json(const Config& c) {
                       {"gain", u.analogue_gain},
                       {"queue", u.queue_capacity},
                       {"pool", u.pool_capacity},
-                      {"pipeline", u.pipeline_config}});
-    return {
-        {"group", c.group_id}, {"reference", c.reference_unit},   {"nodes", ns},
-        {"units", us},         {"offset", c.clock_max_offset_ms}, {"age", c.clock_max_age_seconds}};
+                      {"pipeline", u.pipeline_config},
+                      {"fake_phase", u.fake_initial_phase_us},
+                      {"fake_drift", u.fake_drift_ppm}});
+    return {{"group", c.group_id},
+            {"reference", c.reference_unit},
+            {"nodes", ns},
+            {"units", us},
+            {"backend", c.backend},
+            {"offset", c.clock_max_offset_ms},
+            {"age", c.clock_max_age_seconds}};
 }
 Json status_json(const GroupStatus& s) {
     Json us = Json::array();

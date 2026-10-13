@@ -41,16 +41,27 @@ def _identifier(value: str, label: str) -> str:
 def make_plan(config: dict, node_id: str, app_user: str | None = None) -> dict:
     """Return exact local configuration and commands without changing the host."""
     group = _identifier(config["group_id"], "group_id")
+    backend = config.get("backend", "arducam")
+    if backend not in ("arducam", "fake"):
+        raise ValueError("backend must be arducam or fake")
+    fake = backend == "fake"
     _identifier(node_id, "node_id")
     nodes = config["nodes"]
     if not nodes or len({n["id"] for n in nodes}) != len(nodes):
         raise ValueError("nodes must have unique identities")
     for entry in nodes:
         _identifier(entry["id"], "node_id")
-        _identifier(entry["interface"], "interface")
+        if not fake:
+            _identifier(entry["interface"], "interface")
         ipaddress.IPv4Address(entry["address"])
-    if len({n["address"] for n in nodes}) != len(nodes):
-        raise ValueError("nodes must have distinct IPv4 addresses")
+        port = entry.get("port", 58080)
+        if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
+            raise ValueError("node port must be an integer in 1..65535")
+    endpoints = {(n["address"], n.get("port", 58080)) for n in nodes}
+    if len(endpoints) != len(nodes):
+        raise ValueError("nodes must have distinct IPv4 endpoints")
+    if not fake and len({n["address"] for n in nodes}) != len(nodes):
+        raise ValueError("physical nodes must have distinct IPv4 addresses")
     local = next(n for n in nodes if n["id"] == node_id)
     reference_unit = next(u for u in config["units"] if u["id"] == config["reference_unit"])
     reference = next(n for n in nodes if n["id"] == reference_unit["node_id"])
@@ -58,7 +69,7 @@ def make_plan(config: dict, node_id: str, app_user: str | None = None) -> dict:
     managed = network["managed"]
     if not isinstance(managed, bool):
         raise ValueError("network.managed must be a boolean")
-    managed = managed and len(nodes) > 1
+    managed = managed and len(nodes) > 1 and not fake
     subnet = ipaddress.IPv4Network(network["subnet"]) if managed else None
     if subnet is not None:
         private_subnets = (ipaddress.IPv4Network("10.0.0.0/8"),
@@ -85,7 +96,7 @@ def make_plan(config: dict, node_id: str, app_user: str | None = None) -> dict:
             "ipv4.ignore-auto-dns", "yes", "ipv6.method", "disabled",
             "connection.autoconnect", "yes", "connection.autoconnect-priority", "100",
         ], ["nmcli", "connection", "up", "id", profile]]
-    clock = len(nodes) > 1
+    clock = len(nodes) > 1 and not fake
     lines = ["# Managed by B-CamSync. Restore with the node setup tool.",
              "driftfile /var/lib/chrony/chrony.drift", "rtcsync", "maxupdateskew 100.0"]
     if clock and local["id"] == reference["id"]:
@@ -109,11 +120,11 @@ def make_plan(config: dict, node_id: str, app_user: str | None = None) -> dict:
     if app_user is not None:
         _identifier(app_user, "app_user")
     return {
-        "group_id": group, "node_id": node_id, "reference_node": reference["id"],
+        "group_id": group, "backend": backend, "node_id": node_id, "reference_node": reference["id"],
         "node_address": local["address"],
         "reference_address": reference["address"], "clock_max_offset_seconds": offset,
         "clock_max_age_seconds": max_age,
-        "managed_network": managed, "interface": local["interface"], "profile": profile,
+        "managed_network": managed, "interface": local.get("interface", ""), "profile": profile,
         "network_commands": commands, "clock_managed": clock,
         "chrony_config": "\n".join(lines) + "\n" if clock else None,
         "clock_helper": str(helper) if clock else None,
@@ -152,10 +163,11 @@ def _root_directory(path: Path, *, create: bool = False) -> None:
 
 def prepare(plan: dict) -> None:
     """Install one node's profile and clock helper, retaining restore metadata."""
-    _root_linux()
     if not plan["managed_network"] and not plan["clock_managed"]:
-        print("Single-node group uses the local clock; no node provisioning required")
+        print("Fake backend uses local software endpoints; no provisioning required" if plan["backend"] == "fake"
+              else "Single-node group uses the local clock; no node provisioning required")
         return
+    _root_linux()
     required = ["nmcli"] if plan["managed_network"] else []
     if plan["clock_managed"]:
         required += ["chronyc", "systemctl", "visudo", "timeout"]
@@ -215,10 +227,11 @@ def prepare(plan: dict) -> None:
 
 def restore(plan: dict) -> None:
     """Restore the original chrony file and NetworkManager connection."""
-    _root_linux()
     if not plan["managed_network"] and not plan["clock_managed"]:
-        print("Single-node group has no provisioned network or clock to restore")
+        print("Fake backend has no physical network or clock to restore" if plan["backend"] == "fake"
+              else "Single-node group has no provisioned network or clock to restore")
         return
+    _root_linux()
     state_dir = _state_path(plan)
     state = json.loads((state_dir / "state.json").read_text())
     print("[1/3] Restoring chrony configuration", flush=True)
@@ -264,7 +277,8 @@ def validate_tracking(plan: dict, output: str, *, now: float | None = None) -> N
 def check(plan: dict) -> None:
     """Print local interface and clock reports without changing configuration."""
     if not plan["clock_managed"]:
-        print("Single-node group uses local timing; no network or chrony check required")
+        print("Fake backend uses software timing; no physical network or chrony check required" if plan["backend"] == "fake"
+              else "Single-node group uses local timing; no network or chrony check required")
         return
     report = _run(["ip", "-j", "-4", "address", "show", "dev", plan["interface"]], capture=True)
     addresses = {address["local"] for interface in json.loads(report)
@@ -301,7 +315,8 @@ def main(argv: list[str] | None = None) -> None:
         elif plan["clock_prepare_command"]:
             _run(plan["clock_prepare_command"], timeout_seconds=float(config.get("startup_timeout_seconds", 60)) + 10)
         else:
-            print("Single-node group uses the local clock; no clock preparation required")
+            print("Fake backend uses software timing; no clock preparation required" if plan["backend"] == "fake"
+                  else "Single-node group uses the local clock; no clock preparation required")
     except (ValueError, KeyError, StopIteration, OSError, RuntimeError, subprocess.SubprocessError) as error:
         parser.exit(1, f"bcamsync node setup: {error}\n")
 

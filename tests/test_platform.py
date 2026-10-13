@@ -46,6 +46,24 @@ class PlatformPlanTests(unittest.TestCase):
         self.assertIsNone(plan["chrony_config"])
         self.assertEqual(plan["clock_prepare_command"], [])
 
+    def test_fake_nodes_share_localhost_and_skip_all_physical_setup(self):
+        config = json.loads((ROOT / "examples" / "configs" / "fake_two_nodes.json").read_text())
+        config["network"] = {"managed": True, "subnet": "10.77.0.0/30"}
+        plan = platform.make_plan(config, "node-b", "researcher")
+        self.assertEqual(plan["backend"], "fake")
+        self.assertFalse(plan["managed_network"])
+        self.assertEqual(plan["network_commands"], [])
+        self.assertFalse(plan["clock_managed"])
+        self.assertIsNone(plan["chrony_config"])
+        self.assertIsNone(plan["sudoers"])
+        self.assertEqual(plan["clock_prepare_command"], [])
+
+    def test_fake_duplicate_endpoint_is_rejected(self):
+        config = json.loads((ROOT / "examples" / "configs" / "fake_two_nodes.json").read_text())
+        config["nodes"][1]["port"] = config["nodes"][0]["port"]
+        with self.assertRaises(ValueError):
+            platform.make_plan(config, "node-a")
+
     def test_clock_helper_is_fixed_and_limits_stepping_to_startup(self):
         plan = platform.make_plan(self.config, "node-b", "researcher")
         self.assertIn('[ "$#" -eq 0 ]', plan["clock_helper_script"])
