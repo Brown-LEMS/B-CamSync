@@ -45,7 +45,7 @@ void PhasePolicy::validate() const {
     for (const auto value :
          {window_seconds, evaluation_seconds, freshness_seconds, deadband_ms, ready_p95_ms,
           ready_max_ms, correction_interval_seconds, settling_seconds, application_delay_seconds,
-          startup_timeout_seconds, excursion_ms, excursion_timeout_seconds, progress_ms, gain})
+          excursion_ms, excursion_timeout_seconds, progress_ms, gain})
         if (!std::isfinite(value) || value <= 0 || value > 1e9)
             throw std::invalid_argument(
                 "phase policy values must be finite and positive within timestamp range");
@@ -190,8 +190,7 @@ void PhaseController::reset(std::optional<std::int64_t> mono, std::int64_t after
     ready_ = false;
     state_ = "warming";
     fault_.clear();
-    started_ = mono;
-    last_tick_.reset();
+    last_tick_ = mono;
     last_eval_.reset();
     last_start_.reset();
     excursion_start_.reset();
@@ -223,10 +222,6 @@ PhaseDecision PhaseController::tick(const TimingSnapshot& master, const TimingSn
     last_tick_ = mono;
     if (!clock_valid)
         return fail("clock health lost");
-    if (!started_)
-        started_ = mono;
-    if (!ready_ && mono - *started_ > ns(p.startup_timeout_seconds))
-        return fail("startup convergence timeout");
     try {
         check_frames(master, now, p);
         check_frames(slave, now, p);
@@ -241,9 +236,9 @@ PhaseDecision PhaseController::tick(const TimingSnapshot& master, const TimingSn
         const auto& previous = latest_[i];
         if (previous) {
             if (frame.camera_sequence < previous->sequence ||
-                frame.timestamp_ns < previous->timestamp ||
+                frame.sensor_timestamp_ns < previous->sensor_timestamp ||
                 (frame.camera_sequence == previous->sequence &&
-                 frame.timestamp_ns != previous->timestamp))
+                 frame.sensor_timestamp_ns != previous->sensor_timestamp))
                 return fail("camera timing restarted or changed identity");
             if (frame.camera_sequence == previous->sequence) {
                 if (mono - previous->received > ns(p.freshness_seconds))
@@ -251,7 +246,7 @@ PhaseDecision PhaseController::tick(const TimingSnapshot& master, const TimingSn
                 continue;
             }
         }
-        latest_[i] = Latest{frame.camera_sequence, frame.timestamp_ns, mono};
+        latest_[i] = Latest{frame.camera_sequence, frame.sensor_timestamp_ns, mono};
     }
     if (pending_) {
         const auto& correction = slave.correction;

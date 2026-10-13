@@ -119,9 +119,20 @@ void controller() {
     d = c.tick(snapshot(epoch + 3000000000, 0, 320), follower, epoch + 3001000000, 4000000000,
                false);
     require(d.fault == "clock health lost" && !d.ready, "clock loss faults controller");
+    c.reset();
+    c.tick(snapshot(epoch), snapshot(epoch), epoch + 1000000, 0);
+    auto remapped = snapshot(epoch);
+    remapped.snapshot_timestamp_ns += 1000;
+    for (auto& frame : remapped.frames) frame.timestamp_ns += 1000;
+    d = c.tick(remapped, remapped, epoch + 2000000, 100000000);
+    require(d.fault.empty(), "clock refinement preserves immutable sensor frame identity");
+    remapped.frames.back().sensor_timestamp_ns += 1;
+    d = c.tick(remapped, remapped, epoch + 2000000, 200000000);
+    require(!d.fault.empty(), "same sequence with changed sensor timestamp is rejected");
     c.reset(0);
     d = c.tick({}, {}, epoch, 31000000000);
-    require(d.fault == "startup convergence timeout", "startup has bounded duration");
+    require(d.fault.empty() && !d.ready,
+            "startup duration belongs to the session rather than the phase controller");
     c.reset();
     c.tick(snapshot(epoch), snapshot(epoch, 4000000), epoch + 5000000, 0);
     d = c.tick(snapshot(epoch + 6000000000, 0, 440), snapshot(epoch + 6000000000, 4000000, 440),

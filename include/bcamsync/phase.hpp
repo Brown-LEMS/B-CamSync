@@ -12,7 +12,6 @@ struct PhasePolicy {
     int tracking_delta_us = 200, tracking_frames = 8;
     double correction_interval_seconds = 2.0, settling_seconds = 0.25,
            application_delay_seconds = 0.25;
-    double startup_timeout_seconds = 30.0;
     int startup_max_corrections = 5;
     double excursion_ms = 2.0, excursion_timeout_seconds = 10.0;
     int no_progress_corrections = 3;
@@ -73,7 +72,7 @@ class PhaseController {
     std::uint64_t next_id_ = 1;
     bool ready_ = false;
     std::string state_, fault_;
-    std::optional<std::int64_t> started_, last_tick_, last_eval_, last_start_, excursion_start_;
+    std::optional<std::int64_t> last_tick_, last_eval_, last_start_, excursion_start_;
     std::int64_t after_ = 0, good_end_ = 0;
     std::optional<Pulse> pending_;
     std::optional<Measurement> previous_;
@@ -81,7 +80,7 @@ class PhaseController {
     int good_ = 0, attempts_ = 0, no_progress_ = 0;
     struct Latest {
         std::uint64_t sequence;
-        std::int64_t timestamp, received;
+        std::int64_t sensor_timestamp, received;
     };
     std::array<std::optional<Latest>, 2> latest_;
 };
