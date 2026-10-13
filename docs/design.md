@@ -42,7 +42,7 @@ The model separates four concepts:
 
 Each group has one reference (master) unit and the remaining units are followers (slaves). Any enumerated unit may be selected as the reference when establishing the group. Selection is independent of unit order or physical placement; all followers align to the selected reference. Reference and follower roles belong to units, independently of node roles: a node can host both a reference board and a follower board.
 
-Synchronization computation is centralized in one group coordinator, which maintains separate measurement and correction state for each follower against the same reference. Each node supplies local timing and executes local controls; a complete phase controller is not independently run on every node. The coordinator's placement and the network clock reference are deployment concerns separate from the unit's phase-reference role.
+Synchronization computation is centralized in one group coordinator, which maintains separate measurement and correction state for each follower against the same reference. Each node supplies local timing and executes local controls; a complete phase controller is not independently run on every node. In the initial deployment model, the node hosting the selected reference unit also hosts the coordinator and serves as the network clock reference. These remain distinct responsibilities even when colocated.
 
 | Configuration | Units | Clock arrangement | Phase arrangement |
 | --- | --- | --- | --- |
@@ -57,6 +57,18 @@ Closed-loop frame-phase control measures phase differences and drift, applies bo
 Synchronization runs continuously after startup calibration, independently of application frame consumption, processing, recording, and persistence. The library reports synchronization state and quality; applications decide how those reports affect their own workflows.
 
 The goal is sub-millisecond synchronization with explicit quality reporting. Synchronization observations and control state should be available alongside frame acquisition so applications can interpret the timing of their data.
+
+## Node clock and network management
+
+B-CamSync manages node clock preparation, startup alignment, readiness checks, and ongoing health observation. The initial Raspberry Pi implementation uses chrony, with deployment and privileged node-service operations handling system configuration and initial clock adjustment. Camera applications use the library without manually generating chrony configuration or invoking calibration commands.
+
+For a group spanning nodes, the reference node serves the common clock and other nodes synchronize to it. Group-relative time is sufficient for camera synchronization; an upstream UTC source is an explicit option for applications that need it. Initial clock stepping is completed before capture and calibration. During capture, ongoing clock correction is gradual. Units colocated on one node share its local time domain and do not require network clock configuration to synchronize with each other.
+
+Network and IP management are node-level platform responsibilities alongside clock management, separate from camera backends and synchronization algorithms. The library must support two nodes connected directly by Ethernet, with no external switch, router, or DHCP service. Configuration identifies the synchronization interface and associates stable node identities with reachable addresses. Clock-service and control-channel configuration use the same resolved topology.
+
+Network addressing is independent of the selected reference unit. Selecting another reference changes coordinator and clock-source roles while preserving node identity and address assignment. Node services provision and activate the synchronization network before clock alignment; frame-phase calibration follows clock readiness.
+
+The proposed first direct-link implementation uses a dedicated static IPv4 subnet and a persistent platform network profile per node, with no gateway or DNS on the synchronization link. Addresses are assigned to nodes and remain stable across reference selection. For Raspberry Pi OS Bookworm, the platform implementation can use NetworkManager. Address allocation, profile lifecycle, and integration with already configured networks remain technical decisions to finalize.
 
 ## Backend layering
 
@@ -80,4 +92,4 @@ That implementation provides phase estimation and control in `rpi/phase_sync.py`
 
 ## Current design status
 
-The independent library boundary, synchronization topology model, centralized computation with a freely selectable reference unit, core/integration separation, and multi-backend direction are established. Both managed and external acquisition are intended integration modes; the first implementation provides managed acquisition for Arducam on Raspberry Pi with local frame consumption and inter-node synchronization communication. Detailed API signatures, backend contracts, coordinator placement, clock provisioning, internal runtime architecture, packaging, and supported device/platform combinations remain to be decided. This repository currently contains project guidance and this design document; library code has not yet been extracted.
+The independent library boundary, synchronization topology model, centralized computation with a freely selectable reference unit, core/integration separation, and multi-backend direction are established. Both managed and external acquisition are intended integration modes; the first implementation provides managed acquisition for Arducam on Raspberry Pi with local frame consumption and inter-node synchronization communication. The reference node hosts coordination and clock service; node-level clock and network management include direct Ethernet deployment. Detailed API signatures, backend contracts, network address allocation and profile lifecycle, internal runtime architecture, packaging, and supported device/platform combinations remain to be decided. This repository currently contains project guidance and this design document; library code has not yet been extracted.
