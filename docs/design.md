@@ -31,6 +31,10 @@ Applications consume frames locally on the node hosting their cameras. Across no
 
 Each node operates local acquisition, timing observation, and correction execution for its units. One coordinator per synchronization group performs phase estimation and correction decisions centrally, using local and remote observations. Nodes hosting followers execute the coordinator's commands and return completion feedback. Public frame access presents the local camera views, while group status describes the relevant synchronization state.
 
+The primary frame-delivery unit is one board frame packet containing its four camera views, board identity, frame sequence, and timing metadata. The views refer to the same captured board frame and retain its storage. Automatic assembly of corresponding frames from multiple local boards is outside the first frame-access contract.
+
+Frame consumption follows the pull model of [OpenCV VideoCapture](https://docs.opencv.org/4.x/d8/dfe/classcv_1_1VideoCapture.html): applications call a read operation to obtain a frame packet, with acquisition and synchronization continuing independently. OpenCV's read implementation delegates grabbing and retrieval to its backend; it does not define one universal slow-consumer buffering policy. The exact bounded buffering and frame-skipping policy for B-CamSync remains to be finalized, with delivered capture sequences exposing any discontinuities.
+
 ## Synchronization model
 
 The model separates four concepts:
@@ -104,11 +108,11 @@ These checks are introduced with implementation and form the native validation s
 
 The first implementation must be usable for a complete real-device workflow. It includes a buildable and installable C++ library and Python interface, an Arducam acquisition backend, multi-unit topology configuration, centralized ongoing phase control, node networking and clock setup, local frame consumption, and orderly shutdown. User examples and device validation tools use B-CamSync's own public interfaces and do not depend on BAPD8's acquisition application.
 
-The intended topology coverage comprises eight cameras across two nodes with one board each, eight cameras on one node with two boards, and sixteen cameras across two nodes with two boards each. Real-device validation is performed on the supplied hardware; the available Pi models, board and camera variants, installed SDK/driver stack, and device access must be identified before backend implementation is finalized.
+The intended topology coverage comprises eight cameras across two nodes with one board each, eight cameras on one node with two boards, and sixteen cameras across two nodes with two boards each. The first real-device baseline matches the current BAPD8 deployment: two Raspberry Pi 4 nodes, one B0267 four-camera board per node, Raspberry Pi OS Bookworm arm64, and the compatible installed Arducam/libcamera stack. Device preparation and real-camera runs are performed by the user; the agent does not connect to or operate the nodes. The library includes examples and operator-run validation tools for that workflow, while topology configuration supports multiple units per node.
 
 Device validation exercises installation, Ethernet direct-link preparation for multi-node configurations, clock convergence, startup phase calibration, local delivery of every configured camera view, continuous phase tracking, correction and restoration, and repeated shutdown and restart. Reference selection is changed between sessions to exercise the same topology with a different master unit. Software ownership and sanitizer checks accompany the implementation. Runtime throughput, synchronization-window metrics, and optical observations are recorded as distinct measurements using release builds where timing is measured.
 
-Frame delivery granularity, slow-consumer behavior, behavior on synchronization or network failure, capture settings, and acceptance duration and thresholds remain to be finalized. These affect the public contract and the device acceptance workload. Implementation is complete when the library and deployment flow are ready for the requested device checks; successful device checks are reported separately with the hardware and results actually exercised.
+The board-level frame packet and operator-run device validation are established. Exact slow-consumer buffering, behavior on synchronization or network failure, capture settings, and acceptance duration and thresholds remain to be finalized. These affect the public contract and the device acceptance workload. Implementation is complete when the library and deployment flow are ready for the requested device checks; successful device checks are reported separately with the hardware and results actually exercised.
 
 ## Implementation background
 
