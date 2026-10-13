@@ -17,279 +17,92 @@ defaults:
     shell: bash
 
 jobs:
-  software:
-    name: Software and packages (${{ matrix.runner }})
+  gcc:
+    name: Debian 12 GCC validation (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [ubuntu-24.04, ubuntu-24.04-arm]
-    env:
-      CC: clang-18
-      CXX: clang++-18
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-      - name: Install toolchain and create project environment
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-18 clang-tidy-18 cmake ninja-build nlohmann-json3-dev
-          python -m venv .venv
-          .venv/bin/python -m pip install 'pybind11>=3.0' numpy scikit-build-core build ninja
-      - name: Build software backend and Python bindings
-        run: |
-          cmake -S . -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-            -DBCAMSYNC_WITH_LIBCAMERA=OFF -DBCAMSYNC_BUILD_TESTS=ON \
-            -DPython_EXECUTABLE="$PWD/.venv/bin/python" \
-            -Dpybind11_DIR="$(.venv/bin/python -m pybind11 --cmakedir)" \
-            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/bcamsync-install" \
-            -DCMAKE_INSTALL_LIBDIR=lib
-          cmake --build build --parallel 2
-      - name: Run native, Python ownership, and workflow tests
-        run: ctest --test-dir build --output-on-failure --timeout 120
-      - name: Analyze native ownership and error paths
-        if: matrix.runner == 'ubuntu-24.04'
-        run: |
-          clang-tidy-18 -p build \
-            --checks='-*,clang-analyzer-*,bugprone-use-after-move,bugprone-dangling-handle' \
-            --header-filter='.*bcamsync/.*' --warnings-as-errors='*' \
-            src/types.cpp src/phase.cpp src/wire.cpp src/process.cpp src/session.cpp src/fake.cpp
-      - name: Install C++ package and build an external consumer
-        run: |
-          cmake --install build
-          mkdir -p "$RUNNER_TEMP/consumer"
-          cat > "$RUNNER_TEMP/consumer/CMakeLists.txt" <<'CMAKE'
-          cmake_minimum_required(VERSION 3.18)
-          project(BCamSyncConsumer LANGUAGES CXX)
-          find_package(BCamSync CONFIG REQUIRED)
-          add_executable(consumer main.cpp)
-          target_compile_features(consumer PRIVATE cxx_std_17)
-          target_link_libraries(consumer PRIVATE BCamSync::bcamsync)
-          CMAKE
-          cat > "$RUNNER_TEMP/consumer/main.cpp" <<'CPP'
-          #include <bcamsync/session.hpp>
-          #include <chrono>
-          #include <stdexcept>
-          int main(int argc, char **argv) {
-              if (argc != 2) throw std::runtime_error("Configuration path required");
-              auto config = bcamsync::Config::from_file(argv[1]);
-              config.backend = "fake";
-              for (auto &node : config.nodes) node.address = "127.0.0.1";
-              for (auto &unit : config.units) { unit.width = 32; unit.height = 8; }
-              bcamsync::Session session(config, "node-a");
-              session.start();
-              if (!session.wait_ready(std::chrono::seconds(20))) throw std::runtime_error("Readiness timeout");
-              for (const auto &unit : config.units) {
-                  const auto packet = session.read(unit.id, std::chrono::seconds(1));
-                  if (!packet || packet->views != 4 || packet->storage->pixels.size() != 256)
-                      throw std::runtime_error("Invalid board packet");
-              }
-              session.stop();
-              const auto status = session.status();
-              if (!status.fault.empty() || status.ready || status.state != "stopped")
-                  throw std::runtime_error("Unclean session shutdown");
-          }
-          CPP
-          cmake -S "$RUNNER_TEMP/consumer" -B "$RUNNER_TEMP/consumer/build" -G Ninja \
-            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/bcamsync-install"
-          cmake --build "$RUNNER_TEMP/consumer/build" --parallel 2
-          "$RUNNER_TEMP/consumer/build/consumer" "$PWD/examples/configs/one_node_two_boards.json"
-      - name: Build and install Python wheel
-        run: |
-          .venv/bin/python -m build --wheel --outdir dist \
-            --config-setting=cmake.define.BCAMSYNC_WITH_LIBCAMERA=OFF
-          .venv/bin/python -m pip install --force-reinstall --no-deps dist/*.whl
-      - name: Test installed wheel through public fake sessions
-        run: |
-          .venv/bin/python -m unittest discover -s tests -p test_fake_python.py -v
-      - name: Exercise two public fake nodes over TCP
-        run: |
-          .venv/bin/python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-          value = json.loads(Path("examples/configs/two_nodes_two_boards.json").read_text())
-          value["backend"] = "fake"
-          for index, node in enumerate(value["nodes"]):
-              node["address"], node["port"] = "127.0.0.1", 58200 + index
-          for unit in value["units"]:
-              unit["width"], unit["height"] = 32, 8
-          Path(os.environ["RUNNER_TEMP"], "fake-two-nodes.json").write_text(json.dumps(value))
-          PY
-          timeout 90s .venv/bin/python examples/capture.py "$RUNNER_TEMP/fake-two-nodes.json" node-b --seconds 3 > "$RUNNER_TEMP/fake-follower.log" 2>&1 &
-          follower_pid=$!
-          trap 'if kill -0 "$follower_pid" 2>/dev/null; then kill "$follower_pid"; fi' EXIT
-          timeout 90s .venv/bin/python examples/capture.py "$RUNNER_TEMP/fake-two-nodes.json" node-a --seconds 3 > "$RUNNER_TEMP/fake-coordinator.log" 2>&1
-          wait "$follower_pid"
-          trap - EXIT
-          cat "$RUNNER_TEMP/fake-coordinator.log" "$RUNNER_TEMP/fake-follower.log"
-      - name: Preserve integration logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: software-${{ matrix.runner }}
-          path: |
-            build/Testing/Temporary/LastTest.log
-            ${{ runner.temp }}/fake-*.log
-
-  sdk-compatibility:
-    name: Official libcamera 0.5.2 compile (${{ matrix.runner }})
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 25
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [ubuntu-24.04, ubuntu-24.04-arm]
-    env:
-      CC: clang-18
-      CXX: clang++-18
-      PKG_CONFIG_PATH: ${{ runner.temp }}/libcamera-install/lib/pkgconfig
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-      - name: Install SDK build dependencies in a project environment
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-18 clang-tidy-18 cmake pkg-config libyaml-dev libudev-dev nlohmann-json3-dev
-          python -m venv .venv
-          .venv/bin/python -m pip install meson ninja jinja2 PyYAML ply
-      - name: Build pinned official SDK
-        run: |
-          git clone --depth 1 --branch v0.5.2 https://github.com/libcamera-org/libcamera.git "$RUNNER_TEMP/libcamera"
-          export PATH="$PWD/.venv/bin:$PATH"
-          .venv/bin/meson setup "$RUNNER_TEMP/libcamera-build" "$RUNNER_TEMP/libcamera" \
-            --prefix="$RUNNER_TEMP/libcamera-install" --libdir=lib --buildtype=release \
-            -Dpipelines=uvcvideo -Dipas=[] -Dcam=disabled -Dqcam=disabled \
-            -Ddocumentation=disabled -Dgstreamer=disabled -Dlc-compliance=disabled \
-            -Dpycamera=disabled -Dtracing=disabled -Dv4l2=disabled -Dtest=false
-          .venv/bin/meson compile -C "$RUNNER_TEMP/libcamera-build" -j 2
-          .venv/bin/meson install -C "$RUNNER_TEMP/libcamera-build"
-          pkg-config --modversion libcamera
-      - name: Compile real Arducam source and capture executable
-        run: |
-          cmake -S . -B build-hardware -G Ninja \
-            -DCMAKE_MAKE_PROGRAM="$PWD/.venv/bin/ninja" \
-            -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-            -DBCAMSYNC_WITH_LIBCAMERA=ON -DBCAMSYNC_BUILD_PYTHON=OFF \
-            -DBCAMSYNC_BUILD_TESTS=OFF
-          cmake --build build-hardware --parallel 2
-      - name: Analyze SDK resource lifetimes
-        run: |
-          clang-tidy-18 -p build-hardware \
-            --checks='-*,clang-analyzer-*,bugprone-use-after-move,bugprone-dangling-handle' \
-            --header-filter='.*bcamsync/.*' --warnings-as-errors='*' src/arducam.cpp
-      # This job checks the official SDK API and Linux architectures; device testing uses the installed Arducam vendor SDK.
-
-  sanitizers:
-    name: Native sanitizer (${{ matrix.sanitizer }})
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
         include:
-          - sanitizer: address
-            python: 'ON'
-          - sanitizer: thread
-            python: 'OFF'
+          - runner: ubuntu-24.04
+            platform: linux/amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
     env:
-      CC: clang-18
-      CXX: clang++-18
-      ASAN_OPTIONS: detect_leaks=1:detect_stack_use_after_return=1:halt_on_error=1
-      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-      TSAN_OPTIONS: halt_on_error=1
+      BCAMSYNC_TOOLCHAIN: gcc
+      BCAMSYNC_PLATFORM: ${{ matrix.platform }}
+      BUILDKIT_PROGRESS: plain
     steps:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-      - name: Prepare instrumented Linux builds
+      - name: Build shared Debian development image
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-18 libclang-rt-18-dev cmake ninja-build nlohmann-json3-dev
-          # Clang 18 shadow-memory layout requires the traditional x86-64 mmap range.
-          sudo sysctl -w vm.mmap_rnd_bits=28
-          python -m venv .venv
-          .venv/bin/python -m pip install 'pybind11>=3.0' numpy
-      - name: Build with separate sanitizer instrumentation
+          bash tools/container.sh image 2>&1 | tee "$RUNNER_TEMP/bcamsync-image.log"
+      - name: Validate software, Release, SDK, and package delivery
         run: |
-          cmake -S . -B build-sanitizer -G Ninja \
-            -DCMAKE_BUILD_TYPE=Debug -DBCAMSYNC_WITH_LIBCAMERA=OFF \
-            -DBCAMSYNC_BUILD_TESTS=ON -DBCAMSYNC_BUILD_PYTHON=${{ matrix.python }} \
-            -DBCAMSYNC_SANITIZER=${{ matrix.sanitizer }} \
-            -DPython_EXECUTABLE="$PWD/.venv/bin/python" \
-            -Dpybind11_DIR="$(.venv/bin/python -m pybind11 --cmakedir)"
-          cmake --build build-sanitizer --parallel 2
-      - name: Run instrumented native tests with leak checking
-        run: |
-          ctest --test-dir build-sanitizer --output-on-failure --timeout 180 \
-            -E '^(python_ownership|fake_python|platform_plans|device_workflow)$'
-      - name: Run Python ownership against the instrumented extension
-        if: matrix.sanitizer == 'address'
-        run: |
-          # Preload the matching Clang runtime into stock CPython. Native-only tests above retain LeakSanitizer.
-          # Interpreter-global Python/NumPy allocations are outside this ownership check.
-          export LD_PRELOAD="$(clang++-18 -print-file-name=libclang_rt.asan-x86_64.so)"
-          export ASAN_OPTIONS=detect_leaks=0:detect_stack_use_after_return=1:halt_on_error=1
-          ctest --test-dir build-sanitizer --output-on-failure --timeout 180 -R '^(python_ownership|fake_python)$'
-      - name: Preserve sanitizer test logs
+          for action in software release sdk package; do
+            bash tools/container.sh "$action" 2>&1 | tee "$RUNNER_TEMP/bcamsync-$action.log"
+          done
+      - name: Preserve validation logs and deliverable packages
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sanitizer-${{ matrix.sanitizer }}
-          path: build-sanitizer/Testing/Temporary/LastTest.log
-
-  fuzz:
-    name: LLVM timing and control-message fuzzing
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    env:
-      CC: clang-18
-      CXX: clang++-18
-      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
-      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          persist-credentials: false
-      - name: Install LLVM fuzzing toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-18 libclang-rt-18-dev cmake ninja-build nlohmann-json3-dev
-          sudo sysctl -w vm.mmap_rnd_bits=28
-      - name: Build libFuzzer target
-        run: |
-          cmake -S . -B build-fuzz -G Ninja \
-            -DBCAMSYNC_WITH_LIBCAMERA=OFF -DBCAMSYNC_BUILD_PYTHON=OFF \
-            -DBCAMSYNC_BUILD_FUZZER=ON
-          cmake --build build-fuzz --target fuzz_timing --parallel 2
-      - name: Fuzz for a bounded 60 seconds
-        run: |
-          mkdir -p "$RUNNER_TEMP/fuzz-corpus" "$RUNNER_TEMP/fuzz-artifacts"
-          printf '\000' > "$RUNNER_TEMP/fuzz-corpus/timing"
-          printf '\001%s' '{"state":"tracking","ready":true,"fault":"","units":[]}' > "$RUNNER_TEMP/fuzz-corpus/status"
-          printf '\001%s' '{"unit":"follower","boundary":1780000000000000000,"frames":[],"correction":{"state":"idle","id":0,"restored":0}}' > "$RUNNER_TEMP/fuzz-corpus/snapshot"
-          timeout 120s build-fuzz/fuzz_timing "$RUNNER_TEMP/fuzz-corpus" \
-            -max_total_time=60 -max_len=16384 -timeout=5 -rss_limit_mb=2048 \
-            -print_final_stats=1 -artifact_prefix="$RUNNER_TEMP/fuzz-artifacts/" 2>&1 | tee "$RUNNER_TEMP/fuzz.log"
-      - name: Preserve fuzz corpus, failures, and statistics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fuzz-timing
+          name: gcc-${{ matrix.runner }}
           path: |
-            ${{ runner.temp }}/fuzz-corpus
-            ${{ runner.temp }}/fuzz-artifacts
-            ${{ runner.temp }}/fuzz.log
+            build-linux/logs/**
+            build-linux/packages/**
+            build-linux/**/Testing/Temporary/LastTest.log
+            ${{ runner.temp }}/bcamsync-*.log
+
+  clang:
+    name: Debian 12 Clang safety validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      BCAMSYNC_TOOLCHAIN: clang
+      BCAMSYNC_PLATFORM: linux/amd64
+      BUILDKIT_PROGRESS: plain
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Build shared Debian development image
+        run: |
+          bash tools/container.sh image 2>&1 | tee "$RUNNER_TEMP/bcamsync-image.log"
+      - name: Validate software through Clang
+        run: |
+          bash tools/container.sh software 2>&1 | tee "$RUNNER_TEMP/bcamsync-software.log"
+      - name: Compile official libcamera SDK interface through Clang
+        run: |
+          bash tools/container.sh sdk 2>&1 | tee "$RUNNER_TEMP/bcamsync-sdk.log"
+      - name: Prepare sanitizer shadow-memory address space
+        # Debian Clang 16 uses the traditional x86-64 mmap layout on this ephemeral runner.
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+      - name: Check address, undefined behavior, and frame ownership
+        run: |
+          bash tools/container.sh address 2>&1 | tee "$RUNNER_TEMP/bcamsync-address.log"
+      - name: Check thread synchronization
+        run: |
+          bash tools/container.sh thread 2>&1 | tee "$RUNNER_TEMP/bcamsync-thread.log"
+      - name: Run bounded timing and control-message fuzzing
+        run: |
+          bash tools/container.sh fuzz 2>&1 | tee "$RUNNER_TEMP/bcamsync-fuzz.log"
+      - name: Analyze ownership and SDK resource paths
+        run: |
+          bash tools/container.sh analyze 2>&1 | tee "$RUNNER_TEMP/bcamsync-analyze.log"
+      - name: Preserve safety logs, failures, and packages
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clang-safety
+          path: |
+            build-linux/logs/**
+            build-linux/packages/**
+            build-linux/**/Testing/Temporary/LastTest.log
+            build-linux/**/findings/**
+            build-linux/**/corpus/**
+            ${{ runner.temp }}/bcamsync-*.log
+
+  # SDK checks use the image's pinned official libcamera 0.5.2; Arducam device validation uses the deployed vendor SDK.
