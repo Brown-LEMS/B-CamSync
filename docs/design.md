@@ -68,7 +68,7 @@ Network and IP management are node-level platform responsibilities alongside clo
 
 Network addressing is independent of the selected reference unit. Selecting another reference changes coordinator and clock-source roles while preserving node identity and address assignment. Node services provision and activate the synchronization network before clock alignment; frame-phase calibration follows clock readiness.
 
-The proposed first direct-link implementation uses a dedicated static IPv4 subnet and a persistent platform network profile per node, with no gateway or DNS on the synchronization link. Addresses are assigned to nodes and remain stable across reference selection. For Raspberry Pi OS Bookworm, the platform implementation can use NetworkManager. Address allocation, profile lifecycle, and integration with already configured networks remain technical decisions to finalize.
+The first direct-link implementation uses a dedicated static IPv4 subnet and a persistent platform network profile per node, with no gateway or DNS on the synchronization link. Node identity, synchronization interface, and subnet configuration determine the node addresses and the corresponding clock and control endpoints. Addresses are assigned to nodes and remain stable across reference selection. The Raspberry Pi OS Bookworm platform implementation uses NetworkManager. Deployments with an already configured network can explicitly supply their existing addresses. Detailed address allocation and profile lifecycle remain technical decisions to finalize.
 
 ## Backend layering
 
