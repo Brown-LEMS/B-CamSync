@@ -7,6 +7,7 @@
 #include <libcamera/control_ids.h>
 #include <libcamera/controls.h>
 #include <libcamera/formats.h>
+#include <libcamera/framebuffer.h>
 #include <libcamera/framebuffer_allocator.h>
 #include <libcamera/request.h>
 
@@ -458,5 +459,14 @@ std::vector<std::unique_ptr<AcquisitionBackend>> make_arducam_backends(const std
     result.reserve(units.size());
     for (const auto &unit : units) result.push_back(std::make_unique<ArducamBackend>(unit, manager));
     return result;
+}
+
+std::vector<std::string> enumerate_arducam_cameras(const std::string &pipeline_config) {
+    Manager manager(pipeline_config);
+    const auto cameras = manager.camera_manager.cameras();
+    std::vector<std::string> ids;
+    ids.reserve(cameras.size());
+    for (const auto &camera : cameras) ids.push_back(camera->id());
+    return ids;
 }
 }
