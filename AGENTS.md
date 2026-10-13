@@ -9,7 +9,7 @@
 - Before using Python, check for a project virtual environment first and a Conda environment second. Always ask before using system Python.
 - Request installation of missing required dependencies instead of substituting or degrading the implementation.
 - Add fine-grained progress reporting to operations expected to take a long time.
-- For research code, do not add tests or run local smoke tests unless explicitly requested. When validation is requested, check observable behavior and distinguish software checks from device and optical measurements.
+- Add or update meaningful tests alongside implemented behavior and fixes, and run relevant checks. Test observable behavior and distinguish software checks from device and optical measurements.
 - Attribute measured results to their experiments and state targets and readiness thresholds separately.
 - When consulting `bapd8_acquisition`, follow its local instructions and inspect only RPi and relevant shared components. Exclude legacy Jetson and Pico materials, and do not modify that repository without an explicit request.
 - Make small, focused Git commits. Review staged changes and complete applicable requested checks before committing; stage only task-related files and preserve others' work.
