@@ -8,8 +8,7 @@ import argparse
 import json
 from pathlib import Path
 
-from bcamsync import Config
-from bcamsync.management import GroupClient, NodeTarget
+from bcamsync_host import GroupClient, NodeTarget
 
 
 def main() -> None:
@@ -19,7 +18,7 @@ def main() -> None:
     parser.add_argument("command", choices=["check", "start", "status", "stop"])
     args = parser.parse_args()
     targets = {node_id: NodeTarget(**target) for node_id, target in json.loads(args.targets.read_text()).items()}
-    client = GroupClient(Config.from_file(args.config), targets)
+    client = GroupClient(json.loads(args.config.read_text()), targets)
     result = getattr(client, args.command)()
     print(json.dumps(result, indent=2, allow_nan=False))
 
