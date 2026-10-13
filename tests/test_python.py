@@ -8,7 +8,7 @@ import unittest
 
 import numpy as np
 
-from bcamsync import Config
+from bcamsync import Config, FakeOptions
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,7 +22,10 @@ class ConfigTests(unittest.TestCase):
                 config = Config.from_file(ROOT / "examples" / "configs" / f"{filename}.json")
                 self.assertEqual((len(config.nodes), len(config.units)), counts)
                 self.assertEqual(config.reference_node(), "node-a")
-                self.assertEqual(config.unit(config.reference_unit).views, 4)
+                self.assertEqual(config.fps, 40)
+                unit = config.unit(config.reference_unit)
+                for field in ("width", "height", "views", "fps"):
+                    self.assertFalse(hasattr(unit, field))
 
     def test_reference_selection_and_invalid_configuration(self):
         config = Config.from_file(ROOT / "examples" / "configs" / "two_nodes_one_board.json")
@@ -32,6 +35,19 @@ class ConfigTests(unittest.TestCase):
         config.reference_unit = "missing"
         with self.assertRaises(ValueError):
             config.validate()
+
+    def test_nested_synthetic_options_are_writable(self):
+        config = Config.from_file(ROOT / "examples" / "configs" / "fake_one_node.json")
+        unit = config.unit("board-a2")
+        unit.fake = FakeOptions()
+        unit.fake.width = 32
+        unit.fake.height = 8
+        unit.fake.initial_phase_us = 1234
+        unit.fake.drift_ppm = 25
+        config.units = [config.unit("board-a1"), unit]
+        config.validate()
+        self.assertEqual(config.unit("board-a2").fake.width, 32)
+        self.assertEqual(config.unit("board-a2").fake.initial_phase_us, 1234)
 
 
 class FrameOwnershipTests(unittest.TestCase):

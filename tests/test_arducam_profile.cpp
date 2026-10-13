@@ -10,6 +10,8 @@ void require(bool condition, const char *message) {
 }
 
 void profile_selection() {
+    require(bcamsync::detail::arducam_width == 5120 && bcamsync::detail::arducam_height == 800 &&
+                bcamsync::detail::arducam_views == 4, "B0267 profile owns packed four-view geometry");
     require(std::string(arducam_pipeline("arducam_b0267_pi4")) ==
                 "/usr/share/libcamera/pipeline/rpi/vc4/rpi_apps.yaml",
             "Pi4 must select the VC4 pipeline");

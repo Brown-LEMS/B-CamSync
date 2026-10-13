@@ -120,12 +120,13 @@ def validate_run(config, node: str, duration: float, run: int, report: dict) -> 
                 if packet.unit_id != unit_id:
                     raise RuntimeError(f"Wrong packet identity for {unit_id}")
                 views = packet.views
-                if len(views) != unit.views:
+                if len(views) != 4:
                     raise RuntimeError(f"Wrong camera view count for {unit_id}")
+                width, height = ((unit.fake.width, unit.fake.height) if config.backend == "fake" else (5120, 800))
                 for view in views:
-                    if view.shape != (unit.height, unit.width // unit.views) or view.dtype != np.uint8:
+                    if view.shape != (height, width // 4) or view.dtype != np.uint8:
                         raise RuntimeError(f"Wrong view shape or pixel type for {unit_id}")
-                    if view.flags.writeable or view.strides != (unit.width, 1):
+                    if view.flags.writeable or view.strides != (width, 1):
                         raise RuntimeError(f"Wrong view ownership or stride for {unit_id}")
                 current = stats[unit_id]
                 if current["last_sequence"] is not None:

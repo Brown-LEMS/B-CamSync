@@ -2,12 +2,39 @@
   "group_id": "fake-local",
   "backend": "fake",
   "reference_unit": "board-a1",
-  "network": {"managed": false},
-  "nodes": [{"id": "node-a", "address": "127.0.0.1", "interface": "lo", "port": 58181}],
-  "units": [
-    {"id": "board-a1", "node_id": "node-a", "camera_id": "fake-a1", "width": 64, "height": 16, "views": 4, "fps": 40, "queue_capacity": 3, "pool_capacity": 8, "fake": {"initial_phase_us": 0, "drift_ppm": 0}},
-    {"id": "board-a2", "node_id": "node-a", "camera_id": "fake-a2", "width": 64, "height": 16, "views": 4, "fps": 40, "queue_capacity": 3, "pool_capacity": 8, "fake": {"initial_phase_us": 2000, "drift_ppm": 10}}
+  "fps": 40,
+  "network": {
+    "mode": "existing"
+  },
+  "nodes": [
+    {
+      "id": "node-a",
+      "address": "127.0.0.1",
+      "port": 58181
+    }
   ],
-  "request_timeout_seconds": 2,
-  "startup_timeout_seconds": 45
+  "units": [
+    {
+      "id": "board-a1",
+      "node_id": "node-a",
+      "camera_id": "fake-a1",
+      "fake": {
+        "width": 64,
+        "height": 16,
+        "initial_phase_us": 0,
+        "drift_ppm": 0
+      }
+    },
+    {
+      "id": "board-a2",
+      "node_id": "node-a",
+      "camera_id": "fake-a2",
+      "fake": {
+        "width": 64,
+        "height": 16,
+        "initial_phase_us": 2000,
+        "drift_ppm": 10
+      }
+    }
+  ]
 }

@@ -14,7 +14,8 @@ from uuid import uuid4
 import numpy as np
 
 from bcamsync import Config
-from bcamsync.management import GroupClient, NodeService, NodeTarget, request_local
+from bcamsync.management import NodeService, request_local
+from bcamsync_host import GroupClient, NodeTarget
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,8 +34,10 @@ def configuration(name: str):
     # initial phase correction and drift. Aligned boards shorten repeated starts.
     units = config.units
     for unit in units:
-        unit.fake_initial_phase_us = 0
-        unit.fake_drift_ppm = 0
+        fake = unit.fake
+        fake.initial_phase_us = 0
+        fake.drift_ppm = 0
+        unit.fake = fake
     config.units = units
     config.validate()
     return config
@@ -67,6 +70,8 @@ class LocalServiceTests(unittest.TestCase):
                 report = request_local(path, "configuration", timeout_seconds=5)
                 self.assertEqual(report["node_id"], "node-a")
                 self.assertEqual(report["config"], json.loads(config.to_json()))
+                self.assertEqual(report["sync_contract"], json.loads(config.sync_json()))
+                self.assertEqual(report["reference_node"], config.reference_node())
                 self.assertIsNone(service.session)
                 self.assertFalse(request_local(path, "status", timeout_seconds=5)["active"])
                 owner = str(uuid4())
@@ -145,7 +150,7 @@ class GroupManagementTests(unittest.TestCase):
         targets = {node.id: NodeTarget(f"{node.id}.invalid", "/opt/bcamsync/.venv/bin/python",
                                       str(Path(self.directory.name) / f"{node.id}.sock"))
                    for node in self.config.nodes}
-        self.client = GroupClient(self.config, targets)
+        self.client = GroupClient(json.loads(self.config.to_json()), targets)
         self.calls = []
 
     def tearDown(self):
@@ -179,9 +184,23 @@ class GroupManagementTests(unittest.TestCase):
         differing.group_id = "different-group"
         self.services["node-b"] = NodeService(differing, "node-b", Path(self.directory.name) / "node-b.sock")
         with patch.object(self.client, "_request", side_effect=self.local_request):
-            with self.assertRaisesRegex(RuntimeError, "configuration differs"):
+            with self.assertRaisesRegex(RuntimeError, "contract differs"):
                 self.client.start()
         self.assertTrue(all(command == "configuration" for _, command, _ in self.calls))
+        self.assertTrue(all(service.session is None for service in self.services.values()))
+
+    def test_local_capture_settings_can_differ_with_matching_sync_contract(self):
+        differing = configuration("fake_two_nodes.json")
+        units = differing.units
+        units[0].queue_capacity = 5
+        units[0].exposure_us = 2000
+        units[1].analogue_gain = 2
+        differing.units = units
+        self.services["node-b"] = NodeService(differing, "node-b", Path(self.directory.name) / "node-b.sock")
+        with patch.object(self.client, "_request", side_effect=self.local_request):
+            report = self.client.check()
+        self.assertTrue(report["sync_contract_matches"])
+        self.assertNotEqual(report["nodes"]["node-a"]["config"], report["nodes"]["node-b"]["config"])
         self.assertTrue(all(service.session is None for service in self.services.values()))
 
     def test_active_node_is_not_restarted_or_stopped_by_new_start(self):

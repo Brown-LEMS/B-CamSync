@@ -8,6 +8,7 @@
 #include <ctime>
 #include <deque>
 #include <mutex>
+#include <limits>
 #include <stdexcept>
 #include <thread>
 
@@ -30,6 +31,7 @@ CorrectionStatus correction_status(const PhaseActuator::State& state) {
 class FakeBackend final : public AcquisitionBackend {
     UnitConfig config_;
     FakeOptions options_;
+    unsigned fps_;
     mutable std::mutex lifecycle_mutex_, state_mutex_;
     std::condition_variable changed_;
     std::atomic<bool> stopping_{true};
@@ -43,7 +45,7 @@ class FakeBackend final : public AcquisitionBackend {
     std::int64_t mapping_offset_ns_ = 0;
 
     std::int64_t domain_now() const { return common_time_ ? realtime_ns() : sensor_clock_ns(); }
-    std::int64_t baseline_us() const { return 1000000 / config_.fps; }
+    std::int64_t baseline_us() const { return 1000000 / fps_; }
     void capture(std::int64_t sensor_ns, std::int64_t deadline_ns) noexcept {
         try {
             std::uint64_t sequence = 0;
@@ -91,9 +93,9 @@ class FakeBackend final : public AcquisitionBackend {
                     packet->requested_gain = packet->analogue_gain = config_.analogue_gain;
                     packet->gain_locked = true;
                     packet->gain_state = "fake";
-                    packet->width = config_.width;
-                    packet->height = config_.height;
-                    packet->views = config_.views;
+                    packet->width = options_.width;
+                    packet->height = options_.height;
+                    packet->views = 4;
                     packet->storage = std::move(storage);
                     images_.publish(std::move(packet));
                 }
@@ -127,14 +129,14 @@ class FakeBackend final : public AcquisitionBackend {
     }
 
   public:
-    FakeBackend(UnitConfig config, FakeOptions options)
-        : config_(std::move(config)), options_(options) {
-        if (config_.id.empty() || !config_.width || !config_.height || config_.views != 4 ||
-            config_.width % 4 ||
-            static_cast<std::uint64_t>(config_.width) * config_.height > 64 * 1024 * 1024 ||
-            !config_.fps || config_.fps > 45 || !config_.queue_capacity ||
-            config_.queue_capacity > 64 || config_.pool_capacity < config_.queue_capacity + 2 ||
-            config_.pool_capacity > 128)
+    FakeBackend(UnitConfig config, FakeOptions options, unsigned fps)
+        : config_(std::move(config)), options_(options), fps_(fps) {
+        const auto pixels = static_cast<std::uint64_t>(options_.width) * options_.height;
+        if (config_.id.empty() || !options_.width || !options_.height || options_.width % 4 ||
+            pixels > std::vector<std::uint8_t>{}.max_size() || !fps_ || fps_ > 1000000 ||
+            !config_.queue_capacity ||
+            static_cast<std::uint64_t>(config_.pool_capacity) <= config_.queue_capacity ||
+            pixels > std::numeric_limits<std::size_t>::max() / config_.pool_capacity)
             throw std::invalid_argument("Invalid fake capture settings");
         if (!std::isfinite(options_.drift_ppm) || std::abs(options_.drift_ppm) > 1000 ||
             options_.initial_phase_us < -1000000 || options_.initial_phase_us > 1000000)
@@ -147,7 +149,7 @@ class FakeBackend final : public AcquisitionBackend {
             throw std::runtime_error("Fake camera is already started; stop before restarting");
         auto actuator = std::make_unique<PhaseActuator>();
         actuator->bind(session, round);
-        images_.open(static_cast<std::size_t>(config_.width) * config_.height,
+        images_.open(static_cast<std::size_t>(options_.width) * options_.height,
                      config_.queue_capacity, config_.pool_capacity);
         try {
             actuator_ = std::move(actuator);
@@ -226,7 +228,7 @@ class FakeBackend final : public AcquisitionBackend {
         return correction_status(actuator_->adjust(session_id_, round_id_, pulse.correction_id,
                                                    pulse.delta_us, pulse.count, pulse.expires_ns,
                                                    domain_now(), monotonic_ns(), baseline_us(),
-                                                   baseline_us() - 1000, baseline_us() + 1000));
+                                                   std::max<std::int64_t>(1, baseline_us() - 1000), baseline_us() + 1000));
     }
     void cancel() override {
         std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
@@ -243,21 +245,21 @@ class FakeBackend final : public AcquisitionBackend {
 };
 } // namespace
 std::vector<std::unique_ptr<AcquisitionBackend>>
-make_fake_backends(const std::vector<UnitConfig>& units, const std::vector<FakeOptions>& options) {
+make_fake_backends(const std::vector<UnitConfig>& units, const std::vector<FakeOptions>& options, unsigned fps) {
     if (units.size() != options.size())
         throw std::invalid_argument("Fake options must match unit count");
     std::vector<std::unique_ptr<AcquisitionBackend>> result;
     result.reserve(units.size());
     for (std::size_t i = 0; i < units.size(); ++i)
-        result.push_back(std::make_unique<FakeBackend>(units[i], options[i]));
+        result.push_back(std::make_unique<FakeBackend>(units[i], options[i], fps));
     return result;
 }
 std::vector<std::unique_ptr<AcquisitionBackend>>
-make_fake_backends(const std::vector<UnitConfig>& units) {
+make_fake_backends(const std::vector<UnitConfig>& units, unsigned fps) {
     std::vector<FakeOptions> options;
     options.reserve(units.size());
     for (const auto& unit : units)
-        options.push_back({unit.fake_initial_phase_us, unit.fake_drift_ppm});
-    return make_fake_backends(units, options);
+        options.push_back(unit.fake);
+    return make_fake_backends(units, options, fps);
 }
 } // namespace bcamsync

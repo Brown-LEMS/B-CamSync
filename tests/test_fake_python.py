@@ -51,6 +51,7 @@ class FakePublicApiTests(unittest.TestCase):
             self.assertFalse(view.flags.writeable)
         self.assertGreater(packet.sensor_timestamp_ns, 0)
         self.assertGreater(packet.timestamp_ns, 0)
+        self.assertTrue(packet.clock_valid)
 
     def assert_ready_metrics(self, session):
         status = session.status()
@@ -73,8 +74,9 @@ class FakePublicApiTests(unittest.TestCase):
     def test_local_phase_correction_frame_retention_and_session_restart(self):
         config = config_from_example("fake_one_node.json")
         self.assertEqual(config.backend, "fake")
-        self.assertEqual(config.unit("board-a2").fake_initial_phase_us, 2000)
-        self.assertEqual(config.unit("board-a2").fake_drift_ppm, 10)
+        self.assertEqual(config.fps, 40)
+        self.assertEqual(config.unit("board-a2").fake.initial_phase_us, 2000)
+        self.assertEqual(config.unit("board-a2").fake.drift_ppm, 10)
         session = Session(config, "node-a")
         retained = {}
         try:

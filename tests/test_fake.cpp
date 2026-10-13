@@ -38,8 +38,8 @@ UnitConfig unit(const std::string& id) {
     config.id = id;
     config.node_id = "node";
     config.camera_id = id;
-    config.width = 32;
-    config.height = 8;
+    config.fake.width = 32;
+    config.fake.height = 8;
     config.queue_capacity = 2;
     config.pool_capacity = 4;
     return config;
@@ -51,7 +51,7 @@ void phase_and_packets() {
     std::cout << "checking autonomous fake capture, phase controls, and packet ownership\n"
               << std::flush;
     auto a = unit("reference"), b = unit("follower");
-    b.fake_initial_phase_us = 4000;
+    b.fake.initial_phase_us = 4000;
     auto cameras = make_fake_backends({a, b});
     auto &reference = *cameras[0], &follower = *cameras[1];
     reference.start("fake-session", 1, false);
@@ -148,7 +148,7 @@ void phase_and_packets() {
 void drift_and_validation() {
     std::cout << "checking explicit fake timing options\n" << std::flush;
     const auto config = unit("drifting");
-    auto cameras = make_fake_backends({config}, {{0, 80}});
+    auto cameras = make_fake_backends({config}, {{32, 8, 0, 80}});
     cameras[0]->start("drift-session", 1, true);
     await([&] { return cameras[0]->snapshot().frames.size() >= 8; }, 2s,
           "drifting sensor should produce frames");
@@ -160,13 +160,30 @@ void drift_and_validation() {
     require(std::abs(snapshot.snapshot_timestamp_ns - realtime_ns()) < 1000000000,
             "cross-node fake acquisition exposes the realtime common domain");
     cameras[0]->stop();
-    rejects([&] { make_fake_backends({config}, {}); });
-    rejects([&] { make_fake_backends({config}, {{0, 1001}}); });
-    rejects([&] { make_fake_backends({config}, {{std::numeric_limits<std::int64_t>::min(), 0}}); });
+    rejects([&] { make_fake_backends({config}, std::vector<FakeOptions>{}); });
+    rejects([&] { make_fake_backends({config}, {{32, 8, 0, 1001}}); });
+    rejects([&] { make_fake_backends({config}, {{32, 8, std::numeric_limits<std::int64_t>::min(), 0}}); });
     auto bad = config;
-    bad.width = 0;
+    bad.fake.width = 0;
     rejects([&] { make_fake_backends({bad}); });
     rejects([&] { cameras[0]->start("", 0, false); });
+    auto fast = make_fake_backends({config}, 80);
+    fast[0]->start("group-cadence", 1, false);
+    await([&] { return fast[0]->snapshot().frames.size() >= 3; }, 1s, "group FPS drives fake cadence");
+    const auto timing = fast[0]->snapshot();
+    require(timing.frames.back().requested_duration_us == 12500,
+            "group cadence replaces per-unit FPS and has no 45 FPS policy ceiling");
+    fast[0]->stop();
+    auto buffered = config;
+    buffered.queue_capacity = 65;
+    buffered.pool_capacity = 66;
+    auto ample = make_fake_backends({buffered});
+    ample[0]->start("larger-queue", 1, false);
+    require(static_cast<bool>(ample[0]->read(1s)), "storage policy accepts any representable pool larger than queue");
+    ample[0]->stop();
+    rejects([&] { make_fake_backends({config}, 0); });
+    buffered.pool_capacity = buffered.queue_capacity;
+    rejects([&] { make_fake_backends({buffered}); });
 }
 } // namespace
 int main() {

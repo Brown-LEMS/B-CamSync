@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential gcc-12 g++-12 cmake ninja-build pkg-config git ca-certificates \
     clang-16 clang-tidy-16 llvm-16 libclang-rt-16-dev \
     python3 python3-dev python3-venv \
-    nlohmann-json3-dev libyaml-dev libudev-dev \
+    nlohmann-json3-dev libyaml-dev libudev-dev libsystemd-dev network-manager chrony \
     && rm -rf /var/lib/apt/lists/*
 
 # The Linux environment has its own interpreter and packages.

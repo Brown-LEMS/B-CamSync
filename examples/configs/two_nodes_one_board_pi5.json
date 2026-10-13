@@ -1,22 +1,15 @@
 {
   "group_id": "lab",
   "reference_unit": "board-a1",
-  "network": {
-    "managed": true,
-    "subnet": "10.77.0.0/30"
-  },
+  "fps": 40,
   "nodes": [
     {
       "id": "node-a",
-      "address": "10.77.0.1",
-      "interface": "eth0",
-      "port": 58080
+      "interface": "eth0"
     },
     {
       "id": "node-b",
-      "address": "10.77.0.2",
-      "interface": "eth0",
-      "port": 58080
+      "interface": "eth0"
     }
   ],
   "units": [
@@ -24,35 +17,13 @@
       "id": "board-a1",
       "node_id": "node-a",
       "camera_id": "REPLACE_WITH_NODE_A_CAMERA_ID",
-      "width": 5120,
-      "height": 800,
-      "views": 4,
-      "fps": 40,
-      "exposure_us": 10000,
-      "analogue_gain": 1,
-      "queue_capacity": 4,
-      "pool_capacity": 12,
-      "profile": "arducam_b0267_pi5",
-      "auto_gain": true
+      "profile": "arducam_b0267_pi5"
     },
     {
       "id": "board-b1",
       "node_id": "node-b",
       "camera_id": "REPLACE_WITH_NODE_B_CAMERA_ID",
-      "width": 5120,
-      "height": 800,
-      "views": 4,
-      "fps": 40,
-      "exposure_us": 10000,
-      "analogue_gain": 1,
-      "queue_capacity": 4,
-      "pool_capacity": 12,
-      "profile": "arducam_b0267_pi5",
-      "auto_gain": true
+      "profile": "arducam_b0267_pi5"
     }
-  ],
-  "clock_max_offset_ms": 0.1,
-  "clock_max_age_seconds": 10,
-  "request_timeout_seconds": 2,
-  "startup_timeout_seconds": 60
+  ]
 }

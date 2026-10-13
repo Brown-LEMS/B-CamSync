@@ -50,28 +50,32 @@ PYBIND11_MODULE(_native, module) {
         .def_readwrite("address", &NodeConfig::address)
         .def_readwrite("interface", &NodeConfig::interface)
         .def_readwrite("port", &NodeConfig::port);
+    py::class_<FakeOptions>(module, "FakeOptions")
+        .def(py::init<>())
+        .def_readwrite("width", &FakeOptions::width)
+        .def_readwrite("height", &FakeOptions::height)
+        .def_readwrite("initial_phase_us", &FakeOptions::initial_phase_us)
+        .def_readwrite("drift_ppm", &FakeOptions::drift_ppm);
     py::class_<UnitConfig>(module, "UnitConfig")
         .def(py::init<>())
         .def_readwrite("id", &UnitConfig::id)
         .def_readwrite("node_id", &UnitConfig::node_id)
         .def_readwrite("camera_id", &UnitConfig::camera_id)
-        .def_readwrite("width", &UnitConfig::width)
-        .def_readwrite("height", &UnitConfig::height)
-        .def_readwrite("views", &UnitConfig::views)
-        .def_readwrite("fps", &UnitConfig::fps)
         .def_readwrite("profile", &UnitConfig::profile)
         .def_readwrite("exposure_us", &UnitConfig::exposure_us)
         .def_readwrite("analogue_gain", &UnitConfig::analogue_gain)
         .def_readwrite("auto_gain", &UnitConfig::auto_gain)
         .def_readwrite("queue_capacity", &UnitConfig::queue_capacity)
         .def_readwrite("pool_capacity", &UnitConfig::pool_capacity)
-        .def_readwrite("fake_initial_phase_us", &UnitConfig::fake_initial_phase_us)
-        .def_readwrite("fake_drift_ppm", &UnitConfig::fake_drift_ppm);
+        .def_readwrite("fake", &UnitConfig::fake);
     py::class_<Config>(module, "Config")
         .def(py::init<>())
         .def_readwrite("group_id", &Config::group_id)
         .def_readwrite("reference_unit", &Config::reference_unit)
         .def_readwrite("backend", &Config::backend)
+        .def_readwrite("fps", &Config::fps)
+        .def_readwrite("network_mode", &Config::network_mode)
+        .def_readwrite("clock_port", &Config::clock_port)
         .def_readwrite("nodes", &Config::nodes)
         .def_readwrite("units", &Config::units)
         .def_readwrite("clock_max_offset_ms", &Config::clock_max_offset_ms)
@@ -83,6 +87,7 @@ PYBIND11_MODULE(_native, module) {
         .def("unit", &Config::unit, py::arg("unit_id"), py::return_value_policy::copy)
         .def("reference_node", &Config::reference_node)
         .def("to_json", &Config::to_json)
+        .def("sync_json", &Config::sync_json)
         .def_static(
             "from_file",
             [](const std::filesystem::path& path) { return Config::from_file(path.string()); },
@@ -113,6 +118,7 @@ PYBIND11_MODULE(_native, module) {
                                [](const FrameHandle& f) { return f.packet->sensor_timestamp_ns; })
         .def_property_readonly("timestamp_ns",
                                [](const FrameHandle& f) { return f.packet->timestamp_ns; })
+        .def_property_readonly("clock_valid", [](const FrameHandle& f) { return f.packet->clock_valid; })
         .def_property_readonly("requested_exposure_us", [](const FrameHandle& f) { return f.packet->requested_exposure_us; })
         .def_property_readonly("exposure_us", [](const FrameHandle& f) { return f.packet->exposure_us; })
         .def_property_readonly("requested_gain", [](const FrameHandle& f) { return f.packet->requested_gain; })

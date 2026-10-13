@@ -1,7 +1,7 @@
 #include "bcamsync/session.hpp"
 #include "bcamsync/fake.hpp"
 #include "bcamsync/phase.hpp"
-#include "process.hpp"
+#include "platform.hpp"
 #include "wire.hpp"
 #include <algorithm>
 #include <atomic>
@@ -10,7 +10,7 @@
 #include <ctime>
 #include <iomanip>
 #include <iostream>
-#include <locale>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <poll.h>
@@ -28,21 +28,7 @@ std::string identity() {
         s << std::hex << std::setw(8) << std::setfill('0') << r();
     return s.str();
 }
-std::string trim(const std::string& s) {
-    const auto a = s.find_first_not_of(" \t\r\n"), b = s.find_last_not_of(" \t\r\n");
-    return a == std::string::npos ? std::string{} : s.substr(a, b - a + 1);
-}
-double number(const std::string& text) {
-    std::istringstream input(text);
-    input.imbue(std::locale::classic());
-    double result = 0;
-    if (!(input >> result) || !std::isfinite(result))
-        throw std::runtime_error("invalid numeric clock report");
-    return result;
-}
-std::int64_t domain_now(bool common) {
-    if (common)
-        return realtime_ns();
+std::int64_t sensor_now() {
 #ifdef CLOCK_BOOTTIME
     timespec t{};
     if (clock_gettime(CLOCK_BOOTTIME, &t))
@@ -51,6 +37,18 @@ std::int64_t domain_now(bool common) {
 #else
     return monotonic_ns();
 #endif
+}
+std::int64_t shifted(std::int64_t value, std::int64_t offset) {
+    if ((offset > 0 && value > std::numeric_limits<std::int64_t>::max() - offset) ||
+        (offset < 0 && value < std::numeric_limits<std::int64_t>::min() - offset))
+        throw std::runtime_error("clock mapping exceeds timestamp range");
+    return value + offset;
+}
+std::int64_t unshifted(std::int64_t value, std::int64_t offset) {
+    if ((offset > 0 && value < std::numeric_limits<std::int64_t>::min() + offset) ||
+        (offset < 0 && value > std::numeric_limits<std::int64_t>::max() + offset))
+        throw std::runtime_error("clock mapping exceeds timestamp range");
+    return value - offset;
 }
 std::vector<UnitConfig> local_units(const Config& c, const std::string& node) {
     std::vector<UnitConfig> us;
@@ -64,59 +62,19 @@ std::vector<std::unique_ptr<AcquisitionBackend>> validated_backends(const Config
     c.validate();
     c.node(node);
     if (c.backend == "fake")
-        return make_fake_backends(local_units(c, node));
-    return make_arducam_backends(local_units(c, node));
-}
-void clock_health(const Config& c, const std::string& node) {
-    std::istringstream lines(
-        detail::run_program({"chronyc", "-n", "tracking"}, c.request_timeout_seconds));
-    lines.imbue(std::locale::classic());
-    std::map<std::string, std::string> v;
-    std::string line;
-    while (std::getline(lines, line)) {
-        const auto p = line.find(':');
-        if (p != std::string::npos)
-            v[trim(line.substr(0, p))] = trim(line.substr(p + 1));
-    }
-    if (v.at("Leap status") != "Normal" || std::stoi(v.at("Stratum")) <= 0)
-        throw std::runtime_error("chrony is not synchronized");
-    const auto correction = std::abs(number(v.at("System time"))) * 1000,
-               offset = std::abs(number(v.at("Last offset"))) * 1000;
-    if (!std::isfinite(correction) || !std::isfinite(offset) ||
-        std::max(correction, offset) > c.clock_max_offset_ms)
-        throw std::runtime_error("clock correction/offset exceeds gate");
-    const auto reference = v.at("Reference ID");
-    const bool local = reference.substr(0, 8) == "7F7F0101";
-    if (node == c.reference_node() && !local)
-        throw std::runtime_error("reference node is not using its configured local clock");
-    if (node != c.reference_node()) {
-        const auto begin = reference.find('('), end = reference.find(')');
-        if (local || begin == std::string::npos || end == std::string::npos ||
-            reference.substr(begin + 1, end - begin - 1) != c.node(c.reference_node()).address)
-            throw std::runtime_error("chrony did not select the group reference node");
-    }
-    if (!local) {
-        std::tm sampled{};
-        std::istringstream value(v.at("Ref time (UTC)"));
-        value.imbue(std::locale::classic());
-        value >> std::get_time(&sampled, "%a %b %d %H:%M:%S %Y");
-        if (value.fail())
-            throw std::runtime_error("invalid chrony reference time");
-        const auto sampled_sec = timegm(&sampled);
-        const double age =
-            static_cast<double>(realtime_ns()) / 1e9 - static_cast<double>(sampled_sec);
-        if (age < -1 || age > c.clock_max_age_seconds)
-            throw std::runtime_error("chrony reference sample is stale");
-    }
+        return make_fake_backends(local_units(c, node), c.fps);
+    return make_arducam_backends(local_units(c, node), c.fps);
 }
 } // namespace
 class Session::Impl {
   public:
-    Config config;
-    std::string local, session;
+    Config config, resolved;
+    std::string local, session, capture_session;
     std::vector<std::unique_ptr<AcquisitionBackend>> backends;
     std::vector<UnitConfig> units;
-    bool fixture = false, common = false, coordinator = false;
+    bool common = false, coordinator = false;
+    detail::NodePlatform platform;
+    detail::ClockEstimate clock;
     mutable std::mutex mutex;
     std::mutex lifecycle;
     std::condition_variable changed;
@@ -127,9 +85,9 @@ class Session::Impl {
     std::map<std::string, std::unique_ptr<detail::Connection>> peers;
     std::map<std::string, std::uint64_t> requests;
     bool backends_cleaned = false;
-    std::int64_t startup_deadline = 0;
-    Impl(Config c, std::string n, std::vector<std::unique_ptr<AcquisitionBackend>> bs, bool f)
-        : config(std::move(c)), local(std::move(n)), backends(std::move(bs)), fixture(f) {
+    std::int64_t startup_deadline = 0, clock_sampled_at = 0;
+    Impl(Config c, std::string n, std::vector<std::unique_ptr<AcquisitionBackend>> bs)
+        : config(std::move(c)), resolved(config), local(std::move(n)), backends(std::move(bs)), platform(config, local) {
         config.validate();
         config.node(local);
         units = local_units(config, local);
@@ -158,7 +116,8 @@ class Session::Impl {
         auto s = status();
         s.state = "fault";
         s.ready = false;
-        s.fault = reason;
+        if (s.fault.empty()) s.fault = reason;
+        else s.fault += "; " + reason;
         for (auto& u : s.units)
             u.ready = false;
         publish(s);
@@ -169,14 +128,13 @@ class Session::Impl {
             if (!f.empty())
                 throw std::runtime_error(units[i].id + ": " + f);
         }
-        if (common && !fixture)
-            clock_health(config, local);
+        update_clock();
     }
     void start_backends() {
         for (auto& b : backends) {
             if (stopping)
                 throw std::runtime_error("startup cancelled");
-            b->start(session, 1, common);
+            b->start(capture_session, 1, false);
         }
     }
     detail::Json rpc(const std::string& node, detail::Json message) {
@@ -191,14 +149,65 @@ class Session::Impl {
             throw std::runtime_error(response.at("error").get<std::string>());
         return response.at("result");
     }
-    void prepare_clock() {
-        if (!common || fixture)
-            return;
-        std::cerr << "Preparing node clock " << local << std::endl;
-        detail::run_program(
-            {"sudo", "-n", "/usr/local/libexec/bcamsync-clock-" + config.group_id + "-" + local},
-            config.startup_timeout_seconds + 10);
-        clock_health(config, local);
+    detail::ClockEstimate clock_estimate() const {
+        std::lock_guard<std::mutex> lock(mutex);
+        auto estimate = clock;
+        if (common && (clock_sampled_at == 0 ||
+            monotonic_ns() - clock_sampled_at > static_cast<std::int64_t>(config.clock_max_age_seconds * 1e9)))
+            estimate.valid = false;
+        return estimate;
+    }
+    void update_clock() {
+        detail::ClockEstimate estimate;
+        try { estimate = platform.sample(); }
+        catch (const std::exception& error) { estimate.fault = error.what(); }
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            clock = estimate;
+            clock_sampled_at = monotonic_ns();
+        }
+        if (!estimate.valid)
+            throw std::runtime_error(estimate.fault.empty() ? "common clock is unavailable" : estimate.fault);
+    }
+    std::int64_t common_now() const {
+        const auto estimate = clock_estimate();
+        if (!estimate.valid) throw std::runtime_error("common clock is unavailable");
+        return shifted(sensor_now(), estimate.offset_ns);
+    }
+    TimingSnapshot mapped_snapshot(AcquisitionBackend& acquisition) const {
+        auto result = acquisition.snapshot();
+        const auto estimate = clock_estimate();
+        if (!estimate.valid) throw std::runtime_error("common clock is unavailable");
+        result.snapshot_timestamp_ns = shifted(result.snapshot_timestamp_ns, estimate.offset_ns);
+        for (auto& frame : result.frames) {
+            frame.timestamp_ns = shifted(frame.timestamp_ns, estimate.offset_ns);
+            frame.mapping_span_ns = shifted(frame.mapping_span_ns, estimate.uncertainty_ns);
+        }
+        if (result.correction.restored_timestamp_ns)
+            result.correction.restored_timestamp_ns = shifted(result.correction.restored_timestamp_ns, estimate.offset_ns);
+        return result;
+    }
+    CorrectionStatus adjust_local(const std::string& unit, Pulse pulse) {
+        const auto estimate = clock_estimate();
+        if (!estimate.valid) throw std::runtime_error("common clock is unavailable");
+        pulse.expires_ns = unshifted(pulse.expires_ns, estimate.offset_ns);
+        return backend(unit).adjust(pulse);
+    }
+    void cancel_backends() {
+        for (std::size_t i = 0; i < backends.size(); ++i)
+            try { backends[i]->cancel(); }
+            catch (const std::exception& error) { fail(units[i].id + ": " + error.what()); }
+    }
+    void suspend_synchronization() {
+        cancel_backends();
+        for (auto& peer : peers) peer.second->shutdown();
+        peers.clear();
+        // Acquisition continues; a new synchronization run requires explicit restart.
+        while (!stopping) {
+            try { update_clock(); } catch (const std::exception&) {}
+            std::unique_lock<std::mutex> lock(mutex);
+            changed.wait_for(lock, std::chrono::seconds(1), [&] { return stopping.load(); });
+        }
     }
     void cleanup_backends() {
         if (backends_cleaned)
@@ -234,15 +243,20 @@ class Session::Impl {
             throw std::runtime_error("session already started; stop before restarting");
         stopping = false;
         backends_cleaned = false;
+        resolved = config;
+        { std::lock_guard<std::mutex> clock_lock(mutex); clock = {!common, 0, 0, {}}; clock_sampled_at = 0; }
         startup_deadline =
-            monotonic_ns() + static_cast<std::int64_t>(config.startup_timeout_seconds * 1e9);
+            shifted(monotonic_ns(), static_cast<std::int64_t>(config.startup_timeout_seconds * 1e9));
         GroupStatus initial;
         initial.state = "starting";
         publish(initial);
-        session = coordinator ? identity() : std::string{};
+        capture_session = identity();
+        session = coordinator ? capture_session : std::string{};
         thread = std::thread([this] {
             try {
-                prepare_clock();
+                start_backends();
+                platform.start(resolved, stopping, startup_deadline);
+                if (!stopping) update_clock();
                 if (!stopping) {
                     if (coordinator)
                         run_coordinator();
@@ -256,6 +270,7 @@ class Session::Impl {
                 if (!stopping)
                     fail("unknown acquisition failure");
             }
+            if (!stopping) suspend_synchronization();
             if (coordinator) {
                 for (const auto& entry : peers) {
                     try {
@@ -270,13 +285,20 @@ class Session::Impl {
             for (auto& entry : peers)
                 entry.second->shutdown();
             cleanup_backends();
+            try { platform.stop(); } catch (const std::exception& error) { fail(error.what()); }
+            { std::lock_guard<std::mutex> clock_lock(mutex); clock.valid = false; }
             changed.notify_all();
         });
     }
     void run_follower() {
-        server = detail::listener(config.node(local));
+        server = detail::listener(resolved.node(local));
         int client = -1;
+        auto next_health = monotonic_ns();
         while (!stopping) {
+            if (monotonic_ns() >= next_health) {
+                health();
+                next_health = monotonic_ns() + 1000000000LL;
+            }
             pollfd p{server, POLLIN, 0};
             const int r = poll(&p, 1, 100);
             if (r > 0) {
@@ -308,6 +330,10 @@ class Session::Impl {
                                                  (static_cast<double>(config.nodes.size()) + 1.0)) *
                                       1e9);
         while (!stopping) {
+            if (monotonic_ns() >= next_health) {
+                health();
+                next_health = monotonic_ns() + 1000000000LL;
+            }
             pollfd incoming_fd{client, POLLIN, 0};
             const auto event = poll(&incoming_fd, 1, 100);
             if (event < 0 && errno == EINTR)
@@ -330,13 +356,11 @@ class Session::Impl {
                 detail::Json result;
                 if (session.empty()) {
                     if (command != "hello" ||
-                        incoming.at("topology") != detail::topology_json(config) ||
-                        incoming.at("fixture").get<bool>() != fixture)
+                        incoming.at("topology") != detail::topology_json(config))
                         throw std::runtime_error("group topology or backend mode differs");
                     session = incoming.at("session").get<std::string>();
                     if (session.empty() || session.size() > 128)
                         throw std::runtime_error("invalid session identity");
-                    start_backends();
                     result = {{"node", local}};
                 } else {
                     if (incoming.at("session").get<std::string>() != session)
@@ -345,7 +369,7 @@ class Session::Impl {
                         health();
                         detail::Json snapshots = detail::Json::array();
                         for (auto& b : backends)
-                            snapshots.push_back(detail::snapshot_json(b->snapshot()));
+                            snapshots.push_back(detail::snapshot_json(mapped_snapshot(*b)));
                         result = {{"node", local},
                                   {"snapshots", snapshots},
                                   {"checked_at", realtime_ns()}};
@@ -355,7 +379,7 @@ class Session::Impl {
                             throw std::runtime_error("reference unit cannot be adjusted");
                         Pulse p{incoming.at("id"), incoming.at("delta"), incoming.at("count"),
                                 incoming.at("expires")};
-                        const auto ack = backend(id_unit).adjust(p);
+                        const auto ack = adjust_local(id_unit, p);
                         result = {{"id", ack.correction_id}, {"state", ack.state}};
                     } else if (command == "status") {
                         auto s = detail::status_from_json(incoming.at("status"));
@@ -378,9 +402,8 @@ class Session::Impl {
         }
     }
     void run_coordinator() {
-        start_backends();
         const auto deadline = startup_deadline;
-        for (const auto& n : config.nodes) {
+        for (const auto& n : resolved.nodes) {
             if (n.id == local)
                 continue;
             while (!stopping) {
@@ -401,19 +424,20 @@ class Session::Impl {
             const double remaining = static_cast<double>(deadline - monotonic_ns()) / 1e9;
             if (remaining <= 0)
                 throw std::runtime_error("node initialization startup timeout: " + n.id);
-            peers.at(n.id)->timeout(remaining);
+            peers.at(n.id)->timeout(std::min(remaining, config.request_timeout_seconds));
             const auto hello = rpc(n.id, {{"command", "hello"},
-                                          {"topology", detail::topology_json(config)},
-                                          {"fixture", fixture}});
+                                          {"topology", detail::topology_json(config)}});
             peers.at(n.id)->timeout(config.request_timeout_seconds);
             if (hello.at("node") != n.id)
                 throw std::runtime_error("peer node identity differs");
         }
+        PhasePolicy policy;
+        policy.max_mapping_span_ns = static_cast<std::int64_t>(std::ceil(config.clock_max_offset_ms * 1000000));
         std::map<std::string, PhaseController> controllers;
         for (const auto& u : config.units)
             if (u.id != config.reference_unit) {
-                controllers.emplace(u.id, PhaseController({}, 1000000000LL / u.fps));
-                controllers.at(u.id).reset(monotonic_ns(), domain_now(common));
+                controllers.emplace(u.id, PhaseController(policy, 1000000000LL / config.fps));
+                controllers.at(u.id).reset(monotonic_ns(), common_now());
             }
         std::int64_t next = 0;
         const auto calibration_deadline = startup_deadline;
@@ -428,7 +452,7 @@ class Session::Impl {
             health();
             std::map<std::string, TimingSnapshot> snapshots;
             for (std::size_t i = 0; i < backends.size(); ++i) {
-                auto s = backends[i]->snapshot();
+                auto s = mapped_snapshot(*backends[i]);
                 if (s.unit_id != units[i].id)
                     throw std::runtime_error("local snapshot unit identity differs");
                 snapshots.emplace(s.unit_id, std::move(s));
@@ -458,7 +482,7 @@ class Session::Impl {
                     us.state = "reference";
                     us.ready = false;
                     try {
-                        validate_timing(snapshots.at(u.id), domain_now(common));
+                        validate_timing(snapshots.at(u.id), common_now(), policy);
                         us.ready = true;
                     } catch (const WindowPending&) {
                         if (status().ready)
@@ -467,7 +491,7 @@ class Session::Impl {
                     s.ready = s.ready && us.ready;
                 } else {
                     const auto d = controllers.at(u.id).tick(snapshots.at(config.reference_unit),
-                                                             snapshots.at(u.id), domain_now(common),
+                                                             snapshots.at(u.id), common_now(),
                                                              monotonic_ns());
                     us.state = d.state;
                     us.ready = d.ready;
@@ -483,9 +507,9 @@ class Session::Impl {
                     s.ready = s.ready && d.ready;
                     if (d.action) {
                         auto pulse = *d.action;
-                        pulse.expires_ns = domain_now(common) + 1000000000LL;
+                        pulse.expires_ns = shifted(common_now(), 1000000000LL);
                         if (u.node_id == local)
-                            backend(u.id).adjust(pulse);
+                            adjust_local(u.id, pulse);
                         else {
                             const auto ack = rpc(u.node_id, {{"command", "adjust"},
                                                              {"unit", u.id},
@@ -535,12 +559,10 @@ class Session::Impl {
     }
 };
 Session::Session(Config config, std::string node)
-    : Session(config, node, validated_backends(config, node)) {
-    impl_->fixture = impl_->config.backend == "fake";
-}
+    : Session(config, node, validated_backends(config, node)) {}
 Session::Session(Config config, std::string node,
                  std::vector<std::unique_ptr<AcquisitionBackend>> bs)
-    : impl_(std::make_unique<Impl>(std::move(config), std::move(node), std::move(bs), true)) {}
+    : impl_(std::make_unique<Impl>(std::move(config), std::move(node), std::move(bs))) {}
 Session::~Session() {
     try {
         stop();
@@ -559,12 +581,16 @@ bool Session::wait_ready(std::chrono::milliseconds timeout) {
 }
 std::shared_ptr<const FramePacket> Session::read(const std::string& id,
                                                  std::chrono::milliseconds timeout) {
-    auto s = status();
-    if (!s.fault.empty())
-        throw std::runtime_error(s.fault);
-    if (!s.ready)
-        throw std::runtime_error("synchronization is not ready");
-    return impl_->backend(id).read(timeout);
+    auto& acquisition = impl_->backend(id);
+    auto packet = acquisition.read(timeout);
+    const auto fault = acquisition.fault();
+    if (!fault.empty()) throw std::runtime_error(id + ": " + fault);
+    if (!packet) return {};
+    auto delivered = std::make_shared<FramePacket>(*packet);
+    const auto estimate = impl_->clock_estimate();
+    delivered->clock_valid = estimate.valid;
+    delivered->timestamp_ns = estimate.valid ? shifted(packet->sensor_timestamp_ns, estimate.offset_ns) : 0;
+    return delivered;
 }
 GroupStatus Session::status() const { return impl_->status(); }
 void Session::stop() { impl_->stop(); }

@@ -1,4 +1,7 @@
 #include "bcamsync/session.hpp"
+#include "session_test_access.hpp"
+#include <ctime>
+#include <algorithm>
 #include "python_frame.hpp"
 #include <pybind11/pybind11.h>
 #include <arpa/inet.h>
@@ -12,6 +15,15 @@ namespace py = pybind11;
 using namespace bcamsync;
 
 namespace {
+std::int64_t sensor_now() {
+#ifdef CLOCK_BOOTTIME
+    timespec value{};
+    if (clock_gettime(CLOCK_BOOTTIME, &value)) throw std::runtime_error("Cannot read fixture clock");
+    return static_cast<std::int64_t>(value.tv_sec) * 1000000000LL + value.tv_nsec;
+#else
+    return monotonic_ns();
+#endif
+}
 std::shared_ptr<const FramePacket> packet() {
     auto frame = std::make_shared<FramePacket>();
     frame->unit_id = "fixture-board";
@@ -19,7 +31,7 @@ std::shared_ptr<const FramePacket> packet() {
     frame->width = 8;
     frame->height = 3;
     frame->views = 4;
-    frame->sensor_timestamp_ns = frame->timestamp_ns = monotonic_ns();
+    frame->sensor_timestamp_ns = frame->timestamp_ns = sensor_now();
     auto storage = std::make_shared<FrameStorage>();
     storage->pixels.resize(24);
     for (unsigned i = 0; i < 24; ++i) storage->pixels[i] = static_cast<std::uint8_t>(i);
@@ -52,12 +64,13 @@ public:
     TimingSnapshot snapshot() const override {
         TimingSnapshot result;
         result.unit_id = "fixture-board";
-        result.snapshot_timestamp_ns = monotonic_ns();
+        result.snapshot_timestamp_ns = sensor_now();
         constexpr std::int64_t period = 25000000;
         const auto last = static_cast<std::uint64_t>(result.snapshot_timestamp_ns / period);
-        for (std::uint64_t i = 0; i < 240; ++i) {
+        const auto count = std::min<std::uint64_t>(last, 240);
+        for (std::uint64_t i = 0; i < count; ++i) {
             FrameTiming timing;
-            timing.camera_sequence = last - 239 + i;
+            timing.camera_sequence = last - count + 1 + i;
             timing.timestamp_ns = timing.sensor_timestamp_ns = static_cast<std::int64_t>(timing.camera_sequence) * period;
             timing.requested_duration_us = timing.reported_duration_us = period / 1000;
             result.frames.push_back(timing);
@@ -83,6 +96,7 @@ private:
 
 std::unique_ptr<Session> make_session(bool empty_reads) {
     Config config;
+    config.backend = "fake";
     config.group_id = "python-ownership-fixture";
     config.reference_unit = "fixture-board";
     config.nodes = {{"fixture-node", "127.0.0.1", "", free_port()}};
@@ -90,12 +104,12 @@ std::unique_ptr<Session> make_session(bool empty_reads) {
     unit.id = "fixture-board";
     unit.node_id = "fixture-node";
     unit.camera_id = "software-fixture";
-    unit.width = 8;
-    unit.height = 3;
+    unit.fake.width = 8;
+    unit.fake.height = 3;
     config.units = {unit};
     std::vector<std::unique_ptr<AcquisitionBackend>> backends;
     backends.push_back(std::make_unique<FixtureBackend>(empty_reads));
-    return std::make_unique<Session>(std::move(config), "fixture-node", std::move(backends));
+    return detail::SessionTestAccess::make(std::move(config), "fixture-node", std::move(backends));
 }
 }
 

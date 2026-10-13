@@ -175,7 +175,7 @@ TimingSnapshot snapshot_from_json(const Json& j) {
     return s;
 }
 Json topology_json(const Config& c) {
-    return Json::parse(c.to_json());
+    return Json::parse(c.sync_json());
 }
 Json status_json(const GroupStatus& s) {
     Json us = Json::array();
@@ -195,9 +195,10 @@ GroupStatus status_from_json(const Json& j) {
     s.state = j.at("state");
     s.ready = j.at("ready");
     s.fault = j.at("fault");
-    if (j.at("units").size() > 64)
-        throw std::runtime_error("invalid group status size");
-    for (const auto& v : j.at("units")) {
+    const auto& units = j.at("units");
+    if (!units.is_array())
+        throw std::runtime_error("group status units must be an array");
+    for (const auto& v : units) {
         UnitStatus u;
         u.unit_id = v.at("id");
         u.state = v.at("state");

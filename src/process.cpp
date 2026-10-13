@@ -98,8 +98,7 @@ std::string run_program(const std::vector<std::string>& args, double timeout) {
     } catch (...) {
         close_output();
         if (!reaped) {
-            // Kill ordinary children in the spawn group. Privileged helpers have their own bounded
-            // commands.
+            // Terminate and reap the owned command group on failure.
             kill(-pid, SIGKILL);
             while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
             }

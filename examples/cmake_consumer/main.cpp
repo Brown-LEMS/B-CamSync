@@ -26,9 +26,9 @@ int main(int argc, char **argv) {
         for (const auto &unit : config.units) {
             if (unit.node_id != node) continue;
             auto packet = session.read(unit.id, std::chrono::seconds(1));
-            if (!packet || !packet->storage || packet->unit_id != unit.id || packet->views != unit.views ||
-                packet->width != unit.width || packet->height != unit.height ||
-                packet->storage->pixels.size() != static_cast<std::size_t>(unit.width) * unit.height)
+            if (!packet || !packet->storage || packet->unit_id != unit.id || packet->views != 4 ||
+                packet->width != unit.fake.width || packet->height != unit.fake.height || !packet->clock_valid ||
+                packet->storage->pixels.size() != static_cast<std::uint64_t>(unit.fake.width) * unit.fake.height)
                 throw std::runtime_error("Invalid board packet from installed library");
             for (unsigned view = 0; view < packet->views; ++view)
                 (void)packet->view_data(view);

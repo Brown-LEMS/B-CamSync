@@ -7,19 +7,14 @@ only after an explicit request. Closing an SSH client does not close its session
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
 import json
 import math
 from pathlib import Path
-import re
-import shlex
 import signal
 import socket
 import socketserver
-import subprocess
 import sys
 import threading
-from typing import Mapping
 from uuid import UUID, uuid4
 
 from . import Config, Session
@@ -84,7 +79,9 @@ class NodeService:
             if self._closing:
                 raise RuntimeError("node service is closing")
             if command == "configuration":
-                return {"node_id": self.local_node, "config": json.loads(self.config.to_json())}
+                return {"node_id": self.local_node, "config": json.loads(self.config.to_json()),
+                        "sync_contract": json.loads(self.config.sync_json()),
+                        "reference_node": self.config.reference_node()}
             if command == "start":
                 if self._active:
                     raise RuntimeError("node session is already active; stop it explicitly first")
@@ -191,118 +188,6 @@ def request_local(socket_path: str | Path, command: str, *, timeout_seconds: flo
     return response["result"]
 
 
-@dataclass(frozen=True)
-class NodeTarget:
-    """SSH access to one existing node service; Python selects its installed environment."""
-
-    ssh_host: str
-    python: str
-    socket: str
-
-    def __post_init__(self):
-        if not isinstance(self.ssh_host, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.@:\[\]-]*", self.ssh_host):
-            raise ValueError("ssh_host must be an SSH destination or configured alias")
-        if not isinstance(self.python, str) or not self.python or not Path(self.socket).is_absolute():
-            raise ValueError("python must name the remote interpreter and socket must be absolute")
-
-
-class GroupClient:
-    """Optional host orchestration; phase control and image delivery stay on nodes."""
-
-    def __init__(self, config: Config, targets: Mapping[str, NodeTarget], *, timeout_seconds: float | None = None):
-        config.validate()
-        if set(targets) != {node.id for node in config.nodes}:
-            raise ValueError("targets must identify every configured node exactly once")
-        self.config = config
-        self.targets = dict(targets)
-        self.timeout_seconds = timeout_seconds if timeout_seconds is not None else config.startup_timeout_seconds + 20
-        if not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
-            raise ValueError("timeout_seconds must be finite and positive")
-
-    def _request(self, node_id: str, command: str, operation_id: str | None = None) -> dict:
-        target = self.targets[node_id]
-        remote = [target.python, "-m", "bcamsync.management", "request", command,
-                  "--socket", target.socket, "--timeout", str(self.timeout_seconds)]
-        if operation_id is not None:
-            remote += ["--operation-id", operation_id]
-        completed = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
-                                    target.ssh_host, shlex.join(remote)],
-                                   check=False, capture_output=True, text=True,
-                                   timeout=self.timeout_seconds + 10)
-        if completed.returncode:
-            raise RuntimeError(f"Node {node_id} {command} failed: {completed.stderr.strip()}")
-        if len(completed.stdout.encode()) > LIMIT:
-            raise RuntimeError("remote management response exceeds limit")
-        response = json.loads(completed.stdout)
-        if not isinstance(response, dict) or response.get("node_id") != node_id:
-            raise RuntimeError("remote node identity does not match its target")
-        return response
-
-    def check(self) -> dict:
-        """Inspect predeployed resolved configuration; do not distribute or change it."""
-        expected = json.loads(self.config.to_json())
-        reports = {}
-        for node in self.config.nodes:
-            print(f"Checking resolved configuration on {node.id}", file=sys.stderr, flush=True)
-            report = self._request(node.id, "configuration")
-            if report.get("config") != expected:
-                raise RuntimeError(f"Resolved configuration differs on node {node.id}")
-            reports[node.id] = report
-        return {"configuration_matches": True, "nodes": reports}
-
-    def status(self) -> dict:
-        nodes = {}
-        for node in self.config.nodes:
-            print(f"Reading node status on {node.id}", file=sys.stderr, flush=True)
-            nodes[node.id] = self._request(node.id, "status")
-        return {"reference_node": self.config.reference_node(),
-                "group": nodes[self.config.reference_node()], "nodes": nodes}
-
-    def start(self) -> dict:
-        """Check all nodes, then start followers before the reference node."""
-        self.check()
-        print("Checking that all node sessions are inactive", file=sys.stderr, flush=True)
-        states = self.status()["nodes"]
-        if any(state["active"] for state in states.values()):
-            raise RuntimeError("A node session is already active; stop it explicitly first")
-        reference = self.config.reference_node()
-        order = [node.id for node in self.config.nodes if node.id != reference] + [reference]
-        operation = str(uuid4())
-        attempted = []
-        started = {}
-        try:
-            for node_id in order:
-                print(f"Starting node {node_id}", file=sys.stderr, flush=True)
-                attempted.append(node_id)
-                started[node_id] = self._request(node_id, "start", operation)
-        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
-            cleanup_errors = {}
-            for node_id in reversed(attempted):
-                print(f"Cleaning up operation {operation} on {node_id}", file=sys.stderr, flush=True)
-                try:
-                    self._request(node_id, "stop", operation)
-                except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as cleanup:
-                    cleanup_errors[node_id] = str(cleanup)
-            raise RuntimeError(f"Group start failed: {error}; operation cleanup errors: {cleanup_errors}") from error
-        return {"operation_id": operation, "reference_node": reference, "nodes": started}
-
-    def stop(self) -> dict:
-        """Stop coordination first and then clean up every node-local session."""
-        reference = self.config.reference_node()
-        order = [reference] + [node.id for node in self.config.nodes if node.id != reference]
-        nodes = {}
-        errors = {}
-        for node_id in order:
-            print(f"Stopping node {node_id}", file=sys.stderr, flush=True)
-            try:
-                nodes[node_id] = self._request(node_id, "stop")
-            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
-                errors[node_id] = str(error)
-        if errors:
-            raise RuntimeError(f"Group stop failed on nodes: {errors}")
-        return {"reference_node": reference, "nodes": nodes}
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="mode", required=True)
@@ -335,7 +220,7 @@ def main(argv: list[str] | None = None) -> int:
             result = request_local(args.socket, args.command, timeout_seconds=args.timeout,
                                    operation_id=args.operation_id)
             print(json.dumps(result, indent=2, allow_nan=False))
-    except (ValueError, KeyError, RuntimeError, OSError, subprocess.SubprocessError) as error:
+    except (ValueError, KeyError, RuntimeError, OSError) as error:
         print(f"B-CamSync management: {error}", file=sys.stderr)
         return 1
     return 0

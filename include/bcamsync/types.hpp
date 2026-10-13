@@ -6,9 +6,14 @@
 #include <vector>
 
 namespace bcamsync {
+/// Synthetic geometry, phase, and frequency relative to the node clock.
+struct FakeOptions {
+    unsigned width = 64, height = 16;
+    std::int64_t initial_phase_us = 0;
+    double drift_ppm = 0;
+};
 struct UnitConfig {
     std::string id, node_id, camera_id;
-    unsigned width = 5120, height = 800, views = 4, fps = 40;
     /// Backend-owned sensor, raw packing, and pipeline selection.
     std::string profile = "arducam_b0267_pi4";
     int exposure_us = 10000;
@@ -16,8 +21,7 @@ struct UnitConfig {
     /// Calibrate sensor gain at startup, then lock it before phase synchronization.
     bool auto_gain = true;
     unsigned queue_capacity = 4, pool_capacity = 12;
-    std::int64_t fake_initial_phase_us = 0;
-    double fake_drift_ppm = 0;
+    FakeOptions fake;
 };
 struct NodeConfig {
     std::string id, address, interface;
@@ -26,6 +30,9 @@ struct NodeConfig {
 struct Config {
     std::string group_id, reference_unit;
     std::string backend = "arducam";
+    unsigned fps = 40;
+    std::string network_mode = "auto";
+    std::uint16_t clock_port = 58081;
     std::vector<NodeConfig> nodes;
     std::vector<UnitConfig> units;
     double clock_max_offset_ms = 0.1, clock_max_age_seconds = 10.0;
@@ -37,6 +44,8 @@ struct Config {
     static Config from_file(const std::string& path);
     /// Resolved acquisition configuration for optional management clients.
     std::string to_json() const;
+    /// Canonical shared synchronization contract; acquisition and host settings stay local.
+    std::string sync_json() const;
 };
 struct FrameStorage {
     std::vector<std::uint8_t> pixels;
@@ -46,6 +55,8 @@ struct FramePacket {
     std::string unit_id;
     std::uint64_t sequence = 0, dropped_before = 0;
     std::int64_t sensor_timestamp_ns = 0, timestamp_ns = 0;
+    /// timestamp_ns is zero when a required common clock is unavailable.
+    bool clock_valid = false;
     int requested_exposure_us = 0, exposure_us = 0;
     float requested_gain = 0, analogue_gain = 0;
     bool gain_locked = false;

@@ -4,6 +4,7 @@
 #include <arpa/inet.h>
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <set>
 #include <stdexcept>
@@ -15,6 +16,15 @@ std::int64_t clock_value(clockid_t id) {
     if (clock_gettime(id, &t) != 0)
         throw std::runtime_error("clock_gettime failed");
     return static_cast<std::int64_t>(t.tv_sec) * 1000000000LL + t.tv_nsec;
+}
+unsigned unsigned_value(const nlohmann::json& object, const char* key, unsigned initial) {
+    if (!object.contains(key)) return initial;
+    const auto& value = object.at(key);
+    if (!value.is_number_integer() ||
+        (!value.is_number_unsigned() && value.get<std::int64_t>() < 0) ||
+        value.get<std::uint64_t>() > std::numeric_limits<unsigned>::max())
+        throw std::invalid_argument(std::string("invalid unsigned field: ") + key);
+    return value.get<unsigned>();
 }
 } // namespace
 std::int64_t monotonic_ns() { return clock_value(CLOCK_MONOTONIC); }
@@ -34,59 +44,70 @@ const UnitConfig& Config::unit(const std::string& id) const {
 std::string Config::reference_node() const { return unit(reference_unit).node_id; }
 void Config::validate() const {
     const auto valid_id = [](const std::string& s) {
-        const auto alphanumeric = [](unsigned char x) {
-            return (x >= 'a' && x <= 'z') || (x >= 'A' && x <= 'Z') || (x >= '0' && x <= '9');
-        };
-        return !s.empty() && s.size() <= 64 &&
-               alphanumeric(static_cast<unsigned char>(s.front())) &&
-               std::all_of(s.begin(), s.end(), [](unsigned char x) {
-                   return (x >= 'a' && x <= 'z') || (x >= 'A' && x <= 'Z') ||
-                          (x >= '0' && x <= '9') || x == '-' || x == '_';
-               });
+        return !s.empty() && s.find('\0') == std::string::npos;
     };
-    if (!valid_id(group_id) || nodes.empty() || nodes.size() > 32 || units.empty() ||
-        units.size() > 64)
-        throw std::invalid_argument("invalid group identity or topology size");
+    if (!valid_id(group_id) || nodes.empty() || units.empty())
+        throw std::invalid_argument("invalid group identity or empty topology");
     if (backend != "arducam" && backend != "fake")
         throw std::invalid_argument("unknown acquisition backend: " + backend);
+    if (network_mode != "auto" && network_mode != "existing")
+        throw std::invalid_argument("network mode must be auto or existing");
+    if (!clock_port || !fps || fps > 1000000)
+        throw std::invalid_argument("invalid clock port or unrepresentable frame period");
+    const bool addressed = nodes.size() > 1 && (network_mode == "existing" || backend == "fake");
     std::set<std::string> ids, addresses, devices;
     for (const auto& n : nodes) {
         in_addr a{};
         if (!valid_id(n.id) || !ids.insert(n.id).second || !n.port ||
-            inet_pton(AF_INET, n.address.c_str(), &a) != 1 ||
-            !addresses.insert(n.address + ":" + std::to_string(n.port)).second)
+            n.interface.find('\0') != std::string::npos ||
+            (backend == "arducam" && nodes.size() > 1 && network_mode == "auto" && n.interface.empty()) ||
+            (addressed && (inet_pton(AF_INET, n.address.c_str(), &a) != 1 ||
+                          !addresses.insert(n.address + ":" + std::to_string(n.port)).second)))
             throw std::invalid_argument("invalid or duplicate node endpoint");
     }
     ids.clear();
-    const auto& reference = unit(reference_unit);
+    unit(reference_unit);
     for (const auto& u : units) {
         node(u.node_id);
-        if (!valid_id(u.id) || !ids.insert(u.id).second || u.camera_id.empty() ||
-            !devices.insert(u.node_id + "/" + u.camera_id).second)
+        if (!valid_id(u.id) || !ids.insert(u.id).second || !valid_id(u.camera_id) ||
+            !devices.insert(u.node_id + '\0' + u.camera_id).second)
             throw std::invalid_argument("invalid or duplicate unit identity");
-        if (!u.width || !u.height || u.views != 4 || u.width % u.views ||
-            static_cast<std::uint64_t>(u.width) * u.height > 64 * 1024 * 1024 || !u.fps ||
-            u.fps > 45 || u.fps != reference.fps || u.exposure_us <= 0 ||
-            u.exposure_us >= 1000000 / static_cast<int>(u.fps) - 1000 ||
-            !std::isfinite(u.analogue_gain) || u.analogue_gain <= 0 || u.queue_capacity < 1 ||
-            u.queue_capacity > 64 || u.pool_capacity < u.queue_capacity + 2 ||
-            u.pool_capacity > 128)
+        if (u.exposure_us <= 0 || u.exposure_us >= 1000000 / static_cast<int>(fps) ||
+            !std::isfinite(u.analogue_gain) || u.analogue_gain <= 0 || !u.queue_capacity ||
+            static_cast<std::uint64_t>(u.pool_capacity) <= u.queue_capacity)
             throw std::invalid_argument("invalid capture settings for " + u.id);
-        if (backend == "arducam") detail::arducam_pipeline(u.profile);
-        if (u.fake_initial_phase_us < -1000000 || u.fake_initial_phase_us > 1000000 ||
-            !std::isfinite(u.fake_drift_ppm) || std::abs(u.fake_drift_ppm) > 1000)
-            throw std::invalid_argument("invalid fake timing settings for " + u.id);
+        unsigned width = detail::arducam_width, height = detail::arducam_height;
+        if (backend == "arducam") {
+            detail::arducam_pipeline(u.profile);
+            if (u.exposure_us >= 1000000 / static_cast<int>(fps) - 1000)
+                throw std::invalid_argument("exposure leaves no phase correction margin for " + u.id);
+        } else {
+            width = u.fake.width;
+            height = u.fake.height;
+            if (!width || !height || width % 4 || u.fake.initial_phase_us < -1000000 ||
+                u.fake.initial_phase_us > 1000000 || !std::isfinite(u.fake.drift_ppm) ||
+                std::abs(u.fake.drift_ppm) > 1000)
+                throw std::invalid_argument("invalid fake geometry or timing for " + u.id);
+        }
+        const auto pixels = static_cast<std::uint64_t>(width) * height;
+        if (pixels > std::vector<std::uint8_t>{}.max_size() ||
+            pixels > std::numeric_limits<std::size_t>::max() / u.pool_capacity)
+            throw std::invalid_argument("frame storage extent is not representable for " + u.id);
     }
     for (const auto& n : nodes)
         if (std::none_of(units.begin(), units.end(),
                          [&](const auto& u) { return u.node_id == n.id; }))
             throw std::invalid_argument("node has no units: " + n.id);
-    for (double v : {clock_max_offset_ms, clock_max_age_seconds, request_timeout_seconds,
-                     startup_timeout_seconds})
-        if (!std::isfinite(v) || v <= 0 || v > 86400)
-            throw std::invalid_argument("invalid timeout/clock setting");
-    if (clock_max_offset_ms > 0.1 || request_timeout_seconds > 5 || startup_timeout_seconds > 600)
-        throw std::invalid_argument("clock gate or timeout exceeds bounds");
+    if (!std::isfinite(clock_max_offset_ms) || clock_max_offset_ms <= 0 ||
+        static_cast<long double>(clock_max_offset_ms) * 1e6L >= std::numeric_limits<std::int64_t>::max())
+        throw std::invalid_argument("invalid clock offset threshold");
+    const auto available = std::numeric_limits<std::int64_t>::max() - monotonic_ns();
+    for (double v : {clock_max_age_seconds, request_timeout_seconds, startup_timeout_seconds})
+        if (!std::isfinite(v) || v <= 0 || static_cast<long double>(v) * 1e9L >= available)
+            throw std::invalid_argument("timeout is invalid or exceeds timestamp range");
+    const long double idle_seconds = 2 + static_cast<long double>(request_timeout_seconds) * (nodes.size() + 1);
+    if (idle_seconds * 1e9L >= available)
+        throw std::invalid_argument("group request budget exceeds timestamp range");
 }
 Config Config::from_file(const std::string& path) {
     std::ifstream f(path);
@@ -98,12 +119,20 @@ Config Config::from_file(const std::string& path) {
     c.group_id = j.at("group_id").get<std::string>();
     c.reference_unit = j.at("reference_unit").get<std::string>();
     c.backend = j.value("backend", c.backend);
+    c.fps = unsigned_value(j, "fps", c.fps);
+    if (j.contains("network")) {
+        const auto& network = j.at("network");
+        c.network_mode = network.value("mode", c.network_mode);
+        const auto port = unsigned_value(network, "clock_port", c.clock_port);
+        if (!port || port > 65535) throw std::invalid_argument("invalid clock port");
+        c.clock_port = static_cast<std::uint16_t>(port);
+    }
     for (const auto& v : j.at("nodes")) {
         NodeConfig n;
         n.id = v.at("id");
-        n.address = v.at("address");
+        n.address = v.value("address", std::string{});
         n.interface = v.value("interface", std::string{});
-        const auto port = v.value("port", 58080);
+        const auto port = unsigned_value(v, "port", n.port);
         if (port < 1 || port > 65535)
             throw std::invalid_argument("invalid node port");
         n.port = static_cast<std::uint16_t>(port);
@@ -115,23 +144,22 @@ Config Config::from_file(const std::string& path) {
         u.node_id = v.at("node_id");
         u.camera_id = v.at("camera_id");
 #define SET(name) u.name = v.value(#name, u.name)
-        SET(width);
-        SET(height);
-        SET(views);
-        SET(fps);
-        if (v.contains("raw_format") || v.contains("r16_shift") || v.contains("pipeline_config"))
-            throw std::invalid_argument("select a capture profile instead of raw/pipeline overrides");
+        if (v.contains("width") || v.contains("height") || v.contains("views") || v.contains("fps") ||
+            v.contains("raw_format") || v.contains("r16_shift") || v.contains("pipeline_config"))
+            throw std::invalid_argument("geometry is profile-owned; fps belongs to the group");
         SET(profile);
         SET(exposure_us);
         SET(analogue_gain);
         SET(auto_gain);
-        SET(queue_capacity);
-        SET(pool_capacity);
+        u.queue_capacity = unsigned_value(v, "queue_capacity", u.queue_capacity);
+        u.pool_capacity = unsigned_value(v, "pool_capacity", u.pool_capacity);
 #undef SET
         if (v.contains("fake")) {
             const auto& fake = v.at("fake");
-            u.fake_initial_phase_us = fake.value("initial_phase_us", u.fake_initial_phase_us);
-            u.fake_drift_ppm = fake.value("drift_ppm", u.fake_drift_ppm);
+            u.fake.width = unsigned_value(fake, "width", u.fake.width);
+            u.fake.height = unsigned_value(fake, "height", u.fake.height);
+            u.fake.initial_phase_us = fake.value("initial_phase_us", u.fake.initial_phase_us);
+            u.fake.drift_ppm = fake.value("drift_ppm", u.fake.drift_ppm);
         }
         c.units.push_back(u);
     }
@@ -151,21 +179,36 @@ std::string Config::to_json() const {
         ns.push_back({{"id", n.id}, {"address", n.address}, {"interface", n.interface}, {"port", n.port}});
     for (const auto& u : units) {
         nlohmann::json unit = {{"id", u.id}, {"node_id", u.node_id}, {"camera_id", u.camera_id},
-            {"width", u.width}, {"height", u.height}, {"views", u.views}, {"fps", u.fps},
             {"profile", u.profile}, {"exposure_us", u.exposure_us}, {"analogue_gain", u.analogue_gain},
             {"auto_gain", u.auto_gain}, {"queue_capacity", u.queue_capacity}, {"pool_capacity", u.pool_capacity}};
         if (backend == "fake")
-            unit["fake"] = {{"initial_phase_us", u.fake_initial_phase_us}, {"drift_ppm", u.fake_drift_ppm}};
+            unit["fake"] = {{"width", u.fake.width}, {"height", u.fake.height},
+                            {"initial_phase_us", u.fake.initial_phase_us}, {"drift_ppm", u.fake.drift_ppm}};
         us.push_back(std::move(unit));
     }
     return nlohmann::json({{"group_id", group_id}, {"reference_unit", reference_unit}, {"backend", backend},
+        {"fps", fps}, {"network", {{"mode", network_mode}, {"clock_port", clock_port}}},
         {"nodes", ns}, {"units", us}, {"clock_max_offset_ms", clock_max_offset_ms},
         {"clock_max_age_seconds", clock_max_age_seconds}, {"request_timeout_seconds", request_timeout_seconds},
         {"startup_timeout_seconds", startup_timeout_seconds}}).dump();
 }
+std::string Config::sync_json() const {
+    validate();
+    std::vector<std::string> node_ids;
+    for (const auto& n : nodes) node_ids.push_back(n.id);
+    std::sort(node_ids.begin(), node_ids.end());
+    std::vector<const UnitConfig*> ordered;
+    for (const auto& u : units) ordered.push_back(&u);
+    std::sort(ordered.begin(), ordered.end(), [](const auto* a, const auto* b) { return a->id < b->id; });
+    nlohmann::json us = nlohmann::json::array();
+    for (const auto* u : ordered) us.push_back({{"id", u->id}, {"node_id", u->node_id}});
+    return nlohmann::json({{"group_id", group_id}, {"reference_unit", reference_unit}, {"backend", backend},
+        {"fps", fps}, {"clock_domain", nodes.size() == 1 ? "local" : "common"},
+        {"nodes", node_ids}, {"units", us}}).dump();
+}
 const std::uint8_t* FramePacket::view_data(unsigned index) const {
     if (!storage || !views || !width || !height || width % views || index >= views ||
-        storage->pixels.size() != static_cast<std::size_t>(width) * height)
+        storage->pixels.size() != static_cast<std::uint64_t>(width) * height)
         throw std::out_of_range("invalid frame view or storage");
     return storage->pixels.data() + static_cast<std::size_t>(index) * view_width();
 }

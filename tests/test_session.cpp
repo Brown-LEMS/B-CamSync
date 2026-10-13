@@ -1,4 +1,5 @@
 #include "bcamsync/session.hpp"
+#include "session_test_access.hpp"
 #include "bcamsync/phase.hpp"
 #include <algorithm>
 #include <arpa/inet.h>
@@ -28,14 +29,14 @@ template <class F> void rejects(F action) {
 }
 struct Probe {
     std::atomic<bool> running{false}, common_time{false}, fail_cancel{false}, fail_stop{false},
-        empty_timing{false};
+        empty_timing{false}, capture_failure{false};
     std::atomic<unsigned> starts{0}, stops{0}, snapshots{0}, snapshot_delay_ms{0};
 };
 /// Software fixture generates complete timing history independently of frame reads.
 class SyntheticBackend final : public AcquisitionBackend {
   public:
-    SyntheticBackend(UnitConfig unit, std::shared_ptr<Probe> probe)
-        : unit_(std::move(unit)), probe_(std::move(probe)) {}
+    SyntheticBackend(UnitConfig unit, std::shared_ptr<Probe> probe, unsigned fps = 40)
+        : fps_(fps), unit_(std::move(unit)), probe_(std::move(probe)) {}
     void start(const std::string& session, std::uint64_t round, bool common) override {
         require(!session.empty() && round != 0, "backend must receive a synchronization identity");
         probe_->common_time = common;
@@ -55,7 +56,7 @@ class SyntheticBackend final : public AcquisitionBackend {
         return snapshot_at(timestamp());
     }
     TimingSnapshot snapshot_at(std::int64_t now) const {
-        const auto period = 1000000000LL / unit_.fps;
+        const auto period = 1000000000LL / fps_;
         const auto last = static_cast<std::uint64_t>(now / period);
         const auto count = std::min<std::uint64_t>(last, 240);
         TimingSnapshot result;
@@ -88,17 +89,19 @@ class SyntheticBackend final : public AcquisitionBackend {
         packet->timestamp_ns = timestamp();
         packet->sensor_timestamp_ns = packet->timestamp_ns;
         packet->sequence =
-            static_cast<std::uint64_t>(packet->timestamp_ns / (1000000000LL / unit_.fps));
-        packet->width = unit_.width;
-        packet->height = unit_.height;
-        packet->views = unit_.views;
+            static_cast<std::uint64_t>(packet->timestamp_ns / (1000000000LL / fps_));
+        packet->width = unit_.fake.width;
+        packet->height = unit_.fake.height;
+        packet->views = 4;
         auto storage = std::make_shared<FrameStorage>();
-        storage->pixels.assign(static_cast<std::size_t>(unit_.width) * unit_.height,
+        storage->pixels.assign(static_cast<std::size_t>(unit_.fake.width) * unit_.fake.height,
                                static_cast<std::uint8_t>(packet->sequence % 256));
         packet->storage = std::move(storage);
         return packet;
     }
-    std::string fault() const override { return {}; }
+    std::string fault() const override {
+        return probe_->capture_failure ? "injected camera failure" : "";
+    }
 
   private:
     std::int64_t timestamp() const {
@@ -113,6 +116,7 @@ class SyntheticBackend final : public AcquisitionBackend {
         return monotonic_ns();
 #endif
     }
+    unsigned fps_;
     UnitConfig unit_;
     std::shared_ptr<Probe> probe_;
 };
@@ -139,12 +143,13 @@ UnitConfig unit(const std::string& id, const std::string& node) {
     result.id = id;
     result.node_id = node;
     result.camera_id = "camera-" + id;
-    result.width = 16;
-    result.height = 8;
+    result.fake.width = 16;
+    result.fake.height = 8;
     return result;
 }
 Config configuration(bool network) {
     Config config;
+    config.backend = "fake";
     config.group_id = "software-session-fixture";
     config.reference_unit = "reference";
     config.nodes = {{"a", "127.0.0.1", "", free_port()}};
@@ -162,7 +167,7 @@ backends(const Config& config, const std::string& node,
     std::vector<std::unique_ptr<AcquisitionBackend>> result;
     for (const auto& u : config.units)
         if (u.node_id == node) {
-            result.push_back(std::make_unique<SyntheticBackend>(u, probes.at(result.size())));
+            result.push_back(std::make_unique<SyntheticBackend>(u, probes.at(result.size()), config.fps));
         }
     return result;
 }
@@ -171,7 +176,7 @@ void local_session() {
     auto config = configuration(false);
     config.reference_unit = "follower";
     auto p0 = std::make_shared<Probe>(), p1 = std::make_shared<Probe>();
-    Session session(config, "a", backends(config, "a", {p0, p1}));
+    auto session = detail::SessionTestAccess::create(config, "a", backends(config, "a", {p0, p1}));
     session.start();
     require(session.wait_ready(8s), "single-node boards must converge without image consumption");
     require(p0->snapshots > 1 && p1->snapshots > 1, "runtime continually observes all boards");
@@ -212,8 +217,13 @@ void network_session() {
     std::cout << "checking two-node loopback coordination\n" << std::flush;
     const auto config = configuration(true);
     auto a = std::make_shared<Probe>(), b = std::make_shared<Probe>();
-    Session follower(config, "b", backends(config, "b", {b}));
-    Session coordinator(config, "a", backends(config, "a", {a}));
+    auto follower_config = config;
+    std::reverse(follower_config.nodes.begin(), follower_config.nodes.end());
+    std::reverse(follower_config.units.begin(), follower_config.units.end());
+    follower_config.units.front().exposure_us = 2000;
+    follower_config.units.front().queue_capacity = 8;
+    auto follower = detail::SessionTestAccess::create(follower_config, "b", backends(follower_config, "b", {b}));
+    auto coordinator = detail::SessionTestAccess::create(config, "a", backends(config, "a", {a}));
     follower.start();
     coordinator.start();
     const auto ready = coordinator.wait_ready(8s);
@@ -226,8 +236,11 @@ void network_session() {
     }
     require(ready, "coordinator must align remote unit");
     require(follower.wait_ready(2s), "readiness propagates to follower session");
-    require(a->common_time && b->common_time,
-            "cross-node synchronization selects common realtime domain");
+    require(!a->common_time && !b->common_time,
+            "backends retain local sensor time under cross-node synchronization");
+    const auto mapped = coordinator.read("reference", 100ms);
+    require(mapped && mapped->clock_valid && mapped->timestamp_ns > mapped->sensor_timestamp_ns,
+            "runtime maps cross-node frame timestamps without changing sensor time");
     for (const auto& state : follower.status().units)
         if (state.unit_id != config.reference_unit)
             require(state.measurement_end_ns > 0,
@@ -269,6 +282,8 @@ void network_session() {
         std::this_thread::sleep_for(20ms);
     } while (std::chrono::steady_clock::now() < deadline);
     require(!state.ready && !state.fault.empty(), "peer loss faults synchronized group");
+    require(a->running && coordinator.read("reference", 100ms),
+            "peer loss leaves healthy local acquisition readable");
     coordinator.stop();
 }
 void incompatible_peer() {
@@ -277,8 +292,8 @@ void incompatible_peer() {
     auto mismatch = config;
     mismatch.group_id = "different-group";
     auto a = std::make_shared<Probe>(), b = std::make_shared<Probe>();
-    Session follower(mismatch, "b", backends(mismatch, "b", {b}));
-    Session coordinator(config, "a", backends(config, "a", {a}));
+    auto follower = detail::SessionTestAccess::create(mismatch, "b", backends(mismatch, "b", {b}));
+    auto coordinator = detail::SessionTestAccess::create(config, "a", backends(config, "a", {a}));
     follower.start();
     coordinator.start();
     rejects([&] { coordinator.wait_ready(2s); });
@@ -288,9 +303,21 @@ void incompatible_peer() {
 }
 void malformed_sessions() {
     const auto config = configuration(false);
-    rejects([&] { Session invalid(config, "a", {}); });
+    rejects([&] { auto invalid = detail::SessionTestAccess::create(config, "a", {}); });
     auto p0 = std::make_shared<Probe>(), p1 = std::make_shared<Probe>();
-    rejects([&] { Session invalid(config, "missing", backends(config, "a", {p0, p1})); });
+    rejects([&] { auto invalid = detail::SessionTestAccess::create(config, "missing", backends(config, "a", {p0, p1})); });
+}
+void local_capture_failures() {
+    auto config = configuration(false);
+    auto healthy = std::make_shared<Probe>(), failed = std::make_shared<Probe>();
+    failed->capture_failure = true;
+    auto session = detail::SessionTestAccess::create(config, "a", backends(config, "a", {healthy, failed}));
+    session.start();
+    rejects([&] { session.wait_ready(2s); });
+    require(session.read("reference", 100ms) != nullptr, "a camera fault leaves other units readable");
+    rejects([&] { session.read("follower", 100ms); });
+    failed->capture_failure = false;
+    session.stop();
 }
 void cleanup_failures() {
     std::cout << "checking backend cleanup failures\n" << std::flush;
@@ -298,7 +325,7 @@ void cleanup_failures() {
         auto config = configuration(false);
         config.units.resize(1);
         auto probe = std::make_shared<Probe>();
-        Session session(config, "a", backends(config, "a", {probe}));
+        auto session = detail::SessionTestAccess::create(config, "a", backends(config, "a", {probe}));
         session.start();
         require(session.wait_ready(1s), "single-reference fixture becomes ready");
         if (cancel_failure)
@@ -323,13 +350,59 @@ void startup_deadline() {
     config.startup_timeout_seconds = .2;
     auto probe = std::make_shared<Probe>();
     probe->empty_timing = true;
-    Session session(config, "a", backends(config, "a", {probe}));
+    auto session = detail::SessionTestAccess::create(config, "a", backends(config, "a", {probe}));
     session.start();
+    const auto acquisition_deadline = std::chrono::steady_clock::now() + 1s;
+    while (!probe->running && std::chrono::steady_clock::now() < acquisition_deadline)
+        std::this_thread::sleep_for(1ms);
+    require(session.read("reference", 100ms) && !session.status().ready,
+            "frames are available before synchronization readiness");
     rejects([&] { session.wait_ready(2s); });
     require(session.status().fault.find("startup") != std::string::npos,
             "missing startup timing reaches configured deadline");
+    require(probe->running && session.read("reference", 100ms),
+            "startup synchronization fault leaves frames available");
     session.stop();
-    require(!probe->running, "startup fault releases the acquisition backend");
+    require(!probe->running, "explicit stop releases the acquisition backend");
+}
+void cached_clock_expiry() {
+    auto config = configuration(true);
+    config.clock_max_age_seconds = .05;
+    auto probe = std::make_shared<Probe>();
+    auto session = detail::SessionTestAccess::create(config, "a", backends(config, "a", {probe}));
+    session.start();
+    const auto deadline = std::chrono::steady_clock::now() + 1s;
+    std::shared_ptr<const FramePacket> frame;
+    do {
+        frame = session.read("reference", 1ms);
+        if (frame && frame->clock_valid) break;
+        std::this_thread::sleep_for(1ms);
+    } while (std::chrono::steady_clock::now() < deadline);
+    require(frame && frame->clock_valid, "initial clock mapping is available during connection setup");
+    std::this_thread::sleep_for(100ms);
+    const auto expired = session.read("reference", 1ms);
+    require(expired && !expired->clock_valid && expired->timestamp_ns == 0,
+            "blocking node setup cannot keep a stale mapping marked valid");
+    require(frame->clock_valid, "mapping updates leave previously delivered metadata immutable");
+    session.stop();
+}
+void acquisition_without_common_clock() {
+#ifdef __linux__
+    auto config = configuration(true);
+    config.backend = "arducam";
+    config.network_mode = "existing";
+    config.nodes[1].address = "127.0.0.2";
+    config.startup_timeout_seconds = .2;
+    auto probe = std::make_shared<Probe>();
+    auto session = detail::SessionTestAccess::create(config, "b", backends(config, "b", {probe}));
+    session.start();
+    rejects([&] { session.wait_ready(2s); });
+    const auto frame = session.read("follower", 100ms);
+    require(frame && !frame->clock_valid && frame->timestamp_ns == 0 && frame->sensor_timestamp_ns > 0,
+            "clock startup failure preserves local frames with explicit unavailable group time");
+    require(probe->running, "backend injection does not disable physical clock policy");
+    session.stop();
+#endif
 }
 void early_boot_history() {
     auto config = configuration(false);
@@ -353,7 +426,10 @@ int main() {
         network_session();
         incompatible_peer();
         cleanup_failures();
+        local_capture_failures();
         startup_deadline();
+        acquisition_without_common_clock();
+        cached_clock_expiry();
         std::cout << "session tests passed\n";
     } catch (const std::exception& e) {
         std::cerr << e.what() << '\n';
