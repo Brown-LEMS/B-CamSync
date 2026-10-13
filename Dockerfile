@@ -4,7 +4,7 @@ ARG LIBCAMERA_VERSION=0.5.2
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential gcc-12 g++-12 cmake ninja-build pkg-config git ca-certificates \
-    clang-16 clang-tidy-16 libclang-rt-16-dev \
+    clang-16 clang-tidy-16 llvm-16 libclang-rt-16-dev \
     python3 python3-dev python3-venv \
     nlohmann-json3-dev libyaml-dev libudev-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -30,6 +30,7 @@ RUN git clone --depth 1 --branch "v${LIBCAMERA_VERSION}" \
 
 ENV PKG_CONFIG_PATH=/opt/libcamera/lib/pkgconfig
 ENV LD_LIBRARY_PATH=/opt/libcamera/lib
+ENV ASAN_SYMBOLIZER_PATH=/usr/bin/llvm-symbolizer-16
 ENV BCAMSYNC_BUILD_ROOT=/work/build
 WORKDIR /src
 CMD ["bash"]

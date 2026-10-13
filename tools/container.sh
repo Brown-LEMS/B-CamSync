@@ -20,4 +20,5 @@ exec docker run --rm --platform "$platform" \
     --mount "type=bind,source=$source_root/build-linux,target=/work/build" \
     -e BCAMSYNC_TOOLCHAIN="${BCAMSYNC_TOOLCHAIN:-gcc}" \
     -e BCAMSYNC_JOBS="${BCAMSYNC_JOBS:-2}" \
+    -e BCAMSYNC_FUZZ_SECONDS \
     -w /src "$image" bash tools/build.sh "$@"

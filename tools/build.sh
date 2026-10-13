@@ -32,6 +32,7 @@ fi
 mkdir -p "$build_root/logs" "$build_root/packages"
 exec > >(tee "$build_root/logs/$toolchain-$action.log") 2>&1
 export PYTHONDONTWRITEBYTECODE=1
+export CMAKE_BUILD_PARALLEL_LEVEL="$jobs"
 export CXX="$compiler"
 printf 'Building %s with %s on %s; outputs: %s\n' "$action" "$compiler" "$(uname -m)" "$build_root"
 build_dir="$build_root/$toolchain-$action"
@@ -82,7 +83,7 @@ case "$action" in
             --config-setting=cmake.define.CMAKE_CXX_COMPILER="$compiler"
         progress 'Install the wheel in an independent Linux virtual environment'
         "$python" -m venv "$build_dir/wheel-env"
-        "$build_dir/wheel-env/bin/python" -m pip install --no-deps "$destination"/*.whl
+        "$build_dir/wheel-env/bin/python" -m pip install --force-reinstall --no-deps "$destination"/*.whl
         # NumPy is a public dependency installed from the image's pinned requirements.
         "$build_dir/wheel-env/bin/python" -m pip install \
             "$(grep '^numpy==' "$source_root/tools/container-requirements.txt")"
