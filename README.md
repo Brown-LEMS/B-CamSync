@@ -93,12 +93,47 @@ On every node, run the operator validator using the same duration and repeat cou
 
 The tool reports startup progress, per-board delivery, observed frame rate, sequence gaps, drops, timing-window metrics, retained-array integrity, and shutdown results. It validates local delivery and timestamp control; perform optical alignment measurements separately. The reference closes each run and followers confirm that shutdown before restarting. Repeat with another reference unit after restoring and preparing the node configuration.
 
-The software implementation has been validated on macOS with acquisition fixtures, ASan/UBSan, TSan, static analysis, and Python ownership checks. Compilation against the installed vendor SDK and actual device capture remain operator checks.
+Device capture and optical alignment are validated on the target nodes with their installed vendor SDK.
 
 ## Fake acquisition and CI
 
 Set `backend` to `fake` to exercise the public session API without cameras or node provisioning. The fake backend generates board pixels and timestamp observations, applies the same bounded phase actuator, and uses the same frame pool and queues. Per-unit `fake.initial_phase_us` and `fake.drift_ppm` specify simulated phase and drift. The [single-node configuration](examples/configs/fake_one_node.json) and [two-node loopback configuration](examples/configs/fake_two_nodes.json) provide examples. Fake acquisition uses the host's clocks; multi-host clock alignment remains part of the physical deployment.
 
-GitHub Actions defines Linux validation for software acquisition, Python packaging, separate sanitizer builds, timing/message fuzzing, and real-backend compilation against pinned libcamera headers. The fake backend and new CI checks have not been run in this implementation round. Actual SDK capture and optical measurements remain device checks.
+GitHub Actions uses the same Debian development image and build entry points as local container development. GCC checks run on native ARM64 and x86-64 runners; Clang supplies supplementary compilation, sanitizer, fuzzing, and static-analysis checks. CI retains build logs, source distributions, C++ archives, and Python wheels as artifacts. Actual capture and optical measurements are device checks.
+
+## Develop and build in Linux
+
+The [Dockerfile](Dockerfile) provides Debian 12, GCC 12, Clang 16, a separate Python 3.11 virtual environment, and pinned official libcamera 0.5.2 headers and libraries. Apple Silicon development uses native `linux/arm64` containers. Build the image once, then compile incrementally:
+
+```sh
+bash tools/container.sh image
+bash tools/container.sh build
+```
+
+The launcher mounts the source read-only and stores generated files in `build-linux/`. GCC is the default toolchain. Local development and GitHub Actions both call [tools/build.sh](tools/build.sh) through the same launcher. On an x86-64 host, select `BCAMSYNC_PLATFORM=linux/amd64`. Run `bash tools/container.sh` without arguments to open the development shell; its active Python environment belongs to the Linux image.
+
+| Action | Build and validation |
+| --- | --- |
+| `build` | Incremental Debug compilation with fake acquisition available; shares the `software` build directory |
+| `software` | Debug build, native/Python checks, and independent CMake/Python installation checks |
+| `release` | Release build with the real backend, software checks, and installed-package checks |
+| `sdk` | Compile the real backend and Python interface against the available SDK |
+| `package` | Produce source distribution, C++ installation archive, and real-backend Python wheel; test the installed wheel in a separate venv |
+| `address` | Clang ASan/UBSan, native leak checking, and instrumented Python ownership checks |
+| `thread` | Separate Clang TSan build for native concurrency checks |
+| `fuzz` | Bounded LLVM timing/control-message fuzzing, default 60 seconds |
+| `analyze` | Clang static analysis of native and SDK resource paths |
+
+```sh
+bash tools/container.sh software
+bash tools/container.sh package
+bash tools/container.sh address
+bash tools/container.sh thread
+BCAMSYNC_TOOLCHAIN=clang bash tools/container.sh sdk
+```
+
+`BCAMSYNC_TOOLCHAIN=clang` selects the supplementary compiler for normal builds; safety actions select Clang themselves. `BCAMSYNC_JOBS` controls build parallelism (default two). Logs are saved in `build-linux/logs/`; packages are saved in `build-linux/packages/gcc-aarch64/` for the default ARM64 build. Compiler and action build directories are separate. The image's SDK supports API compilation and fake acquisition checks; node installation uses the matching deployed Arducam SDK.
+
+The local ARM64 Debian container has passed GCC software and installed-package checks, real-backend compilation, wheel installation and public fake acquisition, ASan/UBSan, TSan, static analysis, and a bounded fuzz run. GitHub Actions has been configured but has not been run in this round.
 
 The architecture and durable decisions are described in [docs/design.md](docs/design.md).

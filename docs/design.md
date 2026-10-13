@@ -94,6 +94,8 @@ An explicitly selected fake backend exercises the managed public API in software
 
 The user-facing interfaces are C++ and Python, sharing one C++ synchronization and acquisition implementation, frame ownership rules, and lifecycle semantics. A public C API is outside the intended scope. pybind11 supplies the Python interface and releases the GIL during blocking operations and session destruction. Readonly NumPy views retain native storage through an independent shared owner. CMake exports `BCamSync::bcamsync`; scikit-build-core packages the Python interface and native library together.
 
+Development and CI share a Debian 12 container and executable build entry points. GCC 12 is the normal build and SDK compatibility baseline; Clang 16 supplies supplementary compilation, static analysis, sanitizers, and libFuzzer. Native ARM64 Linux containers align development with the node architecture and Bookworm userspace while keeping the SDK and Python dependencies explicit. Source distributions remain the deployment path; container-built binary packages also exercise installation and language interfaces. Real-device installations build against their deployed vendor SDK.
+
 ## Memory safety and validation
 
 Resource ownership is explicit: device handles, mappings, requests, buffers, and threads have scoped owners. Frame objects retain their pixel storage for as long as any C++ frame or Python array view refers to it. Device shutdown and session destruction must preserve outstanding frame storage until its last consumer releases it. Driver buffer reuse and library buffer-pool reuse are separate, defined lifecycle boundaries. Low-level pointer access is concentrated in device and binding boundaries; core observations and decisions use owned value types.
