@@ -83,6 +83,27 @@ The image queue is a bounded FIFO: when full it drops the oldest undelivered pac
 
 `status()` reports group readiness, faults, and each unit's phase, P95, maximum error, and last measured window boundary. Startup readiness requires two settled windows with P95 at most 0.5 ms and maximum at most 1 ms; the network clock gate is 0.1 ms by default. These are controller thresholds. The synchronization target is sub-millisecond alignment. Runtime failures stop the session and surface through status and frame access; recovery is an explicit stop and new start.
 
+## Optional developer host
+
+Applications can use local `Session` directly without a developer host. For remote development, `bcamsync.management` supplies a thin `NodeService` around a node-local Session and a `GroupClient` that sends management requests over SSH. The reference unit's node remains the synchronization coordinator. A client disconnect leaves node sessions running; stopping requires an explicit command.
+
+Install the same group configuration on each node and run the optional foreground service there:
+
+```sh
+.venv/bin/python -m bcamsync.management serve group.json node-a --socket /run/user/1000/bcamsync.sock
+```
+
+The service accepts configuration inspection, start, status, and stop through its local Unix socket. It does not start acquisition until requested. It can run under the project's existing service supervision; it does not install a daemon or change configuration files. Node applications can use `NodeService.session` to consume local frames while serving management requests in another thread.
+
+The [host example](examples/manage_group.py) reads a separate targets JSON mapping node IDs to `ssh_host`, `python`, and `socket` on each node. Copy [host_targets.json](examples/configs/host_targets.json) and adjust the SSH aliases, installed Python paths, and socket paths. It checks resolved configurations before starting followers and then the reference node. Host targets describe management access and are separate from synchronization-network addresses. The host interface carries commands and status; images stay local.
+
+```sh
+.venv/bin/python examples/manage_group.py group.json targets.json check
+.venv/bin/python examples/manage_group.py group.json targets.json start
+.venv/bin/python examples/manage_group.py group.json targets.json status
+.venv/bin/python examples/manage_group.py group.json targets.json stop
+```
+
 ## Run the device workflow
 
 On every node, run the operator validator using the same duration and repeat count. Start the follower first, then the reference shortly afterward:

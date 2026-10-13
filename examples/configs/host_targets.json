@@ -1,0 +1,12 @@
+{
+  "node-a": {
+    "ssh_host": "pi-a",
+    "python": "/opt/bcamsync/.venv/bin/python",
+    "socket": "/run/user/1000/bcamsync.sock"
+  },
+  "node-b": {
+    "ssh_host": "pi-b",
+    "python": "/opt/bcamsync/.venv/bin/python",
+    "socket": "/run/user/1000/bcamsync.sock"
+  }
+}

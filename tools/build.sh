@@ -100,17 +100,17 @@ case "$action" in
             export ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1:halt_on_error=1
             export UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
             ctest --test-dir "$build_dir" --output-on-failure --timeout 180 \
-                -E '^(python_ownership|fake_python|platform_plans|device_workflow)$'
+                -E '^(python_ownership|fake_python|platform_plans|device_workflow|python_management)$'
             progress 'Check Python arrays with the matching Clang ASan runtime'
             runtime=$("$compiler" -print-file-name="libclang_rt.asan-$(uname -m).so")
             [[ -f $runtime ]] || { printf 'Missing Clang ASan runtime: %s\n' "$runtime" >&2; exit 1; }
             ASAN_OPTIONS=detect_leaks=0:detect_stack_use_after_return=1:halt_on_error=1 \
                 LD_PRELOAD="$runtime" ctest --test-dir "$build_dir" --output-on-failure --timeout 180 \
-                -R '^(python_ownership|fake_python)$'
+                -R '^(python_ownership|fake_python|python_management)$'
         else
             progress 'Check native acquisition and shutdown under TSan'
             TSAN_OPTIONS=halt_on_error=1 ctest --test-dir "$build_dir" --output-on-failure --timeout 180 \
-                -E '^(python_ownership|fake_python|platform_plans|device_workflow)$'
+                -E '^(python_ownership|fake_python|platform_plans|device_workflow|python_management)$'
         fi
         ;;
     fuzz)
