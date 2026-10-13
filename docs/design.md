@@ -33,7 +33,7 @@ Each node operates local acquisition, timing observation, and correction executi
 
 The primary frame-delivery unit is one board frame packet containing its four camera views, board identity, frame sequence, and timing metadata. The views refer to the same captured board frame and retain its storage. Automatic assembly of corresponding frames from multiple local boards is outside the first frame-access contract.
 
-Frame consumption follows the pull model of [OpenCV VideoCapture](https://docs.opencv.org/4.x/d8/dfe/classcv_1_1VideoCapture.html): applications call a read operation to obtain a frame packet, with acquisition and synchronization continuing independently. OpenCV's read implementation delegates grabbing and retrieval to its backend; it does not define one universal slow-consumer buffering policy. The exact bounded buffering and frame-skipping policy for B-CamSync remains to be finalized, with delivered capture sequences exposing any discontinuities.
+Frame consumption follows the pull model of [OpenCV VideoCapture](https://docs.opencv.org/4.x/d8/dfe/classcv_1_1VideoCapture.html): applications call a read operation to obtain a frame packet, with acquisition and synchronization continuing independently. B-CamSync uses a bounded FIFO that evicts the oldest undelivered packet. A reusable image pool separates SDK buffer ownership from application retention; if all storage is retained, image delivery is skipped while timing observation and control continue. Capture sequences and cumulative drop counts expose discontinuities. This choice bounds capture-side memory and keeps application processing out of synchronization scheduling.
 
 ## Synchronization model
 
@@ -72,7 +72,7 @@ Network and IP management are node-level platform responsibilities alongside clo
 
 Network addressing is independent of the selected reference unit. Selecting another reference changes coordinator and clock-source roles while preserving node identity and address assignment. Node services provision and activate the synchronization network before clock alignment; frame-phase calibration follows clock readiness.
 
-The first direct-link implementation uses a dedicated static IPv4 subnet and a persistent platform network profile per node, with no gateway or DNS on the synchronization link. Node identity, synchronization interface, and subnet configuration determine the node addresses and the corresponding clock and control endpoints. Addresses are assigned to nodes and remain stable across reference selection. The Raspberry Pi OS Bookworm platform implementation uses NetworkManager. Deployments with an already configured network can explicitly supply their existing addresses. Detailed address allocation and profile lifecycle remain technical decisions to finalize.
+The first direct-link implementation uses a dedicated static IPv4 subnet and a persistent platform network profile per node, with no gateway or DNS on the synchronization link. Explicit addresses are assigned to nodes and remain stable across reference selection. The Raspberry Pi OS Bookworm platform implementation uses NetworkManager, retaining the original connection UUID and chrony configuration for operator restoration. Existing networks can explicitly disable address provisioning. One argument-free privileged clock helper per prepared node permits initial alignment without running the camera application as root; its bounded startup operations disable stepping before capture begins.
 
 ## Backend layering
 
@@ -82,15 +82,17 @@ The shared layer owns topology, group membership, reference selection, synchroni
 
 The backend boundary must preserve timing meaning and control completion semantics, along with frame identity, pixel format, dimensions, strides, and buffer lifetime. Camera-specific controls are expressed through explicit backend configuration. Available controls and timing capabilities are described by the backend.
 
-Camera type and host platform are separate configuration concerns. A backend implementation can target a specific SDK and platform combination, while the public topology model stays the same. The initial target is the Arducam stack on Raspberry Pi; backend naming and concrete configuration types remain to be defined.
+Camera type and host platform are separate concerns. A backend implementation can target a specific SDK and platform combination, while the public topology model stays the same. The first implementation exposes the acquisition boundary in `AcquisitionBackend` and supplies an Arducam/libcamera implementation for Raspberry Pi. Additional backend selection and device-specific configuration will be introduced with the next concrete backend.
 
 Node clock alignment and inter-node transport belong to the shared runtime boundary, with platform-specific mechanisms supplied as needed. Each camera backend supplies its timestamp domain and mapping information rather than reimplementing the network synchronization policy. Synchronization topology is independent of whether applications consume images locally or arrange remote image delivery.
 
-The core, managed acquisition runtime, and initial Arducam backend will use C++. Backend responsibilities remain independent of public language bindings. Start with the Arducam implementation and a clear backend contract; additional backends can be added when concrete devices are introduced.
+The core, managed acquisition runtime, and initial Arducam backend use C++. Backend responsibilities remain independent of public language bindings. Additional camera backends can be added when concrete devices are introduced.
+
+An explicitly selected fake backend exercises the managed public API in software. It supplies asynchronous board frames and timing observations, configurable initial phase and drift, and the same bounded actuator and image-ownership rules. This makes complete session, binding, and packaging validation independent of camera availability. Fake groups skip physical node provisioning and clock adjustment; their observations use host clocks. Hardware-specific compile checks and device measurements remain separate.
 
 ## Language interfaces
 
-The user-facing interfaces are C++ and Python, sharing one C++ synchronization and acquisition implementation, frame ownership rules, and lifecycle semantics. A public C API is outside the intended scope. Python binding technology remains to be selected. The C++ implementation direction is accompanied by explicit memory-safety design and validation requirements.
+The user-facing interfaces are C++ and Python, sharing one C++ synchronization and acquisition implementation, frame ownership rules, and lifecycle semantics. A public C API is outside the intended scope. pybind11 supplies the Python interface and releases the GIL during blocking operations and session destruction. Readonly NumPy views retain native storage through an independent shared owner. CMake exports `BCamSync::bcamsync`; scikit-build-core packages the Python interface and native library together.
 
 ## Memory safety and validation
 
@@ -102,7 +104,7 @@ Behavioral validation targets buffer ownership and concurrency: retained frames 
 
 Fuzzing targets timing observations, control-message parsing, and lifecycle sequences, combined with sanitizers. MemorySanitizer can supplement isolated components when their dependencies can be fully instrumented. Sanitizers observe executed paths; tests must also check that retained frame contents remain unchanged before ownership is released, including cases where pool storage is still allocated and an unintended overwrite would not be reported as use-after-free. Driver DMA ownership and SDK interactions require explicit lifecycle review and device checks.
 
-These checks are introduced with implementation and form the native validation scope requested for this project. No placeholder test framework or device experiments are introduced while the repository contains design only.
+These checks form the native validation scope requested for this project. Continuous integration exercises software acquisition and ownership independently of physical-device validation.
 
 ## First implementation completion criteria
 
@@ -112,7 +114,7 @@ The intended topology coverage comprises eight cameras across two nodes with one
 
 Device validation exercises installation, Ethernet direct-link preparation for multi-node configurations, clock convergence, startup phase calibration, local delivery of every configured camera view, continuous phase tracking, correction and restoration, and repeated shutdown and restart. Reference selection is changed between sessions to exercise the same topology with a different master unit. Software ownership and sanitizer checks accompany the implementation. Runtime throughput, synchronization-window metrics, and optical observations are recorded as distinct measurements using release builds where timing is measured.
 
-The board-level frame packet and operator-run device validation are established. Exact slow-consumer buffering, behavior on synchronization or network failure, capture settings, and acceptance duration and thresholds remain to be finalized. These affect the public contract and the device acceptance workload. Implementation is complete when the library and deployment flow are ready for the requested device checks; successful device checks are reported separately with the hardware and results actually exercised.
+The board-level frame packet, bounded image buffering, and operator-run device validation are implemented. Runtime failures stop acquisition and remain visible in group status; restarting is explicit. Normal group shutdown is initiated by the coordinator and confirmed after follower cleanup. Default capture settings follow the initial board format, while operator configuration supplies device IDs and capture parameters. The device tool defaults to ten-minute acquisition runs and records timestamp-control quality separately from optical results. Successful device checks are reported with the hardware and results actually exercised.
 
 ## Implementation background
 
@@ -122,4 +124,4 @@ That implementation provides phase estimation and control in `rpi/phase_sync.py`
 
 ## Current design status
 
-The independent library boundary, synchronization topology model, centralized computation with a freely selectable reference unit, core/integration separation, and multi-backend direction are established. Both managed and external acquisition are intended integration modes; the first implementation provides C++ managed acquisition for Arducam on Raspberry Pi with C++ and Python interfaces, local frame consumption, inter-node synchronization communication, and memory-safety validation. The reference node hosts coordination and clock service; node-level clock and network management include direct Ethernet deployment. Detailed API signatures, backend contracts, network address allocation and profile lifecycle, internal runtime architecture, binding technology, packaging, and supported device/platform combinations remain to be decided. This repository currently contains project guidance and this design document; library code has not yet been extracted.
+The first implementation provides a native timing core, managed acquisition runtime, Arducam backend, C++ and Python interfaces, direct-link node preparation, configuration examples, and operator-run device validation. The reference node hosts coordination and clock service. Software checks use acquisition fixtures and instrumented native builds; compilation and acquisition against the installed vendor SDK are performed on the target nodes. External acquisition integration and additional concrete backends remain later extensions of the same acquisition boundary.
