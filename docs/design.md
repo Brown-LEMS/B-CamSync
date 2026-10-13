@@ -12,11 +12,44 @@ B-CamSync owns camera initialization, camera access, frame acquisition, timestam
 
 Applications own frame processing, recording policy, privacy controls, retention, segmentation, and data transfer. BAPD8 maintains those responsibilities in its own repository. B-CamSync's design is independent of BAPD8's application scenario.
 
-## Synchronization approach
+## Synchronization model
 
-Network clock synchronization establishes a common time domain. Sensor timestamps are mapped into that domain so frame timing can be compared across nodes. Closed-loop frame-phase control measures phase differences and drift, applies bounded frame-period adjustments, and restores the baseline period after each correction.
+The model separates four concepts:
+
+- A synchronization unit is a device or device group whose frame phase is observed and controlled together. For the initial Arducam backend, one synchronization board is one unit.
+- A camera view is an individual image source exposed to the application. Each current Arducam board provides four views, with synchronization controlled at board level and frame access presented at view level.
+- A node hosts one or more synchronization units and provides their local clock domain.
+- A synchronization group identifies the units whose frame phases are aligned, within one node or across several nodes.
+
+Each group has an explicitly selected reference unit. Every other unit follows that reference and maintains its own measurement and correction state. Reference and follower roles belong to units, independently of node roles: a node can host both a reference board and a follower board.
+
+| Configuration | Units | Clock arrangement | Phase arrangement |
+| --- | --- | --- | --- |
+| Eight cameras, two nodes, one board per node | Two boards | Align node clocks over the network | One reference and one follower |
+| Eight cameras, one node, two boards | Two boards | Shared local clock domain | One reference and one follower |
+| Sixteen cameras, two nodes, two boards per node | Four boards | Align node clocks over the network | One reference and three followers |
+
+Clock alignment and frame-phase alignment are separate layers. Units on the same node use a shared local time domain and still require ongoing frame-phase observation and correction. Units on different nodes additionally require network clock alignment and timestamp mapping into a common domain. For the current libcamera path, sensor timestamps use the node's `CLOCK_BOOTTIME` domain.
+
+Closed-loop frame-phase control measures phase differences and drift, applies bounded frame-period adjustments, and restores the baseline period after each correction. Local and remote units share the same estimation and control model; access to their observations and controls is local or networked according to placement.
+
+Synchronization runs continuously after startup calibration, independently of application frame consumption, processing, recording, and persistence. The library reports synchronization state and quality; applications decide how those reports affect their own workflows.
 
 The goal is sub-millisecond synchronization with explicit quality reporting. Synchronization observations and control state should be available alongside frame acquisition so applications can interpret the timing of their data.
+
+## Backend layering
+
+The library provides a common programming model for nodes, synchronization units, camera views, synchronization groups, and acquired frames. Applications initialize and use these objects through B-CamSync. Backend implementations map concrete camera SDKs, drivers, and platform facilities to that model. Arducam is the first implementation target.
+
+The shared layer owns topology, group membership, reference selection, synchronization estimation and policy, and public lifecycle and frame-access semantics. A backend owns device discovery and binding, device configuration, acquisition, pixel buffers and view layout, timestamp interpretation, and execution and completion reporting of synchronization controls. Existing acquisition systems can implement the same acquisition boundary when that integration mode is introduced.
+
+The backend boundary must preserve timing meaning and control completion semantics, along with frame identity, pixel format, dimensions, strides, and buffer lifetime. Camera-specific controls are expressed through explicit backend configuration. Available controls and timing capabilities are described by the backend.
+
+Camera type and host platform are separate configuration concerns. A backend implementation can target a specific SDK and platform combination, while the public topology model stays the same. The initial target is the Arducam stack on Raspberry Pi; backend naming and concrete configuration types remain to be defined.
+
+Node clock alignment and inter-node transport belong to the shared runtime boundary, with platform-specific mechanisms supplied as needed. Each camera backend supplies its timestamp domain and mapping information rather than reimplementing the network synchronization policy. Synchronization topology is independent of whether applications consume images locally or arrange remote image delivery.
+
+The backend boundary does not prescribe Python or native implementation. Public API and backend responsibilities are established first; concrete language bindings, threading, and buffer delivery are implementation decisions. Start with the Arducam implementation and a clear backend contract; additional backends can be added when concrete devices are introduced.
 
 ## Implementation background
 
@@ -26,4 +59,4 @@ That implementation provides phase estimation and control in `rpi/phase_sync.py`
 
 ## Current design status
 
-The independent library boundary and initialization-to-frame-acquisition usage flow are established. Detailed API signatures, internal architecture, packaging, and supported hardware will be decided through implementation and explicit user decisions. This repository currently contains project guidance and this design document; library code has not yet been extracted.
+The independent library boundary, initialization-to-frame-acquisition usage flow, synchronization topology model, and multi-backend direction with Arducam as the initial target are established. Detailed API signatures, backend contracts, internal runtime architecture, packaging, and supported device/platform combinations will be decided through implementation and explicit user decisions. This repository currently contains project guidance and this design document; library code has not yet been extracted.
