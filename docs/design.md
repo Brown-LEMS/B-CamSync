@@ -100,6 +100,16 @@ Fuzzing targets timing observations, control-message parsing, and lifecycle sequ
 
 These checks are introduced with implementation and form the native validation scope requested for this project. No placeholder test framework or device experiments are introduced while the repository contains design only.
 
+## First implementation completion criteria
+
+The first implementation must be usable for a complete real-device workflow. It includes a buildable and installable C++ library and Python interface, an Arducam acquisition backend, multi-unit topology configuration, centralized ongoing phase control, node networking and clock setup, local frame consumption, and orderly shutdown. User examples and device validation tools use B-CamSync's own public interfaces and do not depend on BAPD8's acquisition application.
+
+The intended topology coverage comprises eight cameras across two nodes with one board each, eight cameras on one node with two boards, and sixteen cameras across two nodes with two boards each. Real-device validation is performed on the supplied hardware; the available Pi models, board and camera variants, installed SDK/driver stack, and device access must be identified before backend implementation is finalized.
+
+Device validation exercises installation, Ethernet direct-link preparation for multi-node configurations, clock convergence, startup phase calibration, local delivery of every configured camera view, continuous phase tracking, correction and restoration, and repeated shutdown and restart. Reference selection is changed between sessions to exercise the same topology with a different master unit. Software ownership and sanitizer checks accompany the implementation. Runtime throughput, synchronization-window metrics, and optical observations are recorded as distinct measurements using release builds where timing is measured.
+
+Frame delivery granularity, slow-consumer behavior, behavior on synchronization or network failure, capture settings, and acceptance duration and thresholds remain to be finalized. These affect the public contract and the device acceptance workload. Implementation is complete when the library and deployment flow are ready for the requested device checks; successful device checks are reported separately with the hardware and results actually exercised.
+
 ## Implementation background
 
 The starting implementation reference is the RPi synchronization code in the sibling `bapd8_acquisition` repository. It coordinates two Pi 4 nodes, each managing a B0267 synchronization board and four cameras. Reported optical observations were below 0.25 ms and typically around 0.15 ms.
