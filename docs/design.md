@@ -12,6 +12,25 @@ B-CamSync owns camera initialization, camera access, frame acquisition, timestam
 
 Applications own frame processing, recording policy, privacy controls, retention, segmentation, and data transfer. BAPD8 maintains those responsibilities in its own repository. B-CamSync's design is independent of BAPD8's application scenario.
 
+## Core and integration layer
+
+The synchronization core and application integration layer are separate. The core consumes timing observations and actuation feedback, maintains phase estimates and synchronization state, and produces correction decisions and quality information. It operates independently of pixel delivery, camera SDK calls, recording, and application workflow.
+
+Two application integration modes are intended:
+
+- Managed acquisition: B-CamSync initializes and operates cameras, runs synchronization continuously, and delivers frames to the application. This is the first implementation scope.
+- External acquisition: an existing acquisition system supplies timing observations, executes synchronization controls, and reports their completion while retaining its own pixel path and camera lifecycle. This mode shares the synchronization core and will be implemented later.
+
+The managed integration layer owns the acquisition session lifecycle and coordinates backend acquisition, timing observations, correction execution, and frame delivery. Waiting for or processing frames in application code does not drive synchronization progress. In external acquisition mode, the integration layer coordinates the equivalent observations and controls supplied by the application's acquisition system.
+
+Application integration mode and hardware backend are separate dimensions. Integration determines how the application participates in camera acquisition; a backend determines how concrete devices and platform facilities implement acquisition and synchronization controls. Both modes use the same timing and control semantics.
+
+## First implementation: local frame consumption
+
+Applications consume frames locally on the node hosting their cameras. Across nodes, B-CamSync exchanges synchronization observations, control requests, completion feedback, and status. Remote image delivery is outside the first implementation scope.
+
+Each node operates its own acquisition and continuous synchronization runtime for its local units. The group reference and follower relationships are defined by the topology; local and remote observations participate in the same synchronization model. Public frame access presents the local camera views, while group status describes the relevant synchronization state.
+
 ## Synchronization model
 
 The model separates four concepts:
@@ -59,4 +78,4 @@ That implementation provides phase estimation and control in `rpi/phase_sync.py`
 
 ## Current design status
 
-The independent library boundary, initialization-to-frame-acquisition usage flow, synchronization topology model, and multi-backend direction with Arducam as the initial target are established. Detailed API signatures, backend contracts, internal runtime architecture, packaging, and supported device/platform combinations will be decided through implementation and explicit user decisions. This repository currently contains project guidance and this design document; library code has not yet been extracted.
+The independent library boundary, synchronization topology model, core/integration separation, and multi-backend direction are established. Both managed and external acquisition are intended integration modes; the first implementation provides managed acquisition for Arducam on Raspberry Pi with local frame consumption and inter-node synchronization communication. Detailed API signatures, backend contracts, internal runtime architecture, packaging, and supported device/platform combinations remain to be decided. This repository currently contains project guidance and this design document; library code has not yet been extracted.
