@@ -77,7 +77,7 @@ case "$action" in
         tar -czf "$destination/bcamsync-cpp.tar.gz" -C "$build_dir/install" include lib bin
         progress 'Build source distribution and Python wheel'
         export CC=$([[ $toolchain == gcc ]] && printf gcc-12 || printf clang-16)
-        "$python" -m build --no-isolation --sdist --wheel --outdir "$destination" \
+        "$python" -m build --no-isolation --outdir "$destination" \
             --config-setting=cmake.define.BCAMSYNC_WITH_LIBCAMERA=ON \
             --config-setting=cmake.define.CMAKE_INSTALL_LIBDIR=lib \
             --config-setting=cmake.define.CMAKE_CXX_COMPILER="$compiler"
@@ -87,6 +87,22 @@ case "$action" in
         # NumPy is a public dependency installed from the image's pinned requirements.
         "$build_dir/wheel-env/bin/python" -m pip install \
             "$(grep '^numpy==' "$source_root/tools/container-requirements.txt")"
+        progress 'Build and install the independent host package without node dependencies'
+        host_destination="$build_root/packages/host"
+        mkdir -p "$host_destination"
+        host_source="$build_dir/host-source"
+        mkdir -p "$host_source"
+        cp -R "$source_root/host/." "$host_source/"
+        "$python" -m build --no-isolation "$host_source" --outdir "$host_destination"
+        "$python" -m venv "$build_dir/host-env"
+        "$build_dir/host-env/bin/python" -m pip install --force-reinstall --no-deps "$host_destination"/*.whl
+        env -u PYTHONPATH "$build_dir/host-env/bin/python" - <<'PY'
+import importlib.util
+import bcamsync_host
+assert importlib.util.find_spec("bcamsync") is None
+assert importlib.util.find_spec("numpy") is None
+print(f"Independent host installation: {bcamsync_host.__file__}")
+PY
         progress 'Exercise installed-wheel acquisition and retained arrays'
         cd "$source_root"
         env -u PYTHONPATH "$build_dir/wheel-env/bin/python" -m unittest discover -s tests -p test_fake_python.py -v
@@ -100,7 +116,7 @@ case "$action" in
             export ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1:halt_on_error=1
             export UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
             ctest --test-dir "$build_dir" --output-on-failure --timeout 180 \
-                -E '^(python_ownership|fake_python|platform_plans|device_workflow|python_management)$'
+                -E '^(python_ownership|fake_python|host_client|device_workflow|python_management)$'
             progress 'Check Python arrays with the matching Clang ASan runtime'
             runtime=$("$compiler" -print-file-name="libclang_rt.asan-$(uname -m).so")
             [[ -f $runtime ]] || { printf 'Missing Clang ASan runtime: %s\n' "$runtime" >&2; exit 1; }
@@ -110,7 +126,7 @@ case "$action" in
         else
             progress 'Check native acquisition and shutdown under TSan'
             TSAN_OPTIONS=halt_on_error=1 ctest --test-dir "$build_dir" --output-on-failure --timeout 180 \
-                -E '^(python_ownership|fake_python|platform_plans|device_workflow|python_management)$'
+                -E '^(python_ownership|fake_python|host_client|device_workflow|python_management)$'
         fi
         ;;
     fuzz)
@@ -136,7 +152,7 @@ case "$action" in
         clang-tidy-16 -p "$build_dir" \
             --checks='-*,clang-analyzer-*,bugprone-use-after-move,bugprone-dangling-handle' \
             --header-filter='.*bcamsync/.*' --warnings-as-errors='*' \
-            "$source_root"/src/{types,phase,wire,process,session,fake,arducam}.cpp
+            "$source_root"/src/{types,phase,wire,process,platform,session,fake,arducam}.cpp
         ;;
 esac
 progress 'Completed'
