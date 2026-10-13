@@ -1,6 +1,6 @@
 # B-CamSync
 
-B-CamSync (B = Brown) manages camera acquisition and continuous frame synchronization. Applications initialize a local session and pull board frame packets through C++ or Python. Image processing, recording, and storage belong to the application.
+B-CamSync manages camera acquisition and continuous frame synchronization. Applications initialize a local session and pull board frame packets through C++ or Python. Image processing, recording, and storage belong to the application.
 
 The first backend targets Arducam B0267 four-camera boards on Raspberry Pi 4 with Raspberry Pi OS Bookworm arm64 and the matching Arducam/libcamera SDK (0.5.2 or later). One board is one synchronization unit. A node can host multiple boards; one selected board is the reference for the whole group. Its node runs the coordinator, while every other node runs a local session and executes corrections. Images stay on their own nodes.
 
