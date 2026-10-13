@@ -1,6 +1,7 @@
 #include "bcamsync/actuator.hpp"
 #include "bcamsync/backend.hpp"
 #include "bcamsync/frame_queue.hpp"
+#include "arducam_profile.hpp"
 #include "gain_warmup.hpp"
 
 #include <libcamera/camera.h>
@@ -36,14 +37,7 @@
 namespace bcamsync {
 namespace {
 constexpr std::int64_t second_ns = 1000000000LL;
-constexpr const char *arducam_profile = "arducam_b0267_pi4";
-constexpr const char *pi4_pipeline = "/usr/share/libcamera/pipeline/rpi/vc4/rpi_apps.yaml";
 std::mutex progress_mutex;
-
-const char *profile_pipeline(const std::string &profile) {
-    if (profile != arducam_profile) throw std::invalid_argument("Unknown Arducam profile: " + profile);
-    return pi4_pipeline;
-}
 
 std::int64_t boot_ns() {
     timespec value{};
@@ -69,13 +63,15 @@ struct PipelineEnvironment {
     std::string previous;
     bool had_previous = false, changed = false;
     explicit PipelineEnvironment(const std::string &pipeline) {
-        if (pipeline.empty()) return;
-        if (access(pipeline.c_str(), R_OK)) throw std::runtime_error("Pipeline configuration is not readable: " + pipeline);
+        if (!pipeline.empty() && access(pipeline.c_str(), R_OK))
+            throw std::runtime_error("Pipeline configuration is not readable: " + pipeline);
         if (const auto *value = std::getenv("LIBCAMERA_RPI_CONFIG_FILE")) {
             previous = value;
             had_previous = true;
         }
-        if (setenv("LIBCAMERA_RPI_CONFIG_FILE", pipeline.c_str(), 1)) throw std::runtime_error("Cannot configure libcamera pipeline environment");
+        const int result = pipeline.empty() ? unsetenv("LIBCAMERA_RPI_CONFIG_FILE")
+                                           : setenv("LIBCAMERA_RPI_CONFIG_FILE", pipeline.c_str(), 1);
+        if (result) throw std::runtime_error("Cannot configure libcamera pipeline environment");
         changed = true;
     }
     ~PipelineEnvironment() {
@@ -586,13 +582,15 @@ public:
 std::vector<std::unique_ptr<AcquisitionBackend>> make_arducam_backends(const std::vector<UnitConfig> &units) {
     if (units.empty()) return {};
     for (const auto &unit : units) {
-        profile_pipeline(unit.profile);
+        detail::arducam_pipeline(unit.profile);
+        if (unit.profile != units.front().profile)
+            throw std::invalid_argument("All local Arducam units must use the same platform profile");
         if (unit.width != 5120 || unit.height != 800 || unit.views != 4)
-            throw std::invalid_argument("Arducam B0267 Pi4 profile requires 5120x800 with four views");
+            throw std::invalid_argument("Arducam B0267 profiles require 5120x800 with four views");
         if (unit.auto_gain && unit.analogue_gain != 1.0F)
             throw std::invalid_argument("Startup analogue-gain calibration must start at 1x");
     }
-    auto manager = std::make_shared<Manager>(profile_pipeline(units.front().profile));
+    auto manager = std::make_shared<Manager>(detail::arducam_pipeline(units.front().profile));
     std::vector<std::unique_ptr<AcquisitionBackend>> result;
     result.reserve(units.size());
     for (const auto &unit : units) result.push_back(std::make_unique<ArducamBackend>(unit, manager));
@@ -600,7 +598,7 @@ std::vector<std::unique_ptr<AcquisitionBackend>> make_arducam_backends(const std
 }
 
 std::vector<std::string> enumerate_arducam_cameras(const std::string &profile) {
-    Manager manager(profile_pipeline(profile));
+    Manager manager(detail::arducam_pipeline(profile));
     const auto cameras = manager.camera_manager.cameras();
     std::vector<std::string> ids;
     ids.reserve(cameras.size());

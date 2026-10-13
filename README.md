@@ -2,7 +2,7 @@
 
 B-CamSync manages camera acquisition and continuous frame synchronization. Applications initialize a local session and pull board frame packets through C++ or Python. Image processing, recording, and storage belong to the application.
 
-The first backend targets Arducam B0267 four-camera boards on Raspberry Pi 4 with Raspberry Pi OS Bookworm arm64 and the matching Arducam/libcamera SDK (0.5.2 or later). One board is one synchronization unit. A node can host multiple boards; one selected board is the reference for the whole group. Its node runs the coordinator, while every other node runs a local session and executes corrections. Images stay on their own nodes.
+The first backend targets Arducam B0267 four-camera boards on Raspberry Pi 4 and Pi 5 with Raspberry Pi OS Bookworm arm64 and the matching Arducam/libcamera SDK (0.5.2 or later). One board is one synchronization unit. A node can host multiple boards; one selected board is the reference for the whole group. Its node runs the coordinator, while every other node runs a local session and executes corrections. Images stay on their own nodes.
 
 ## Install on each node
 
@@ -39,7 +39,9 @@ List each node's exact SDK camera IDs before creating a session:
 .venv/bin/python -c 'from bcamsync import enumerate_arducam_cameras; print(enumerate_arducam_cameras())'
 ```
 
-Replace each `camera_id` placeholder and verify the interface name. The `arducam_b0267_pi4` profile selects the full `5120×800` board image, an 8-bit sensor, R8 buffers, and `/usr/share/libcamera/pipeline/rpi/vc4/rpi_apps.yaml`. Frame output is fixed to four horizontal grayscale `uint8` views. Raw packing and pipeline settings belong to the backend profile.
+Replace each `camera_id` placeholder and verify the interface name. Both platform profiles use the same full `5120×800` board image, 8-bit sensor, R8 buffers, and four horizontal grayscale `uint8` views. `arducam_b0267_pi4` selects `/usr/share/libcamera/pipeline/rpi/vc4/rpi_apps.yaml`; `arducam_b0267_pi5` uses the default pipeline. Pipeline settings belong to the backend profile.
+
+For Pi 5, select `"profile": "arducam_b0267_pi5"` on its units and enumerate with `enumerate_arducam_cameras(profile="arducam_b0267_pi5")`. The [Pi 5 two-node example](examples/configs/two_nodes_one_board_pi5.json) includes this selection. A group can contain Pi 4 and Pi 5 nodes; all boards on a node use that node's platform profile. Camera IDs come from the local SDK enumeration rather than fixed `/dev/video*` numbers.
 
 Set `fps`, `exposure_us`, and the gain policy in the configuration file before starting a session. These controls apply to the whole board. Defaults are 40 fps, 10000 µs exposure, and `auto_gain: true`: startup calibration begins at 1×, meters the four views, and adjusts sensor analogue gain within the intersection of sensor limits and 1×–8×. Gain locks after three settled half-second observations, before phase calibration begins; it stays fixed throughout the session. Set `auto_gain: false` and choose `analogue_gain` for manual gain. Exposure stays fixed in both modes, and calibration never modifies image pixels.
 

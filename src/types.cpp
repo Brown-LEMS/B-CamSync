@@ -1,4 +1,5 @@
 #include "bcamsync/types.hpp"
+#include "arducam_profile.hpp"
 #include <algorithm>
 #include <arpa/inet.h>
 #include <cmath>
@@ -71,9 +72,7 @@ void Config::validate() const {
             u.queue_capacity > 64 || u.pool_capacity < u.queue_capacity + 2 ||
             u.pool_capacity > 128)
             throw std::invalid_argument("invalid capture settings for " + u.id);
-        if (backend == "arducam" &&
-            u.profile != "arducam_b0267_pi4")
-            throw std::invalid_argument("unknown Arducam capture profile for " + u.id);
+        if (backend == "arducam") detail::arducam_pipeline(u.profile);
         if (u.fake_initial_phase_us < -1000000 || u.fake_initial_phase_us > 1000000 ||
             !std::isfinite(u.fake_drift_ppm) || std::abs(u.fake_drift_ppm) > 1000)
             throw std::invalid_argument("invalid fake timing settings for " + u.id);

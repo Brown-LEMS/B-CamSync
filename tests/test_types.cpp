@@ -149,6 +149,18 @@ void configuration_files() {
     require(!restored.units[0].auto_gain && restored.units[0].analogue_gain == 2.0F,
             "manual gain policy survives resolved configuration exchange");
     require(restored.to_json() == manual.to_json(), "resolved configuration round trip is complete");
+    auto pi5 = c;
+    pi5.units[0].profile = "arducam_b0267_pi5";
+    file.write(pi5.to_json());
+    const auto restored_pi5 = Config::from_file(file.path);
+    require(restored_pi5.units[0].profile == "arducam_b0267_pi5" && restored_pi5.units[0].auto_gain,
+            "Pi5 profile preserves startup gain policy through configuration exchange");
+    auto mixed_nodes = valid();
+    mixed_nodes.units[1].profile = "arducam_b0267_pi5";
+    mixed_nodes.validate();
+    file.write(mixed_nodes.to_json());
+    require(Config::from_file(file.path).unit("board-b").profile == "arducam_b0267_pi5",
+            "One synchronization group may contain Pi4 and Pi5 nodes");
     auto legacy = text;
     legacy.insert(legacy.find("\"width\""), "\"raw_format\":\"R8\",");
     file.write(legacy);
