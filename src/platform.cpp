@@ -150,7 +150,8 @@ class NetworkLink::Impl {
         if (code < 0)
             throw std::runtime_error(std::string("NetworkManager D-Bus: ") + std::strerror(-code));
     }
-    void activate(std::int64_t deadline) {
+    void activate(const std::atomic<bool>& stopping, std::int64_t deadline) {
+        startup_check(stopping, deadline);
         dbus_check(sd_bus_open_system(&bus));
         const auto remaining = static_cast<std::uint64_t>(std::max<std::int64_t>(1, (deadline - monotonic_ns()) / 1000));
         dbus_check(sd_bus_set_method_call_timeout(bus, remaining));
@@ -208,7 +209,9 @@ class NetworkLink::Impl {
             value("bind-activation", "dbus-client");
             dbus_check(sd_bus_message_close_container(request));
             reply = nullptr;
-            const int activated = sd_bus_call(bus, request, remaining, nullptr, &reply);
+            startup_check(stopping, deadline);
+            const auto activation_remaining = static_cast<std::uint64_t>(std::max<std::int64_t>(1, (deadline - monotonic_ns()) / 1000));
+            const int activated = sd_bus_call(bus, request, activation_remaining, nullptr, &reply);
             sd_bus_message_unref(request);
             request = nullptr;
             dbus_check(activated);
@@ -222,7 +225,15 @@ class NetworkLink::Impl {
             throw;
         }
     }
-    std::string link_address() const {
+    std::string link_address(std::int64_t deadline) const {
+        const auto remaining = static_cast<std::uint64_t>(std::max<std::int64_t>(1, (deadline - monotonic_ns()) / 1000));
+        dbus_check(sd_bus_set_method_call_timeout(bus, remaining));
+        std::uint32_t state = 0;
+        dbus_check(sd_bus_get_property_trivial(bus, "org.freedesktop.NetworkManager", activation.c_str(),
+            "org.freedesktop.NetworkManager.Connection.Active", "State", nullptr, 'u', &state));
+        if (state >= 3)
+            throw std::runtime_error("transient network activation ended before acquiring an address");
+        if (state != 2) return {};
         ifaddrs* interfaces = nullptr;
         if (getifaddrs(&interfaces))
             throw std::runtime_error("cannot inspect synchronization interface");
@@ -259,10 +270,13 @@ std::string NetworkLink::start(const std::atomic<bool>& stopping, std::int64_t d
     startup_check(stopping, deadline_ns);
 #ifdef __linux__
     try {
-        impl_->activate(deadline_ns);
+        impl_->activate(stopping, deadline_ns);
         auto next_progress = std::int64_t{0};
-        while ((impl_->address = impl_->link_address()).empty()) {
+        while (true) {
             startup_check(stopping, deadline_ns);
+            impl_->address = impl_->link_address(deadline_ns);
+            startup_check(stopping, deadline_ns);
+            if (!impl_->address.empty()) break;
             if (monotonic_ns() >= next_progress) {
                 std::cerr << "Waiting for link-local IPv4 address on " << impl_->interface << '\n';
                 next_progress = monotonic_ns() + 1000000000LL;
