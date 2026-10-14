@@ -26,6 +26,8 @@ struct Pulse {
     int delta_us = 0, count = 0;
     std::int64_t expires_ns = 0;
 };
+/// Node-local sensor clock for adapters; CLOCK_BOOTTIME on Linux.
+std::int64_t boot_time_ns();
 std::int64_t monotonic_ns();
 std::int64_t realtime_ns();
 } // namespace bcamsync

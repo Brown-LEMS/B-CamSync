@@ -30,8 +30,11 @@ def _sync_contract(config: Mapping) -> dict:
         raise ValueError("unit belongs to an unknown node")
     if config["reference_unit"] not in {unit["id"] for unit in units}:
         raise ValueError("reference_unit must identify a configured unit")
+    clock_mode = config.get("clock_mode", "host" if config.get("backend") == "fake" else "network")
+    if clock_mode not in ("network", "host"):
+        raise ValueError("clock_mode must be network or host")
     return {"group_id": config["group_id"], "reference_unit": config["reference_unit"],
-            "backend": config.get("backend", "arducam"), "fps": config.get("fps", 40),
+            "clock_mode": clock_mode, "fps": config.get("fps", 40),
             "clock_domain": "local" if len(nodes) == 1 else "common",
             "nodes": nodes, "units": units}
 

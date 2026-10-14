@@ -36,16 +36,6 @@
 
 namespace bcamsync::detail {
 namespace {
-std::int64_t boot_now() {
-#ifdef CLOCK_BOOTTIME
-    timespec value{};
-    if (clock_gettime(CLOCK_BOOTTIME, &value))
-        throw std::runtime_error("cannot read CLOCK_BOOTTIME");
-    return static_cast<std::int64_t>(value.tv_sec) * 1000000000LL + value.tv_nsec;
-#else
-    return monotonic_ns();
-#endif
-}
 std::int64_t nanoseconds(double seconds) {
     const long double value = static_cast<long double>(seconds) * 1e9L;
     if (!std::isfinite(value) || value < std::numeric_limits<std::int64_t>::min() ||
@@ -72,7 +62,7 @@ void startup_check(const std::atomic<bool>& stopping, std::int64_t deadline) {
 }
 } // namespace
 
-std::string clock_config(const Config& config, const std::string& local,
+std::string clock_config(const SyncConfig& config, const std::string& local,
                          const std::string& directory) {
     std::ostringstream out;
     out << "pidfile " << directory << "/chronyd.pid\n"
@@ -90,7 +80,7 @@ std::string clock_config(const Config& config, const std::string& local,
     return out.str();
 }
 
-ClockEstimate tracking_estimate(const Config& config, const std::string& local,
+ClockEstimate tracking_estimate(const SyncConfig& config, const std::string& local,
                                 const std::string& csv, std::int64_t realtime,
                                 std::int64_t boottime, std::int64_t mapping_uncertainty) {
     ClockEstimate result;
@@ -152,7 +142,7 @@ ClockEstimate tracking_estimate(const Config& config, const std::string& local,
 
 class NodePlatform::Impl {
   public:
-    Config config;
+    SyncConfig config;
     std::string local, directory;
     bool started = false;
 #ifdef __linux__
@@ -398,20 +388,20 @@ class NodePlatform::Impl {
             throw std::runtime_error("cannot start private chronyd");
     }
 #endif
-    Impl(Config value, std::string node) : config(std::move(value)), local(std::move(node)) {}
+    Impl(SyncConfig value, std::string node) : config(std::move(value)), local(std::move(node)) {}
 };
 
-NodePlatform::NodePlatform(Config config, std::string local)
+NodePlatform::NodePlatform(SyncConfig config, std::string local)
     : impl_(std::make_unique<Impl>(std::move(config), std::move(local))) {}
 NodePlatform::~NodePlatform() { stop(); }
 
-void NodePlatform::start(Config& resolved, const std::atomic<bool>& stopping,
+void NodePlatform::start(SyncConfig& resolved, const std::atomic<bool>& stopping,
                          std::int64_t deadline_ns) {
     if (impl_->started)
         throw std::runtime_error("node platform already started");
     impl_->config = resolved;
     startup_check(stopping, deadline_ns);
-    if (resolved.nodes.size() == 1 || resolved.backend == "fake") {
+    if (resolved.nodes.size() == 1 || resolved.clock_mode == "host") {
         impl_->started = true;
         return;
     }
@@ -487,7 +477,7 @@ ClockEstimate NodePlatform::sample() {
         return {true, 0, 0, {}};
     try {
         std::string report;
-        if (impl_->config.backend != "fake") {
+        if (impl_->config.clock_mode != "host") {
 #ifdef __linux__
             {
                 std::lock_guard<std::mutex> lock(impl_->mutex);
@@ -498,11 +488,11 @@ ClockEstimate NodePlatform::sample() {
                                  impl_->config.request_timeout_seconds);
 #endif
         }
-        const auto before = boot_now();
+        const auto before = boot_time_ns();
         const auto realtime = realtime_ns();
-        const auto after = boot_now();
+        const auto after = boot_time_ns();
         const auto boottime = before + (after - before) / 2;
-        if (impl_->config.backend == "fake")
+        if (impl_->config.clock_mode == "host")
             return {true, realtime - boottime, (after - before) / 2, {}};
         return tracking_estimate(impl_->config, impl_->local, report, realtime, boottime,
                                  (after - before) / 2);

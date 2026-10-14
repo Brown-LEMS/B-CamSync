@@ -174,7 +174,7 @@ TimingSnapshot snapshot_from_json(const Json& j) {
     s.correction.restored_timestamp_ns = j.at("correction").at("restored");
     return s;
 }
-Json topology_json(const Config& c) {
+Json topology_json(const SyncConfig& c) {
     return Json::parse(c.sync_json());
 }
 Json status_json(const GroupStatus& s) {

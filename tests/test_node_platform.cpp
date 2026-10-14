@@ -14,20 +14,18 @@ void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
 }
-Config configuration() {
-    Config config;
+SyncConfig configuration() {
+    SyncConfig config;
     config.group_id = "platform-test";
     config.reference_unit = "board-a";
     config.network_mode = "existing";
     config.nodes = {{"node-a", "10.77.0.1", "eth0", 58080},
                     {"node-b", "10.77.0.2", "eth0", 58080}};
-    UnitConfig a, b;
+    SyncUnitConfig a, b;
     a.id = "board-a";
     a.node_id = "node-a";
-    a.camera_id = "camera-a";
     b.id = "board-b";
     b.node_id = "node-b";
-    b.camera_id = "camera-b";
     config.units = {a, b};
     return config;
 }
@@ -107,7 +105,7 @@ void private_configuration() {
 }
 void software_lifecycle() {
     auto config = configuration();
-    config.backend = "fake";
+    config.clock_mode = "host";
     config.network_mode = "auto";
     config.nodes[0].address = "127.0.0.1";
     config.nodes[1].address = "127.0.0.1";
@@ -118,14 +116,14 @@ void software_lifecycle() {
     platform.start(config, stopping, monotonic_ns() + 1000000000LL);
     const auto estimate = platform.sample();
     require(estimate.valid && estimate.offset_ns > 1000000000000LL,
-            "same-host fake nodes map boottime into realtime without provisioning");
+            "same-host nodes map boottime into realtime without provisioning");
     platform.stop();
     require(!platform.sample().valid, "stop invalidates mapping");
     platform.start(config, stopping, monotonic_ns() + 1000000000LL);
     platform.stop();
     config.nodes.resize(1);
     config.units.resize(1);
-    config.backend = "arducam";
+    config.clock_mode = "network";
     NodePlatform single(config, "node-a");
     single.start(config, stopping, monotonic_ns() + 1000000000LL);
     require(single.sample().valid && single.sample().offset_ns == 0,

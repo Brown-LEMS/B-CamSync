@@ -30,7 +30,7 @@ class HostClientTests(unittest.TestCase):
         self.targets = {node: NodeTarget(node, "/opt/camera env/bin/python", "/run/app camera.sock")
                         for node in ("node-a", "node-b")}
         self.client = GroupClient(self.config, self.targets)
-        self.contract = {"group_id": "lab", "reference_unit": "board-a", "backend": "arducam",
+        self.contract = {"group_id": "lab", "reference_unit": "board-a", "clock_mode": "network",
                          "fps": 40, "clock_domain": "common", "nodes": ["node-a", "node-b"],
                          "units": [{"id": "board-a", "node_id": "node-a"},
                                    {"id": "board-b", "node_id": "node-b"}]}
@@ -100,6 +100,7 @@ assert "bcamsync" not in sys.modules
 
     def test_shared_membership_reference_and_fps_mismatch_block_start(self):
         changes = {"nodes": ["node-a", "node-c"], "reference_unit": "board-b", "fps": 41,
+                   "clock_mode": "host",
                    "units": [{"id": "board-a", "node_id": "node-a"},
                              {"id": "board-b", "node_id": "node-a"}]}
         for field, value in changes.items():
@@ -112,6 +113,23 @@ assert "bcamsync" not in sys.modules
                     with self.assertRaisesRegex(RuntimeError, "Synchronization contract differs"):
                         self.client.start()
                 self.assertTrue(all(args[1] == "configuration" for args, _ in call.call_args_list))
+
+    def test_standalone_sync_configuration_has_no_acquisition_contract(self):
+        independent = deepcopy(self.config)
+        independent["clock_mode"] = "host"
+        independent["units"] = [{"id": unit["id"], "node_id": unit["node_id"]}
+                                for unit in independent["units"]]
+        client = GroupClient(independent, self.targets)
+        self.assertEqual(client.sync_contract["clock_mode"], "host")
+        self.assertNotIn("backend", client.sync_contract)
+        managed = deepcopy(self.config)
+        managed["backend"] = "fake"
+        self.assertEqual(GroupClient(managed, self.targets).sync_contract, client.sync_contract)
+        managed["clock_mode"] = "network"
+        self.assertEqual(GroupClient(managed, self.targets).sync_contract["clock_mode"], "network")
+        independent["clock_mode"] = "unknown"
+        with self.assertRaisesRegex(ValueError, "clock_mode"):
+            GroupClient(independent, self.targets)
 
     def test_target_membership_must_cover_configured_nodes(self):
         with self.assertRaisesRegex(ValueError, "every configured node"):

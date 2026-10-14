@@ -1,597 +1,137 @@
 #include "bcamsync/session.hpp"
 #include "bcamsync/fake.hpp"
-#include "bcamsync/phase.hpp"
-#include "platform.hpp"
-#include "wire.hpp"
+#include "sync_runtime.hpp"
 #include <algorithm>
-#include <atomic>
-#include <cmath>
-#include <condition_variable>
-#include <ctime>
-#include <iomanip>
-#include <iostream>
-#include <limits>
-#include <map>
 #include <mutex>
-#include <poll.h>
-#include <random>
-#include <sstream>
-#include <sys/socket.h>
 #include <thread>
-#include <unistd.h>
+
 namespace bcamsync {
 namespace {
-std::string identity() {
-    std::random_device r;
-    std::ostringstream s;
-    for (int i = 0; i < 4; ++i)
-        s << std::hex << std::setw(8) << std::setfill('0') << r();
-    return s.str();
+std::vector<UnitConfig> local_units(const Config& config, const std::string& node) {
+    std::vector<UnitConfig> result;
+    for (const auto& unit : config.units)
+        if (unit.node_id == node) result.push_back(unit);
+    return result;
 }
-std::int64_t sensor_now() {
-#ifdef CLOCK_BOOTTIME
-    timespec t{};
-    if (clock_gettime(CLOCK_BOOTTIME, &t))
-        throw std::runtime_error("cannot read capture clock");
-    return static_cast<std::int64_t>(t.tv_sec) * 1000000000LL + t.tv_nsec;
-#else
-    return monotonic_ns();
-#endif
+std::vector<std::unique_ptr<AcquisitionBackend>> validated_backends(const Config& config,
+                                                                 const std::string& node) {
+    config.validate();
+    config.node(node);
+    const auto units = local_units(config, node);
+    return config.backend == "fake" ? make_fake_backends(units, config.fps)
+                                    : make_arducam_backends(units, config.fps);
 }
-std::int64_t shifted(std::int64_t value, std::int64_t offset) {
-    if ((offset > 0 && value > std::numeric_limits<std::int64_t>::max() - offset) ||
-        (offset < 0 && value < std::numeric_limits<std::int64_t>::min() - offset))
-        throw std::runtime_error("clock mapping exceeds timestamp range");
-    return value + offset;
-}
-std::int64_t unshifted(std::int64_t value, std::int64_t offset) {
-    if ((offset > 0 && value < std::numeric_limits<std::int64_t>::min() + offset) ||
-        (offset < 0 && value > std::numeric_limits<std::int64_t>::max() + offset))
-        throw std::runtime_error("clock mapping exceeds timestamp range");
-    return value - offset;
-}
-std::vector<UnitConfig> local_units(const Config& c, const std::string& node) {
-    std::vector<UnitConfig> us;
-    for (const auto& u : c.units)
-        if (u.node_id == node)
-            us.push_back(u);
-    return us;
-}
-std::vector<std::unique_ptr<AcquisitionBackend>> validated_backends(const Config& c,
-                                                                    const std::string& node) {
-    c.validate();
-    c.node(node);
-    if (c.backend == "fake")
-        return make_fake_backends(local_units(c, node), c.fps);
-    return make_arducam_backends(local_units(c, node), c.fps);
-}
+/// Managed acquisition binds controls while initializing its backend; synchronization observes it.
+class ManagedUnit final : public SyncUnit {
+public:
+    explicit ManagedUnit(AcquisitionBackend& backend) : backend_(backend) {}
+    void start_capture(const std::string& identity, std::uint64_t round) {
+        backend_.start(identity, round, false);
+        identity_ = identity;
+        round_ = round;
+    }
+    void bind(const std::string& identity, std::uint64_t round) override {
+        if (identity != identity_ || round != round_)
+            throw std::logic_error("managed capture control binding differs");
+    }
+    TimingSnapshot snapshot() const override { return backend_.snapshot(); }
+    CorrectionStatus adjust(const Pulse& pulse) override { return backend_.adjust(pulse); }
+    void cancel() override { backend_.cancel(); }
+    std::string fault() const override { return backend_.fault(); }
+private:
+    AcquisitionBackend& backend_;
+    std::string identity_;
+    std::uint64_t round_ = 0;
+};
 } // namespace
+
 class Session::Impl {
-  public:
-    Config config, resolved;
-    std::string local, session, capture_session;
+public:
     std::vector<std::unique_ptr<AcquisitionBackend>> backends;
     std::vector<UnitConfig> units;
-    bool common = false, coordinator = false;
-    detail::NodePlatform platform;
-    detail::ClockEstimate clock;
-    mutable std::mutex mutex;
+    std::vector<std::shared_ptr<ManagedUnit>> adapters;
+    std::unique_ptr<detail::SyncRuntime> sync;
     std::mutex lifecycle;
-    std::condition_variable changed;
-    GroupStatus group;
-    std::atomic<bool> stopping{true};
-    std::thread thread;
-    int server = -1;
-    std::map<std::string, std::unique_ptr<detail::Connection>> peers;
-    std::map<std::string, std::uint64_t> requests;
-    bool backends_cleaned = false;
-    std::int64_t startup_deadline = 0, clock_sampled_at = 0;
-    Impl(Config c, std::string n, std::vector<std::unique_ptr<AcquisitionBackend>> bs)
-        : config(std::move(c)), resolved(config), local(std::move(n)), backends(std::move(bs)), platform(config, local) {
+    std::thread worker;
+
+    Impl(Config config, std::string node, std::vector<std::unique_ptr<AcquisitionBackend>> cameras)
+        : backends(std::move(cameras)), units(local_units(config, node)) {
         config.validate();
-        config.node(local);
-        units = local_units(config, local);
+        config.node(node);
         if (backends.size() != units.size() ||
-            std::any_of(backends.begin(), backends.end(), [](const auto& b) { return !b; }))
+            std::any_of(backends.begin(), backends.end(), [](const auto& camera) { return !camera; }))
             throw std::invalid_argument("backend count/ownership does not match local topology");
-        common = config.nodes.size() > 1;
-        coordinator = config.reference_node() == local;
+        LocalSyncUnits ports;
+        for (std::size_t i = 0; i < units.size(); ++i) {
+            auto adapter = std::make_shared<ManagedUnit>(*backends[i]);
+            ports.emplace(units[i].id, adapter);
+            adapters.push_back(std::move(adapter));
+        }
+        sync = std::make_unique<detail::SyncRuntime>(config.sync_config(), std::move(node), std::move(ports));
     }
     AcquisitionBackend& backend(const std::string& id) {
         for (std::size_t i = 0; i < units.size(); ++i)
-            if (units[i].id == id)
-                return *backends[i];
+            if (units[i].id == id) return *backends[i];
         throw std::invalid_argument("unit is not local: " + id);
     }
-    void publish(GroupStatus s) {
-        std::lock_guard<std::mutex> lock(mutex);
-        group = std::move(s);
-        changed.notify_all();
-    }
-    GroupStatus status() const {
-        std::lock_guard<std::mutex> lock(mutex);
-        return group;
-    }
-    void fail(const std::string& reason) {
-        auto s = status();
-        s.state = "fault";
-        s.ready = false;
-        if (s.fault.empty()) s.fault = reason;
-        else s.fault += "; " + reason;
-        for (auto& u : s.units)
-            u.ready = false;
-        publish(s);
-    }
-    void health() {
+    void cleanup_capture() {
         for (std::size_t i = 0; i < backends.size(); ++i) {
-            auto f = backends[i]->fault();
-            if (!f.empty())
-                throw std::runtime_error(units[i].id + ": " + f);
-        }
-        update_clock();
-    }
-    void start_backends() {
-        for (auto& b : backends) {
-            if (stopping)
-                throw std::runtime_error("startup cancelled");
-            b->start(capture_session, 1, false);
-        }
-    }
-    detail::Json rpc(const std::string& node, detail::Json message) {
-        auto& id = requests[node];
-        message["request_id"] = ++id;
-        message["session"] = session;
-        peers.at(node)->send(message);
-        auto response = peers.at(node)->receive();
-        if (response.at("request_id").get<std::uint64_t>() != id)
-            throw std::runtime_error("out-of-order control response");
-        if (!response.at("ok").get<bool>())
-            throw std::runtime_error(response.at("error").get<std::string>());
-        return response.at("result");
-    }
-    detail::ClockEstimate clock_estimate() const {
-        std::lock_guard<std::mutex> lock(mutex);
-        auto estimate = clock;
-        if (common && (clock_sampled_at == 0 ||
-            monotonic_ns() - clock_sampled_at > static_cast<std::int64_t>(config.clock_max_age_seconds * 1e9)))
-            estimate.valid = false;
-        return estimate;
-    }
-    void update_clock() {
-        detail::ClockEstimate estimate;
-        try { estimate = platform.sample(); }
-        catch (const std::exception& error) { estimate.fault = error.what(); }
-        {
-            std::lock_guard<std::mutex> lock(mutex);
-            clock = estimate;
-            clock_sampled_at = monotonic_ns();
-        }
-        if (!estimate.valid)
-            throw std::runtime_error(estimate.fault.empty() ? "common clock is unavailable" : estimate.fault);
-    }
-    std::int64_t common_now() const {
-        const auto estimate = clock_estimate();
-        if (!estimate.valid) throw std::runtime_error("common clock is unavailable");
-        return shifted(sensor_now(), estimate.offset_ns);
-    }
-    TimingSnapshot mapped_snapshot(AcquisitionBackend& acquisition) const {
-        auto result = acquisition.snapshot();
-        const auto estimate = clock_estimate();
-        if (!estimate.valid) throw std::runtime_error("common clock is unavailable");
-        result.snapshot_timestamp_ns = shifted(result.snapshot_timestamp_ns, estimate.offset_ns);
-        for (auto& frame : result.frames) {
-            frame.timestamp_ns = shifted(frame.timestamp_ns, estimate.offset_ns);
-            frame.mapping_span_ns = shifted(frame.mapping_span_ns, estimate.uncertainty_ns);
-        }
-        if (result.correction.restored_timestamp_ns)
-            result.correction.restored_timestamp_ns = shifted(result.correction.restored_timestamp_ns, estimate.offset_ns);
-        return result;
-    }
-    CorrectionStatus adjust_local(const std::string& unit, Pulse pulse) {
-        const auto estimate = clock_estimate();
-        if (!estimate.valid) throw std::runtime_error("common clock is unavailable");
-        pulse.expires_ns = unshifted(pulse.expires_ns, estimate.offset_ns);
-        return backend(unit).adjust(pulse);
-    }
-    void cancel_backends() {
-        for (std::size_t i = 0; i < backends.size(); ++i)
             try { backends[i]->cancel(); }
-            catch (const std::exception& error) { fail(units[i].id + ": " + error.what()); }
-    }
-    void suspend_synchronization() {
-        cancel_backends();
-        for (auto& peer : peers) peer.second->shutdown();
-        peers.clear();
-        // Acquisition continues; a new synchronization run requires explicit restart.
-        while (!stopping) {
-            try { update_clock(); } catch (const std::exception&) {}
-            std::unique_lock<std::mutex> lock(mutex);
-            changed.wait_for(lock, std::chrono::seconds(1), [&] { return stopping.load(); });
-        }
-    }
-    void cleanup_backends() {
-        if (backends_cleaned)
-            return;
-        backends_cleaned = true;
-        for (std::size_t i = 0; i < backends.size(); ++i) {
-            try {
-                backends[i]->cancel();
-            } catch (const std::exception& e) {
-                fail(units[i].id + ": " + e.what());
-            }
+            catch (const std::exception& error) { sync->fail(units[i].id + ": " + error.what()); }
             try {
                 backends[i]->stop();
-                const auto error = backends[i]->fault();
-                if (!error.empty())
-                    fail(units[i].id + ": " + error);
-            } catch (const std::exception& e) {
-                fail(units[i].id + ": " + e.what());
-            }
-        }
-        auto final = status();
-        if (final.fault.empty()) {
-            final.state = "stopped";
-            final.ready = false;
-            for (auto& u : final.units)
-                u.ready = false;
-            publish(final);
+                const auto fault = backends[i]->fault();
+                if (!fault.empty()) sync->fail(units[i].id + ": " + fault);
+            } catch (const std::exception& error) { sync->fail(units[i].id + ": " + error.what()); }
         }
     }
     void start() {
         std::lock_guard<std::mutex> lock(lifecycle);
-        if (thread.joinable())
-            throw std::runtime_error("session already started; stop before restarting");
-        stopping = false;
-        backends_cleaned = false;
-        resolved = config;
-        { std::lock_guard<std::mutex> clock_lock(mutex); clock = {!common, 0, 0, {}}; clock_sampled_at = 0; }
-        startup_deadline =
-            shifted(monotonic_ns(), static_cast<std::int64_t>(config.startup_timeout_seconds * 1e9));
-        GroupStatus initial;
-        initial.state = "starting";
-        publish(initial);
-        capture_session = identity();
-        session = coordinator ? capture_session : std::string{};
-        thread = std::thread([this] {
+        if (worker.joinable()) throw std::runtime_error("session already started; stop before restarting");
+        sync->begin();
+        worker = std::thread([this] {
             try {
-                start_backends();
-                platform.start(resolved, stopping, startup_deadline);
-                if (!stopping) update_clock();
-                if (!stopping) {
-                    if (coordinator)
-                        run_coordinator();
-                    else
-                        run_follower();
+                for (const auto& adapter : adapters) {
+                    if (sync->stopping()) break;
+                    adapter->start_capture(sync->identity(), sync->round());
                 }
-            } catch (const std::exception& e) {
-                if (!stopping)
-                    fail(e.what());
+                sync->run();
+            } catch (const std::exception& error) {
+                if (!sync->stopping()) sync->fail(error.what());
+                sync->wait_for_stop();
             } catch (...) {
-                if (!stopping)
-                    fail("unknown acquisition failure");
+                if (!sync->stopping()) sync->fail("unknown acquisition failure");
+                sync->wait_for_stop();
             }
-            if (!stopping) suspend_synchronization();
-            if (coordinator) {
-                for (const auto& entry : peers) {
-                    try {
-                        const auto reply = rpc(entry.first, {{"command", "stop"}});
-                        if (!reply.at("stopped").get<bool>())
-                            fail(entry.first + ": " + reply.at("fault").get<std::string>());
-                    } catch (const std::exception& e) {
-                        fail(entry.first + ": shutdown acknowledgement failed: " + e.what());
-                    }
-                }
-            }
-            for (auto& entry : peers)
-                entry.second->shutdown();
-            cleanup_backends();
-            try { platform.stop(); } catch (const std::exception& error) { fail(error.what()); }
-            { std::lock_guard<std::mutex> clock_lock(mutex); clock.valid = false; }
-            changed.notify_all();
+            cleanup_capture();
+            sync->finish();
         });
-    }
-    void run_follower() {
-        server = detail::listener(resolved.node(local));
-        int client = -1;
-        auto next_health = monotonic_ns();
-        while (!stopping) {
-            if (monotonic_ns() >= next_health) {
-                health();
-                next_health = monotonic_ns() + 1000000000LL;
-            }
-            pollfd p{server, POLLIN, 0};
-            const int r = poll(&p, 1, 100);
-            if (r > 0) {
-                client = accept(server, nullptr, nullptr);
-                if (client >= 0)
-                    break;
-            }
-            if (monotonic_ns() > startup_deadline)
-                throw std::runtime_error("coordinator connection startup timeout");
-        }
-        if (stopping) {
-            if (client >= 0)
-                close(client);
-            return;
-        }
-        std::unique_ptr<detail::Connection> connection;
-        try {
-            connection =
-                std::make_unique<detail::Connection>(client, config.request_timeout_seconds);
-        } catch (...) {
-            close(client);
-            throw;
-        }
-        auto& channel = *connection;
-        std::uint64_t expected = 1;
-        auto last_command = monotonic_ns();
-        const auto idle_limit =
-            static_cast<std::int64_t>((2.0 + config.request_timeout_seconds *
-                                                 (static_cast<double>(config.nodes.size()) + 1.0)) *
-                                      1e9);
-        while (!stopping) {
-            if (monotonic_ns() >= next_health) {
-                health();
-                next_health = monotonic_ns() + 1000000000LL;
-            }
-            pollfd incoming_fd{client, POLLIN, 0};
-            const auto event = poll(&incoming_fd, 1, 100);
-            if (event < 0 && errno == EINTR)
-                continue;
-            if (event < 0)
-                throw std::runtime_error("coordinator poll failed");
-            if (event == 0) {
-                if (monotonic_ns() - last_command > idle_limit)
-                    throw std::runtime_error("coordinator heartbeat deadline exceeded");
-                continue;
-            }
-            detail::Json incoming = channel.receive();
-            last_command = monotonic_ns();
-            const auto id = incoming.at("request_id").get<std::uint64_t>();
-            detail::Json response;
-            try {
-                if (id != expected++)
-                    throw std::runtime_error("out-of-order command");
-                const std::string command = incoming.at("command");
-                detail::Json result;
-                if (session.empty()) {
-                    if (command != "hello" ||
-                        incoming.at("topology") != detail::topology_json(config))
-                        throw std::runtime_error("group topology or backend mode differs");
-                    session = incoming.at("session").get<std::string>();
-                    if (session.empty() || session.size() > 128)
-                        throw std::runtime_error("invalid session identity");
-                    result = {{"node", local}};
-                } else {
-                    if (incoming.at("session").get<std::string>() != session)
-                        throw std::runtime_error("session identity differs");
-                    if (command == "snapshots") {
-                        health();
-                        detail::Json snapshots = detail::Json::array();
-                        for (auto& b : backends)
-                            snapshots.push_back(detail::snapshot_json(mapped_snapshot(*b)));
-                        result = {{"node", local},
-                                  {"snapshots", snapshots},
-                                  {"checked_at", realtime_ns()}};
-                    } else if (command == "adjust") {
-                        const std::string id_unit = incoming.at("unit");
-                        if (id_unit == config.reference_unit)
-                            throw std::runtime_error("reference unit cannot be adjusted");
-                        Pulse p{incoming.at("id"), incoming.at("delta"), incoming.at("count"),
-                                incoming.at("expires")};
-                        const auto ack = adjust_local(id_unit, p);
-                        result = {{"id", ack.correction_id}, {"state", ack.state}};
-                    } else if (command == "status") {
-                        auto s = detail::status_from_json(incoming.at("status"));
-                        publish(s);
-                        result = {{"stored", true}};
-                    } else if (command == "stop") {
-                        stopping = true;
-                        cleanup_backends();
-                        const auto final = status();
-                        result = {{"stopped", final.fault.empty()}, {"fault", final.fault}};
-                    } else
-                        throw std::runtime_error("unknown control command");
-                }
-                response = {{"request_id", id}, {"ok", true}, {"result", result}};
-            } catch (const std::exception& e) {
-                channel.send({{"request_id", id}, {"ok", false}, {"error", e.what()}});
-                throw;
-            }
-            channel.send(response);
-        }
-    }
-    void run_coordinator() {
-        const auto deadline = startup_deadline;
-        for (const auto& n : resolved.nodes) {
-            if (n.id == local)
-                continue;
-            while (!stopping) {
-                try {
-                    peers[n.id] = detail::connect(n, config.request_timeout_seconds);
-                    break;
-                } catch (const std::exception&) {
-                    if (monotonic_ns() > deadline)
-                        throw std::runtime_error("node connection startup timeout: " + n.id);
-                    std::cerr << "Waiting for node " << n.id << std::endl;
-                    std::unique_lock<std::mutex> lock(mutex);
-                    changed.wait_for(lock, std::chrono::milliseconds(250),
-                                     [&] { return stopping.load(); });
-                }
-            }
-            if (stopping)
-                return;
-            const double remaining = static_cast<double>(deadline - monotonic_ns()) / 1e9;
-            if (remaining <= 0)
-                throw std::runtime_error("node initialization startup timeout: " + n.id);
-            peers.at(n.id)->timeout(std::min(remaining, config.request_timeout_seconds));
-            const auto hello = rpc(n.id, {{"command", "hello"},
-                                          {"topology", detail::topology_json(config)}});
-            peers.at(n.id)->timeout(config.request_timeout_seconds);
-            if (hello.at("node") != n.id)
-                throw std::runtime_error("peer node identity differs");
-        }
-        PhasePolicy policy;
-        policy.max_mapping_span_ns = static_cast<std::int64_t>(std::ceil(config.clock_max_offset_ms * 1000000));
-        std::map<std::string, PhaseController> controllers;
-        for (const auto& u : config.units)
-            if (u.id != config.reference_unit) {
-                controllers.emplace(u.id, PhaseController(policy, 1000000000LL / config.fps));
-                controllers.at(u.id).reset(monotonic_ns(), common_now());
-            }
-        std::int64_t next = 0;
-        const auto calibration_deadline = startup_deadline;
-        std::map<std::string, UnitStatus> last_metrics;
-        while (!stopping) {
-            if (monotonic_ns() < next) {
-                std::unique_lock<std::mutex> lock(mutex);
-                changed.wait_for(lock, std::chrono::milliseconds(20),
-                                 [&] { return stopping.load(); });
-                continue;
-            }
-            health();
-            std::map<std::string, TimingSnapshot> snapshots;
-            for (std::size_t i = 0; i < backends.size(); ++i) {
-                auto s = mapped_snapshot(*backends[i]);
-                if (s.unit_id != units[i].id)
-                    throw std::runtime_error("local snapshot unit identity differs");
-                snapshots.emplace(s.unit_id, std::move(s));
-            }
-            for (const auto& n : config.nodes) {
-                if (n.id == local)
-                    continue;
-                const auto result = rpc(n.id, {{"command", "snapshots"}});
-                if (result.at("node") != n.id)
-                    throw std::runtime_error("snapshot node identity differs");
-                for (const auto& j : result.at("snapshots")) {
-                    auto s = detail::snapshot_from_json(j);
-                    if (config.unit(s.unit_id).node_id != n.id ||
-                        !snapshots.emplace(s.unit_id, std::move(s)).second)
-                        throw std::runtime_error("snapshot unit identity differs");
-                }
-            }
-            if (snapshots.size() != config.units.size())
-                throw std::runtime_error("incomplete group timing snapshots");
-            GroupStatus s;
-            s.state = "calibrating";
-            s.ready = true;
-            for (const auto& u : config.units) {
-                UnitStatus us = last_metrics[u.id];
-                us.unit_id = u.id;
-                if (u.id == config.reference_unit) {
-                    us.state = "reference";
-                    us.ready = false;
-                    try {
-                        validate_timing(snapshots.at(u.id), common_now(), policy);
-                        us.ready = true;
-                    } catch (const WindowPending&) {
-                        if (status().ready)
-                            throw std::runtime_error("reference timing missing");
-                    }
-                    s.ready = s.ready && us.ready;
-                } else {
-                    const auto d = controllers.at(u.id).tick(snapshots.at(config.reference_unit),
-                                                             snapshots.at(u.id), common_now(),
-                                                             monotonic_ns());
-                    us.state = d.state;
-                    us.ready = d.ready;
-                    us.fault = d.fault;
-                    if (d.measurement) {
-                        us.phase_ms = d.measurement->phase_ns / 1e6;
-                        us.p95_ms = d.measurement->absolute_p95_ns / 1e6;
-                        us.max_ms = d.measurement->absolute_max_ns / 1e6;
-                        us.measurement_end_ns = d.measurement->window_end_ns;
-                    }
-                    if (!d.fault.empty())
-                        throw std::runtime_error(u.id + ": " + d.fault);
-                    s.ready = s.ready && d.ready;
-                    if (d.action) {
-                        auto pulse = *d.action;
-                        pulse.expires_ns = shifted(common_now(), 1000000000LL);
-                        if (u.node_id == local)
-                            adjust_local(u.id, pulse);
-                        else {
-                            const auto ack = rpc(u.node_id, {{"command", "adjust"},
-                                                             {"unit", u.id},
-                                                             {"id", pulse.correction_id},
-                                                             {"delta", pulse.delta_us},
-                                                             {"count", pulse.count},
-                                                             {"expires", pulse.expires_ns}});
-                            if (ack.at("id").get<std::uint64_t>() != pulse.correction_id)
-                                throw std::runtime_error("correction acknowledgement differs");
-                        }
-                    }
-                }
-                last_metrics[u.id] = us;
-                s.units.push_back(us);
-            }
-            if (s.ready)
-                s.state = "tracking";
-            else if (monotonic_ns() > calibration_deadline)
-                throw std::runtime_error("group startup calibration deadline exceeded");
-            publish(s);
-            for (const auto& n : config.nodes)
-                if (n.id != local)
-                    rpc(n.id, {{"command", "status"}, {"status", detail::status_json(s)}});
-            next = monotonic_ns() + 1000000000LL;
-        }
     }
     void stop() {
         std::lock_guard<std::mutex> lock(lifecycle);
-        stopping = true;
-        changed.notify_all();
-        if (thread.joinable())
-            thread.join();
-        if (server >= 0) {
-            close(server);
-            server = -1;
-        }
-        peers.clear();
-        requests.clear();
-        auto s = status();
-        if (s.fault.empty()) {
-            s.state = "stopped";
-            s.ready = false;
-            for (auto& u : s.units)
-                u.ready = false;
-            publish(s);
-        }
+        sync->request_stop();
+        if (worker.joinable()) worker.join();
     }
 };
 Session::Session(Config config, std::string node)
     : Session(config, node, validated_backends(config, node)) {}
-Session::Session(Config config, std::string node,
-                 std::vector<std::unique_ptr<AcquisitionBackend>> bs)
-    : impl_(std::make_unique<Impl>(std::move(config), std::move(node), std::move(bs))) {}
-Session::~Session() {
-    try {
-        stop();
-    } catch (...) {
-    }
-}
+Session::Session(Config config, std::string node, std::vector<std::unique_ptr<AcquisitionBackend>> backends)
+    : impl_(std::make_unique<Impl>(std::move(config), std::move(node), std::move(backends))) {}
+Session::~Session() { stop(); }
 void Session::start() { impl_->start(); }
-bool Session::wait_ready(std::chrono::milliseconds timeout) {
-    std::unique_lock<std::mutex> lock(impl_->mutex);
-    impl_->changed.wait_for(lock, timeout, [&] {
-        return impl_->group.ready || !impl_->group.fault.empty() || impl_->stopping.load();
-    });
-    if (!impl_->group.fault.empty())
-        throw std::runtime_error(impl_->group.fault);
-    return impl_->group.ready;
-}
-std::shared_ptr<const FramePacket> Session::read(const std::string& id,
-                                                 std::chrono::milliseconds timeout) {
+bool Session::wait_ready(std::chrono::milliseconds timeout) { return impl_->sync->wait_ready(timeout); }
+GroupStatus Session::status() const { return impl_->sync->status(); }
+void Session::stop() { impl_->stop(); }
+std::shared_ptr<const FramePacket> Session::read(const std::string& id, std::chrono::milliseconds timeout) {
     auto& acquisition = impl_->backend(id);
     auto packet = acquisition.read(timeout);
     const auto fault = acquisition.fault();
     if (!fault.empty()) throw std::runtime_error(id + ": " + fault);
     if (!packet) return {};
     auto delivered = std::make_shared<FramePacket>(*packet);
-    const auto estimate = impl_->clock_estimate();
-    delivered->clock_valid = estimate.valid;
-    delivered->timestamp_ns = estimate.valid ? shifted(packet->sensor_timestamp_ns, estimate.offset_ns) : 0;
+    const auto clock = impl_->sync->clock();
+    delivered->clock_valid = clock.valid;
+    delivered->timestamp_ns = clock.map(packet->sensor_timestamp_ns);
     return delivered;
 }
-GroupStatus Session::status() const { return impl_->status(); }
-void Session::stop() { impl_->stop(); }
 } // namespace bcamsync

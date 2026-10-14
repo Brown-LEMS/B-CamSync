@@ -1,4 +1,5 @@
 #include "bcamsync/types.hpp"
+#include "bcamsync/sync_types.hpp"
 #include "wire.hpp"
 #include <algorithm>
 #include <cmath>
@@ -240,6 +241,45 @@ void wire_membership() {
     malformed["units"] = 70;
     rejects([&] { detail::status_from_json(malformed); });
 }
+void synchronization_types() {
+    SyncConfig sync;
+    sync.group_id = "external-sensors";
+    sync.reference_unit = "sensor-a";
+    sync.nodes = {{"node-a", "", "", 58080}};
+    sync.units = {{"sensor-a", "node-a"}, {"sensor-b", "node-a"}};
+    sync.fps = 1000000;
+    sync.validate();
+    require(sync.reference_node() == "node-a", "reference selection needs only synchronization membership");
+    require(sync.to_json().find("backend") == std::string::npos &&
+                sync.to_json().find("camera_id") == std::string::npos,
+            "synchronization configuration contains no acquisition settings");
+    TemporaryConfig file;
+    file.write(sync.to_json());
+    const auto restored = SyncConfig::from_file(file.path);
+    require(restored.to_json() == sync.to_json(), "standalone synchronization configuration round trips");
+    auto host = sync;
+    host.clock_mode = "host";
+    require(host.sync_json() != sync.sync_json(), "explicit clock mode is part of the shared contract");
+    host.clock_mode = "unknown";
+    rejects([&] { host.validate(); });
+    auto managed = valid();
+    require(managed.sync_config().clock_mode == "network", "managed physical acquisition projects network clock mode");
+    managed.backend = "fake";
+    require(managed.sync_config().clock_mode == "host", "managed fake acquisition projects same-host clock mode");
+    managed.units[0].camera_id.clear();
+    managed.units[0].profile = "invalid SDK profile";
+    managed.sync_config().validate();
+    rejects([&] { managed.validate(); });
+    require(ClockMapping{true, 100, 10}.map(1000) == 1100 &&
+                ClockMapping{true, -100, 10}.map(1000) == 900,
+            "public mapping converts native timestamps in both offset directions");
+    require(ClockMapping{false, std::numeric_limits<std::int64_t>::max(), 0}.map(1000) == 0,
+            "unavailable mapping returns no group timestamp");
+    rejects([&] { ClockMapping{true, 1, 0}.map(std::numeric_limits<std::int64_t>::max()); });
+    rejects([&] { ClockMapping{true, -1, 0}.map(std::numeric_limits<std::int64_t>::min()); });
+    require(boot_time_ns() > 0 && monotonic_ns() > 0 && realtime_ns() > 0,
+            "clock functions are available without acquisition dependencies");
+}
 void configuration_files() {
     TemporaryConfig file;
     const std::string text =
@@ -316,6 +356,7 @@ int main() {
         existing_address_network();
         configuration_modes();
         packet_views();
+        synchronization_types();
         configuration_files();
         wire_membership();
         std::cout << "types tests passed\n";

@@ -1,6 +1,5 @@
 #pragma once
-#include "bcamsync/session.hpp"
-#include "bcamsync/types.hpp"
+#include "bcamsync/sync_types.hpp"
 #include <functional>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -8,7 +7,7 @@ namespace bcamsync::detail {
 using Json = nlohmann::json;
 Json snapshot_json(const TimingSnapshot& s);
 TimingSnapshot snapshot_from_json(const Json& j);
-Json topology_json(const Config& c);
+Json topology_json(const SyncConfig& c);
 Json status_json(const GroupStatus& s);
 GroupStatus status_from_json(const Json& j);
 class Connection {

@@ -1,22 +1,13 @@
 #include "bcamsync/types.hpp"
 #include "arducam_profile.hpp"
-#include <algorithm>
-#include <arpa/inet.h>
 #include <cmath>
 #include <fstream>
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <set>
 #include <stdexcept>
-#include <time.h>
 namespace bcamsync {
 namespace {
-std::int64_t clock_value(clockid_t id) {
-    timespec t{};
-    if (clock_gettime(id, &t) != 0)
-        throw std::runtime_error("clock_gettime failed");
-    return static_cast<std::int64_t>(t.tv_sec) * 1000000000LL + t.tv_nsec;
-}
 unsigned unsigned_value(const nlohmann::json& object, const char* key, unsigned initial) {
     if (!object.contains(key)) return initial;
     const auto& value = object.at(key);
@@ -27,8 +18,6 @@ unsigned unsigned_value(const nlohmann::json& object, const char* key, unsigned 
     return value.get<unsigned>();
 }
 } // namespace
-std::int64_t monotonic_ns() { return clock_value(CLOCK_MONOTONIC); }
-std::int64_t realtime_ns() { return clock_value(CLOCK_REALTIME); }
 const NodeConfig& Config::node(const std::string& id) const {
     for (const auto& n : nodes)
         if (n.id == id)
@@ -42,36 +31,31 @@ const UnitConfig& Config::unit(const std::string& id) const {
     throw std::invalid_argument("unknown unit: " + id);
 }
 std::string Config::reference_node() const { return unit(reference_unit).node_id; }
+SyncConfig Config::sync_config() const {
+    SyncConfig config;
+    config.group_id = group_id;
+    config.reference_unit = reference_unit;
+    config.fps = fps;
+    config.network_mode = network_mode;
+    config.clock_mode = backend == "fake" ? "host" : "network";
+    config.clock_port = clock_port;
+    config.nodes = nodes;
+    for (const auto& unit : units) config.units.push_back({unit.id, unit.node_id});
+    config.clock_max_offset_ms = clock_max_offset_ms;
+    config.clock_max_age_seconds = clock_max_age_seconds;
+    config.request_timeout_seconds = request_timeout_seconds;
+    config.startup_timeout_seconds = startup_timeout_seconds;
+    return config;
+}
 void Config::validate() const {
-    const auto valid_id = [](const std::string& s) {
-        return !s.empty() && s.find('\0') == std::string::npos;
-    };
-    if (!valid_id(group_id) || nodes.empty() || units.empty())
-        throw std::invalid_argument("invalid group identity or empty topology");
+    sync_config().validate();
     if (backend != "arducam" && backend != "fake")
         throw std::invalid_argument("unknown acquisition backend: " + backend);
-    if (network_mode != "auto" && network_mode != "existing")
-        throw std::invalid_argument("network mode must be auto or existing");
-    if (!clock_port || !fps || fps > 1000000)
-        throw std::invalid_argument("invalid clock port or unrepresentable frame period");
-    const bool addressed = nodes.size() > 1 && (network_mode == "existing" || backend == "fake");
-    std::set<std::string> ids, addresses, devices;
-    for (const auto& n : nodes) {
-        in_addr a{};
-        if (!valid_id(n.id) || !ids.insert(n.id).second || !n.port ||
-            n.interface.find('\0') != std::string::npos ||
-            (backend == "arducam" && nodes.size() > 1 && network_mode == "auto" && n.interface.empty()) ||
-            (addressed && (inet_pton(AF_INET, n.address.c_str(), &a) != 1 ||
-                          !addresses.insert(n.address + ":" + std::to_string(n.port)).second)))
-            throw std::invalid_argument("invalid or duplicate node endpoint");
-    }
-    ids.clear();
-    unit(reference_unit);
+    std::set<std::string> devices;
     for (const auto& u : units) {
-        node(u.node_id);
-        if (!valid_id(u.id) || !ids.insert(u.id).second || !valid_id(u.camera_id) ||
+        if (u.camera_id.empty() || u.camera_id.find('\0') != std::string::npos ||
             !devices.insert(u.node_id + '\0' + u.camera_id).second)
-            throw std::invalid_argument("invalid or duplicate unit identity");
+            throw std::invalid_argument("invalid or duplicate camera identity");
         if (u.exposure_us <= 0 || u.exposure_us >= 1000000 / static_cast<int>(fps) ||
             !std::isfinite(u.analogue_gain) || u.analogue_gain <= 0 || !u.queue_capacity ||
             static_cast<std::uint64_t>(u.pool_capacity) <= u.queue_capacity)
@@ -94,20 +78,6 @@ void Config::validate() const {
             pixels > std::numeric_limits<std::size_t>::max() / u.pool_capacity)
             throw std::invalid_argument("frame storage extent is not representable for " + u.id);
     }
-    for (const auto& n : nodes)
-        if (std::none_of(units.begin(), units.end(),
-                         [&](const auto& u) { return u.node_id == n.id; }))
-            throw std::invalid_argument("node has no units: " + n.id);
-    if (!std::isfinite(clock_max_offset_ms) || clock_max_offset_ms <= 0 ||
-        static_cast<long double>(clock_max_offset_ms) * 1e6L >= std::numeric_limits<std::int64_t>::max())
-        throw std::invalid_argument("invalid clock offset threshold");
-    const auto available = std::numeric_limits<std::int64_t>::max() - monotonic_ns();
-    for (double v : {clock_max_age_seconds, request_timeout_seconds, startup_timeout_seconds})
-        if (!std::isfinite(v) || v <= 0 || static_cast<long double>(v) * 1e9L >= available)
-            throw std::invalid_argument("timeout is invalid or exceeds timestamp range");
-    const long double idle_seconds = 2 + static_cast<long double>(request_timeout_seconds) * (nodes.size() + 1);
-    if (idle_seconds * 1e9L >= available)
-        throw std::invalid_argument("group request budget exceeds timestamp range");
 }
 Config Config::from_file(const std::string& path) {
     std::ifstream f(path);
@@ -192,20 +162,7 @@ std::string Config::to_json() const {
         {"clock_max_age_seconds", clock_max_age_seconds}, {"request_timeout_seconds", request_timeout_seconds},
         {"startup_timeout_seconds", startup_timeout_seconds}}).dump();
 }
-std::string Config::sync_json() const {
-    validate();
-    std::vector<std::string> node_ids;
-    for (const auto& n : nodes) node_ids.push_back(n.id);
-    std::sort(node_ids.begin(), node_ids.end());
-    std::vector<const UnitConfig*> ordered;
-    for (const auto& u : units) ordered.push_back(&u);
-    std::sort(ordered.begin(), ordered.end(), [](const auto* a, const auto* b) { return a->id < b->id; });
-    nlohmann::json us = nlohmann::json::array();
-    for (const auto* u : ordered) us.push_back({{"id", u->id}, {"node_id", u->node_id}});
-    return nlohmann::json({{"group_id", group_id}, {"reference_unit", reference_unit}, {"backend", backend},
-        {"fps", fps}, {"clock_domain", nodes.size() == 1 ? "local" : "common"},
-        {"nodes", node_ids}, {"units", us}}).dump();
-}
+std::string Config::sync_json() const { return sync_config().sync_json(); }
 const std::uint8_t* FramePacket::view_data(unsigned index) const {
     if (!storage || !views || !width || !height || width % views || index >= views ||
         storage->pixels.size() != static_cast<std::uint64_t>(width) * height)

@@ -1,5 +1,5 @@
 #pragma once
-#include "timing.hpp"
+#include "sync_types.hpp"
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -23,10 +23,6 @@ struct UnitConfig {
     unsigned queue_capacity = 4, pool_capacity = 12;
     FakeOptions fake;
 };
-struct NodeConfig {
-    std::string id, address, interface;
-    std::uint16_t port = 58080;
-};
 struct Config {
     std::string group_id, reference_unit;
     std::string backend = "arducam";
@@ -42,6 +38,8 @@ struct Config {
     const UnitConfig& unit(const std::string& id) const;
     std::string reference_node() const;
     static Config from_file(const std::string& path);
+    /// Project group synchronization settings without camera configuration.
+    SyncConfig sync_config() const;
     /// Resolved acquisition configuration for optional management clients.
     std::string to_json() const;
     /// Canonical shared synchronization contract; acquisition and host settings stay local.

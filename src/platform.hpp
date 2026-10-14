@@ -1,5 +1,5 @@
 #pragma once
-#include "bcamsync/types.hpp"
+#include "bcamsync/sync_types.hpp"
 #include <atomic>
 #include <memory>
 
@@ -11,20 +11,20 @@ struct ClockEstimate {
     std::string fault;
 };
 
-std::string clock_config(const Config& config, const std::string& local,
+std::string clock_config(const SyncConfig& config, const std::string& local,
                          const std::string& directory);
-ClockEstimate tracking_estimate(const Config& config, const std::string& local,
+ClockEstimate tracking_estimate(const SyncConfig& config, const std::string& local,
                                 const std::string& csv, std::int64_t realtime,
                                 std::int64_t boottime, std::int64_t mapping_uncertainty = 0);
 
 /// Own only transient network activation and a private, non-stepping chronyd.
 class NodePlatform {
   public:
-    NodePlatform(Config config, std::string local);
+    NodePlatform(SyncConfig config, std::string local);
     ~NodePlatform();
     NodePlatform(const NodePlatform&) = delete;
     NodePlatform& operator=(const NodePlatform&) = delete;
-    void start(Config& resolved, const std::atomic<bool>& stopping, std::int64_t deadline_ns);
+    void start(SyncConfig& resolved, const std::atomic<bool>& stopping, std::int64_t deadline_ns);
     ClockEstimate sample();
     void stop();
 
