@@ -10,8 +10,12 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["numpy>=1.24"]
 
+[project.optional-dependencies]
+preview = ["Pillow>=11"]
+
 [project.scripts]
 bcamsync-manage = "bcamsync.management:main"
+bcamsync-http = "bcamsync.http_management:main"
 
 [tool.scikit-build]
 wheel.packages = ["python/bcamsync"]

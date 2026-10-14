@@ -47,13 +47,13 @@ def _status(session, local_node: str, active: bool, operation_id: str | None) ->
 class NodeService:
     """Own a local Session independently of connecting management clients."""
 
-    def __init__(self, config: Config, local_node: str, socket_path: str | Path):
+    def __init__(self, config: Config, local_node: str, socket_path: str | Path | None = None):
         config.validate()
         config.node(local_node)
         self.config = config
         self.local_node = local_node
-        self.socket_path = Path(socket_path)
-        if not self.socket_path.is_absolute():
+        self.socket_path = Path(socket_path) if socket_path is not None else None
+        if self.socket_path is not None and not self.socket_path.is_absolute():
             raise ValueError("socket_path must be absolute")
         self._session = None
         self._active = False
@@ -76,7 +76,7 @@ class NodeService:
         if operation_id is not None and command not in {"start", "stop"}:
             raise ValueError("operation_id applies only to start and stop")
         with self._lock:
-            if self._closing:
+            if self._closing or self._shutdown.is_set():
                 raise RuntimeError("node service is closing")
             if command == "configuration":
                 return {"node_id": self.local_node, "config": json.loads(self.config.to_json()),
@@ -86,7 +86,9 @@ class NodeService:
                 if self._active:
                     raise RuntimeError("node session is already active; stop it explicitly first")
                 if self._session is None:
-                    self._session = Session(self.config, self.local_node)
+                    self._session = self._create_session()
+                if self._shutdown.is_set():
+                    raise RuntimeError("node service is closing")
                 self._session.start()
                 self._operation = operation_id or str(uuid4())
                 self._active = True
@@ -98,6 +100,9 @@ class NodeService:
                 self._active = False
                 self._operation = None
             return _status(self._session, self.local_node, self._active, self._operation)
+
+    def _create_session(self) -> Session:
+        return Session(self.config, self.local_node)
 
     def close(self) -> None:
         """Close the session and end the foreground service."""
@@ -115,6 +120,8 @@ class NodeService:
 
     def serve(self) -> None:
         """Serve one bounded JSON request per Unix connection until explicitly closed."""
+        if self.socket_path is None:
+            raise ValueError("Unix management requires a socket path")
         service = self
 
         class Handler(socketserver.StreamRequestHandler):
