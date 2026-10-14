@@ -157,6 +157,7 @@ class ArducamBackend final : public AcquisitionBackend {
     std::map<libcamera::Request *, Submission> submitted_;
     libcamera::Stream *raw_ = nullptr;
     unsigned stride_ = 0;
+    const detail::ArducamRawPacking raw_packing_;
     std::int64_t minimum_duration_ = 0, maximum_duration_ = 0;
     bool acquired_ = false, camera_started_ = false, connected_ = false;
     std::atomic<bool> running_{false};
@@ -259,10 +260,7 @@ class ArducamBackend final : public AcquisitionBackend {
     void copy_pixels(libcamera::FrameBuffer *buffer, FrameStorage &storage) {
         DmaRead access(buffer->planes().front().fd.get());
         const auto *source = mappings_.at(buffer)->pixels;
-        if (stride_ == detail::arducam_width) std::memcpy(storage.pixels.data(), source, storage.pixels.size());
-        else for (unsigned y = 0; y < detail::arducam_height; ++y)
-            std::memcpy(storage.pixels.data() + static_cast<std::size_t>(y) * detail::arducam_width,
-                        source + static_cast<std::size_t>(y) * stride_, detail::arducam_width);
+        detail::copy_arducam_pixels(source, storage.pixels.data(), stride_, raw_packing_);
         access.finish();
     }
 
@@ -413,7 +411,8 @@ class ArducamBackend final : public AcquisitionBackend {
 
 public:
     ArducamBackend(UnitConfig config, std::shared_ptr<Manager> manager, unsigned fps)
-        : config_(std::move(config)), fps_(fps), manager_(std::move(manager)) {}
+        : config_(std::move(config)), fps_(fps), manager_(std::move(manager)),
+          raw_packing_(detail::arducam_raw_packing(config_.profile)) {}
     ~ArducamBackend() override { stop(); }
 
     void start(const std::string &session, std::uint64_t round) override {
@@ -448,7 +447,8 @@ public:
             viewfinder.pixelFormat = libcamera::formats::YUV420;
             viewfinder.bufferCount = 8;
             raw.size = {detail::arducam_width, detail::arducam_height};
-            raw.pixelFormat = libcamera::formats::R8;
+            raw.pixelFormat = raw_packing_ == detail::ArducamRawPacking::r16
+                ? libcamera::formats::R16 : libcamera::formats::R8;
             raw.bufferCount = 8;
             configuration_->sensorConfig = libcamera::SensorConfiguration();
             configuration_->sensorConfig->outputSize = {detail::arducam_width, detail::arducam_height};
@@ -459,7 +459,8 @@ public:
             if (camera_->configure(configuration_.get())) throw std::runtime_error("Cannot configure camera");
             raw_ = raw.stream();
             stride_ = raw.stride;
-            if (stride_ < detail::arducam_width) throw std::runtime_error("Raw camera stride is too short");
+            if (stride_ < detail::arducam_width * detail::arducam_raw_pixel_bytes(raw_packing_))
+                throw std::runtime_error("Raw camera stride is too short");
             const auto limits = camera_->controls().find(&libcamera::controls::FrameDurationLimits);
             if (limits == camera_->controls().end()) throw std::runtime_error("Camera does not provide frame-period control");
             minimum_duration_ = std::max<std::int64_t>(limits->second.min().get<std::int64_t>(), config_.exposure_us);
