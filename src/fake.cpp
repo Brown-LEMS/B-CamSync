@@ -5,7 +5,6 @@
 #include <atomic>
 #include <cmath>
 #include <condition_variable>
-#include <ctime>
 #include <deque>
 #include <mutex>
 #include <limits>
@@ -16,10 +15,7 @@ namespace bcamsync {
 namespace {
 constexpr std::int64_t second_ns = 1000000000;
 std::int64_t sensor_clock_ns() {
-    timespec value{};
-    if (clock_gettime(CLOCK_BOOTTIME, &value) != 0)
-        throw std::runtime_error("Cannot read fake sensor clock");
-    return static_cast<std::int64_t>(value.tv_sec) * second_ns + value.tv_nsec;
+    return boot_time_ns();
 }
 CorrectionStatus correction_status(const PhaseActuator::State& state) {
     return {state.state, state.correction_id, state.restored_timestamp_ns};
