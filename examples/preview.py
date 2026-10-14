@@ -192,11 +192,14 @@ class PreviewService(HttpNodeService):
             if session is None:
                 return generation, None
             packet = session.read(unit_id, timeout_seconds=0.1)
+            if packet is not None:
+                self.consume_packet(packet)
             if packet is not None and drain_latest:
                 for _ in range(self.units[unit_id].queue_capacity):
                     newest = session.read(unit_id, timeout_seconds=0)
                     if newest is None:
                         break
+                    self.consume_packet(newest)
                     packet = newest
             return generation, packet
         except RuntimeError:
@@ -209,6 +212,9 @@ class PreviewService(HttpNodeService):
             with self._readers_changed:
                 self._readers.discard(unit_id)
                 self._readers_changed.notify_all()
+
+    def consume_packet(self, packet):
+        """Downstream examples can process every read before preview sampling."""
 
     def latest_image(self, unit_id) -> bytes | None:
         with self._preview_lock:

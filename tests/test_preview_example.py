@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from PIL import Image
 
@@ -172,6 +172,21 @@ class PreviewApplicationTests(unittest.TestCase):
         self.assertTrue(all(not thread.is_alive() for thread in service._producers))
         # A preview startup failure leaves its caller's controller usable.
         self.assertFalse(self.controller.request("status")["active"])
+
+    def test_downstream_consumer_receives_frames_before_preview_sampling(self):
+        packets = [object(), object(), object()]
+        session = Mock()
+        session.read.side_effect = [*packets, None]
+        controller = NodeService(self.service.config, "node-a", session=session)
+        service = preview.PreviewService(controller, "127.0.0.1", http_port=0,
+                                         discovery_port=self.service.discovery_port)
+        service._publishing = True
+        consumed = []
+        with patch.object(service, "consume_packet", side_effect=consumed.append):
+            _, packet = service._read_packet("board-a1", True)
+        self.assertIs(packet, packets[-1])
+        self.assertEqual(consumed, packets)
+        self.assertEqual(service._readers, set())
 
 
 if __name__ == "__main__":
