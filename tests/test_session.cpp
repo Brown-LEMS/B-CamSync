@@ -31,6 +31,7 @@ struct Probe {
     std::atomic<bool> running{false}, fail_cancel{false}, fail_stop{false},
         empty_timing{false}, capture_failure{false}, pause_read{false}, read_entered{false};
     std::atomic<unsigned> starts{0}, stops{0}, snapshots{0}, snapshot_delay_ms{0};
+    std::int64_t sensor_offset_ns = 0;
 };
 /// Software fixture generates complete timing history independently of frame reads.
 class SyntheticBackend final : public AcquisitionBackend {
@@ -67,7 +68,7 @@ class SyntheticBackend final : public AcquisitionBackend {
             FrameTiming f;
             f.camera_sequence = last - count + 1 + i;
             f.timestamp_ns = static_cast<std::int64_t>(f.camera_sequence) * period;
-            f.sensor_timestamp_ns = f.timestamp_ns;
+            f.sensor_timestamp_ns = f.timestamp_ns - probe_->sensor_offset_ns;
             f.requested_duration_us = f.reported_duration_us = period / 1000;
             result.frames.push_back(f);
         }
@@ -86,7 +87,7 @@ class SyntheticBackend final : public AcquisitionBackend {
         auto packet = std::make_shared<FramePacket>();
         packet->unit_id = unit_.id;
         packet->timestamp_ns = timestamp();
-        packet->sensor_timestamp_ns = packet->timestamp_ns;
+        packet->sensor_timestamp_ns = packet->timestamp_ns - probe_->sensor_offset_ns;
         packet->sequence =
             static_cast<std::uint64_t>(packet->timestamp_ns / (1000000000LL / fps_));
         packet->width = unit_.fake.width;
@@ -174,6 +175,8 @@ void local_session() {
     auto config = configuration(false);
     config.reference_unit = "follower";
     auto p0 = std::make_shared<Probe>(), p1 = std::make_shared<Probe>();
+    p0->sensor_offset_ns = 1000000000;
+    p1->sensor_offset_ns = 2000000000;
     auto session = detail::SessionTestAccess::create(config, "a", backends(config, "a", {p0, p1}));
     session.start();
     require(session.wait_ready(8s), "single-node boards must converge without image consumption");
@@ -195,9 +198,9 @@ void local_session() {
     auto other = session.read("follower", 100ms);
     require(held && other && held->unit_id == "reference" && other->unit_id == "follower",
             "read routes packets to requested board");
-    require(held->clock_valid && held->timestamp_ns == held->sensor_timestamp_ns &&
-                other->clock_valid && other->timestamp_ns == other->sensor_timestamp_ns,
-            "single-node runtime preserves the backend local clock domain");
+    require(held->clock_valid && held->timestamp_ns == held->sensor_timestamp_ns + p0->sensor_offset_ns &&
+                other->clock_valid && other->timestamp_ns == other->sensor_timestamp_ns + p1->sensor_offset_ns,
+            "runtime maps backend local timestamps while preserving original SDK sensor readings");
     require(held->views == 4 && held->view_width() == 4, "board packets expose four camera views");
     const auto value = held->view_data(0)[0];
     const auto sequence = held->sequence;

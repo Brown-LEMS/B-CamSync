@@ -137,7 +137,7 @@ std::shared_ptr<const FramePacket> Session::read(const std::string& id, std::chr
     auto delivered = std::make_shared<FramePacket>(*packet);
     const auto clock = impl_->sync->clock();
     delivered->clock_valid = clock.valid;
-    delivered->timestamp_ns = clock.map(packet->sensor_timestamp_ns);
+    delivered->timestamp_ns = clock.map(packet->timestamp_ns);
     return delivered;
 }
 } // namespace bcamsync

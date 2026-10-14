@@ -6,6 +6,7 @@
 namespace bcamsync {
 /// SDK boundary: timing continues even when no application reads image packets.
 /// Timing observations, packet timestamps, and pulse expiry use node-local CLOCK_BOOTTIME.
+/// sensor_timestamp_ns retains the original SDK clock reading independently of that domain.
 class AcquisitionBackend {
 public:
     virtual ~AcquisitionBackend() = default;
