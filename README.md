@@ -1,31 +1,100 @@
 # B-CamSync
 
-B-CamSync is a C++ library with Python bindings for continuous camera synchronization within and across nodes. It combines network clock mapping with frame-phase control. Applications can consume frames through the library or attach synchronization to an existing capture system.
+B-CamSync is a C++ library with Python bindings for continuous camera synchronization within and across nodes. Applications can let the library manage cameras and deliver frames, or attach synchronization to an existing capture system.
 
 The managed backend targets Arducam B0267 four-camera boards on Raspberry Pi 4 and Pi 5 running Raspberry Pi OS Bookworm arm64. Frames are consumed locally on each node.
 
-## Quick start
+## Quick start: two Raspberry Pi 4 nodes
 
-This example uses synthetic cameras and requires no hardware:
+Use one B0267 board with four cameras on each Pi 4. Install B-CamSync on both nodes using the instructions below, then connect their Ethernet ports directly.
+
+On each node, copy the configuration and enumerate its local board ID:
+
+```sh
+cp examples/configs/two_nodes_one_board.json group.json
+.venv/bin/python -c 'from bcamsync import enumerate_arducam_cameras; print(enumerate_arducam_cameras())'
+```
+
+Replace both `camera_id` placeholders with the IDs returned on the respective nodes, and put the completed `group.json` on both. The example names the nodes `node-a` and `node-b`, uses `eth0`, and selects `board-a1` as the reference. Adjust the interface names if needed. Pi 4 is the default profile; the library assigns session IP addresses automatically.
+
+Start the follower first, then the reference in a terminal on the other Pi:
+
+```sh
+# On node-b:
+.venv/bin/python examples/capture.py group.json node-b --seconds 30
+# On node-a:
+.venv/bin/python examples/capture.py group.json node-a --seconds 30
+```
+
+Each node acquires its local board and prints frame sequences, four-view shapes, and synchronization status. The reference ends the group after 30 seconds. The default settings are 40 fps, 10000 µs exposure, and startup gain calibration. Other layouts are in [examples/configs](examples/configs).
+
+## Browser preview
+
+After the capture example finishes, connect both nodes and your workstation to the same Ethernet switch. The workstation needs an IPv4 link-local address on its Ethernet interface.
+
+Install the preview dependency and start the example on each Pi, using its own node ID:
+
+```sh
+.venv/bin/python -m pip install '.[preview]'
+.venv/bin/python examples/preview.py group.json node-a
+# On the other Pi, use node-b instead.
+```
+
+On the workstation, run these commands from a checkout of this repository to install the host client. Copy `group.json` there as well:
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install ./host
+.venv/bin/python examples/manage_group.py group.json discover
+.venv/bin/python examples/manage_group.py group.json start
+```
+
+Open the URLs returned by `discover` to see each node's four camera views. Discovery works before cameras start; the `start` command starts the whole group. To select a workstation adapter, add `--interface en7` to the host commands, replacing `en7` with your interface name. To end acquisition, run:
+
+```sh
+.venv/bin/python examples/manage_group.py group.json stop
+```
+
+Closing the browser leaves acquisition running. Preview is an independent example application that consumes frames; HTTP forwards control requests, while the node application owns capture and networking.
+
+## Two integration methods
+
+### Managed capture: `Session`
+
+B-CamSync initializes cameras, manages synchronization, and delivers one board packet containing four readonly NumPy views:
 
 ```python
 from bcamsync import Config, Session
 
-config = Config.from_file("examples/configs/fake_one_node.json")
-with Session(config, "node-a") as cameras:
-    while True:
+with Session(Config.from_file("group.json"), "node-a") as cameras:
+    while cameras.status().state != "stopped":
         packet = cameras.read("board-a1", timeout_seconds=1)
         if packet is not None:
-            print(packet.sequence, [view.shape for view in packet.views])
+            camera0, camera1, camera2, camera3 = packet.views
+            print(packet.sequence, camera0.shape)
 ```
 
-`Session` manages acquisition and synchronization; each packet contains four readonly NumPy views. Synchronization runs independently of frame consumption. Use `status()` to inspect synchronization quality and `wait_ready()` to wait for readiness.
+`read()` returns `None` on timeout. Synchronization runs independently of reads; use `status()` to inspect quality and `wait_ready()` when you need to wait for readiness. Exiting the session closes capture. See [capture.py](examples/capture.py) and [capture.cpp](examples/capture.cpp) for complete examples.
 
-For real cameras, start from a [configuration example](examples/configs), fill in the camera IDs and network interfaces, and run a session on each node. See [capture.py](examples/capture.py) or [capture.cpp](examples/capture.cpp) for complete capture examples.
+### Existing capture: `SyncSession`
 
-If your application already owns capture, use `SyncSession` with `SyncUnit` timing/control adapters. Your image pipeline and camera lifetime remain under your control. See [external_capture.py](examples/external_capture.py) for a complete example.
+Your application owns camera configuration, acquisition, and image delivery. Supply one `SyncUnit` adapter per local unit to expose timing observations and execute frame-period corrections:
 
-Optional [HTTP control](examples/serve_node.py) and [browser preview](examples/preview.py) are separate node applications. Architecture and lifecycle details are in [docs/design.md](docs/design.md).
+```python
+from bcamsync import SyncConfig, SyncSession
+
+config = SyncConfig.from_file("examples/configs/external_two_nodes.json")
+# capture and adapter belong to your application.
+capture.start()
+try:
+    with SyncSession(config, "node-a", {"board-a1": adapter}) as sync:
+        capture.run()
+    # Synchronization is stopped; capture is still running.
+finally:
+    capture.stop()
+```
+
+The adapter implements `bind()`, `snapshot()`, `adjust()`, `cancel()`, and `fault()`. See [external_capture.py](examples/external_capture.py) for a complete adapter. Both integration methods share the same synchronization runtime; `SyncSession.stop()` restores controls without closing your capture system. Architecture and lifecycle details are in [docs/design.md](docs/design.md).
 
 ## Install
 
