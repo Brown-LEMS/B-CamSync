@@ -3,16 +3,14 @@
 from pathlib import Path
 import signal
 import socket
-import sys
 import unittest
 from unittest.mock import Mock, patch
 
 from bcamsync import Config, NetworkSession
+from bcamsync import node as serve_node
 from bcamsync.http_management import HttpNodeService
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "examples"))
-import serve_node
 
 
 class NodeApplicationTests(unittest.TestCase):
@@ -48,7 +46,7 @@ class NodeApplicationTests(unittest.TestCase):
                 events.append("release network")
                 self.native.stop()
 
-        class Controller(serve_node.ManagedNode):
+        class Controller(serve_node.NodeService):
             def request_shutdown(self):
                 events.append("close command intake")
                 super().request_shutdown()
@@ -64,7 +62,7 @@ class NodeApplicationTests(unittest.TestCase):
                 events.append("close capture")
 
         self.network_patch = patch.object(serve_node, "NetworkSession", Network)
-        self.controller_patch = patch.object(serve_node, "ManagedNode", Controller)
+        self.controller_patch = patch.object(serve_node, "NodeService", Controller)
         self.network_patch.start()
         self.controller_patch.start()
         self.addCleanup(self.network_patch.stop)
@@ -102,7 +100,7 @@ class NodeApplicationTests(unittest.TestCase):
                 events.append("join consumers")
 
         with patch.object(serve_node.signal, "signal", install):
-            serve_node.run_node(self.config, "node-a", server_class=Server)
+            serve_node.run_node(self.config, "node-a", network_startup="automatic", server_class=Server)
         self.assertEqual(self.events, ["stop consumers", "close command intake", "cancel network waits",
                                        "join consumers", "close command intake", "close capture", "release network"])
         self.assertEqual(handlers[signal.SIGTERM], signal.SIG_DFL)
@@ -116,7 +114,7 @@ class NodeApplicationTests(unittest.TestCase):
             occupied.bind(("127.0.0.1", 0))
             occupied.listen()
             with self.assertRaises(OSError):
-                serve_node.run_node(self.config, "node-a", server_class=HttpNodeService,
+                serve_node.run_node(self.config, "node-a", network_startup="automatic", server_class=HttpNodeService,
                                     http_port=occupied.getsockname()[1], discovery_port=discovery_port)
         self.assertEqual(self.events[-2:], ["close capture", "release network"])
 
@@ -124,7 +122,7 @@ class NodeApplicationTests(unittest.TestCase):
         network = NetworkSession(self.config.sync_config(), "node-a")
         network.start()
         self.addCleanup(network.stop)
-        controller = serve_node.ManagedNode(self.config, "node-a", network)
+        controller = serve_node.NodeService(self.config, "node-a", network=network)
         self.addCleanup(controller.close)
         controller.request("start")
         controller.request("stop")

@@ -30,10 +30,10 @@ import sys
 
 import bcamsync
 from bcamsync import Config, _native
-from bcamsync import http_management
+from bcamsync import http_management, network, node
 
 prefix = Path(sys.argv[1]).resolve()
-for module in (bcamsync, _native, http_management):
+for module in (bcamsync, _native, http_management, network, node):
     module_path = Path(module.__file__).resolve()
     if not module_path.is_relative_to(prefix):
         raise RuntimeError(f"Module was not loaded from installation prefix: {module_path}")

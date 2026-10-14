@@ -87,6 +87,9 @@ case "$action" in
         # NumPy is a public dependency installed from the image's pinned requirements.
         "$build_dir/wheel-env/bin/python" -m pip install \
             "$(grep '^numpy==' "$source_root/tools/container-requirements.txt")"
+        progress 'Verify installed network-only and node entry points'
+        env -u PYTHONPATH "$build_dir/wheel-env/bin/bcamsync-network" --help
+        env -u PYTHONPATH "$build_dir/wheel-env/bin/bcamsync-node" --help
         progress 'Build and install the independent host package without node dependencies'
         host_destination="$build_root/packages/host"
         mkdir -p "$host_destination"

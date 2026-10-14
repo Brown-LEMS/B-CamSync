@@ -15,6 +15,8 @@ preview = ["Pillow>=11"]
 
 [project.scripts]
 bcamsync-manage = "bcamsync.management:main"
+bcamsync-network = "bcamsync.network:main"
+bcamsync-node = "bcamsync.node:main"
 
 [tool.scikit-build]
 wheel.packages = ["python/bcamsync"]

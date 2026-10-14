@@ -22,7 +22,7 @@ from PIL import Image
 
 from bcamsync import Config
 from bcamsync.http_management import HttpNodeService, ManagementHandler
-from serve_node import run_node
+from bcamsync.node import run_node
 
 
 def encode_packet(packet, max_width: int, quality: int) -> bytes:
@@ -243,6 +243,7 @@ def main():
     parser.add_argument("--preview-fps", type=float, default=5)
     args = parser.parse_args()
     run_node(Config.from_file(args.config), args.node, address=args.address,
+             network_startup="automatic",
              http_port=args.http_port, discovery_port=args.discovery_port,
              server_class=PreviewService, preview_fps=args.preview_fps)
 

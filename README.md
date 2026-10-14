@@ -15,7 +15,7 @@ cp examples/configs/two_nodes_one_board.json group.json
 .venv/bin/python -c 'from bcamsync import enumerate_arducam_cameras; print(enumerate_arducam_cameras())'
 ```
 
-Replace both `camera_id` placeholders with the IDs returned on the respective nodes, and put the completed `group.json` on both. The example names the nodes `node-a` and `node-b`, uses `eth0`, and selects `board-a1` as the reference. Adjust the interface names if needed. Pi 4 is the default profile; the library assigns session IP addresses automatically.
+Replace both `camera_id` placeholders with the IDs returned on the respective nodes, and put the completed `group.json` on both. The example names the nodes `node-a` and `node-b`, uses `eth0`, and selects `board-a1` as the reference. Adjust the interface names if needed. Pi 4 is the default profile; automatic networking reuses a usable interface IPv4 address or creates a temporary link-local connection.
 
 Start the follower first, then the reference in a terminal on the other Pi:
 
@@ -27,6 +27,26 @@ Start the follower first, then the reference in a terminal on the other Pi:
 ```
 
 Each node acquires its local board and prints frame sequences, four-view shapes, and synchronization status. The reference ends the group after 30 seconds. The default settings are 40 fps, 10000 µs exposure, and startup gain calibration. Other layouts are in [examples/configs](examples/configs).
+
+## Optional network infrastructure
+
+Networking can run independently of cameras. On each node, this installed command starts the local network and continuously announces the node, including while other nodes are offline:
+
+```sh
+.venv/bin/bcamsync-network group.json node-a
+```
+
+It reads only synchronization configuration and never initializes cameras or starts clock estimation. Run it from your node application or process supervisor when persistent networking is useful. SIGINT/SIGTERM releases only its owned network resources. Later camera sessions using automatic networking reuse the established IP; stopping capture leaves this network process running.
+
+For an HTTP control endpoint with independently owned networking, use:
+
+```sh
+.venv/bin/bcamsync-node group.json node-a --network-startup automatic
+```
+
+HTTP discovery and configuration/status queries are available before peers or cameras start. An explicit `start` request waits for group discovery and starts capture and synchronization; `stop` keeps the network and HTTP endpoint running. A peer-discovery timeout leaves networking available for a later request. Status includes the network address and any background discovery fault.
+
+The node command defaults to `--network-startup explicit`. In that mode it uses an already available HTTP address, supplied with `--address` or the local node's configured address; networking for synchronization starts only when capture is explicitly started. `network.mode: "auto"` versus `"existing"` continues to select address setup, independently of the command's startup policy. Applications can also use `NetworkSession.start()`, `resolve()`, and `stop()` directly, and pass a started network to `NodeService(..., network=network)`; the application retains ownership. Supplied external `SyncSession` instances use the same controller path.
 
 ## Browser preview
 
