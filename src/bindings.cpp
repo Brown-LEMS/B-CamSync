@@ -1,5 +1,6 @@
 #include "bcamsync/session.hpp"
 #include "python_frame.hpp"
+#include "sync_bindings.hpp"
 #include <cmath>
 #include <filesystem>
 #include <limits>
@@ -88,6 +89,7 @@ PYBIND11_MODULE(_native, module) {
         .def("reference_node", &Config::reference_node)
         .def("to_json", &Config::to_json)
         .def("sync_json", &Config::sync_json)
+        .def("sync_config", &Config::sync_config)
         .def_static(
             "from_file",
             [](const std::filesystem::path& path) { return Config::from_file(path.string()); },
@@ -107,6 +109,8 @@ PYBIND11_MODULE(_native, module) {
         .def_readonly("fault", &GroupStatus::fault)
         .def_readonly("ready", &GroupStatus::ready)
         .def_readonly("units", &GroupStatus::units);
+
+    bcamsync::python::bind_sync(module);
 
     py::class_<FrameHandle>(module, "FramePacket",
                             "A board frame whose readonly views retain native storage.")

@@ -106,6 +106,7 @@ PY
         progress 'Exercise installed-wheel acquisition and retained arrays'
         cd "$source_root"
         env -u PYTHONPATH "$build_dir/wheel-env/bin/python" -m unittest discover -s tests -p test_fake_python.py -v
+        env -u PYTHONPATH "$build_dir/wheel-env/bin/python" -m unittest discover -s tests -p test_sync_python.py -v
         ;;
     address|thread)
         progress 'Configure separate Clang instrumentation'
@@ -116,17 +117,17 @@ PY
             export ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1:halt_on_error=1
             export UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
             ctest --test-dir "$build_dir" --output-on-failure --timeout 180 \
-                -E '^(python_ownership|fake_python|host_client|device_workflow|python_management)$'
+                -E '^(python_ownership|fake_python|external_python|host_client|device_workflow|python_management)$'
             progress 'Check Python arrays with the matching Clang ASan runtime'
             runtime=$("$compiler" -print-file-name="libclang_rt.asan-$(uname -m).so")
             [[ -f $runtime ]] || { printf 'Missing Clang ASan runtime: %s\n' "$runtime" >&2; exit 1; }
             ASAN_OPTIONS=detect_leaks=0:detect_stack_use_after_return=1:halt_on_error=1 \
                 LD_PRELOAD="$runtime" ctest --test-dir "$build_dir" --output-on-failure --timeout 180 \
-                -R '^(python_ownership|fake_python|python_management)$'
+                -R '^(python_ownership|fake_python|external_python|python_management)$'
         else
             progress 'Check native acquisition and shutdown under TSan'
             TSAN_OPTIONS=halt_on_error=1 ctest --test-dir "$build_dir" --output-on-failure --timeout 180 \
-                -E '^(python_ownership|fake_python|host_client|device_workflow|python_management)$'
+                -E '^(python_ownership|fake_python|external_python|host_client|device_workflow|python_management)$'
         fi
         ;;
     fuzz)
@@ -152,7 +153,7 @@ PY
         clang-tidy-16 -p "$build_dir" \
             --checks='-*,clang-analyzer-*,bugprone-use-after-move,bugprone-dangling-handle' \
             --header-filter='.*bcamsync/.*' --warnings-as-errors='*' \
-            "$source_root"/src/{types,phase,wire,process,platform,session,fake,arducam}.cpp
+            "$source_root"/src/{types,sync_types,phase,wire,process,platform,sync_runtime,sync,session,fake,arducam}.cpp
         ;;
 esac
 progress 'Completed'
