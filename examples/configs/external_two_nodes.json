@@ -1,0 +1,13 @@
+{
+  "group_id": "external-camera-group",
+  "reference_unit": "board-a1",
+  "fps": 40,
+  "nodes": [
+    {"id": "node-a", "interface": "eth0"},
+    {"id": "node-b", "interface": "eth0"}
+  ],
+  "units": [
+    {"id": "board-a1", "node_id": "node-a"},
+    {"id": "board-b1", "node_id": "node-b"}
+  ]
+}

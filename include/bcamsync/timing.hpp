@@ -6,7 +6,10 @@
 namespace bcamsync {
 struct FrameTiming {
     std::uint64_t camera_sequence = 0;
-    std::int64_t sensor_timestamp_ns = 0, timestamp_ns = 0, mapping_span_ns = 0;
+    /// Immutable source time in nanoseconds; never replace it with application arrival time.
+    std::int64_t sensor_timestamp_ns = 0;
+    /// Local boot time at the SyncUnit boundary, mapped group time in the phase controller.
+    std::int64_t timestamp_ns = 0, mapping_span_ns = 0;
     std::int64_t requested_duration_us = 0, reported_duration_us = 0;
     std::uint64_t correction_id = 0;
 };

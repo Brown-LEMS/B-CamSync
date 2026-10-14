@@ -29,6 +29,7 @@ class ObservedCapture(SyntheticCapture):
         self.bindings = []
         self.snapshot_error = False
         self.bad_ack = False
+        self.commands = []
 
     def bind(self, session_id, round_id):
         super().bind(session_id, round_id)
@@ -40,6 +41,7 @@ class ObservedCapture(SyntheticCapture):
         return super().snapshot()
 
     def adjust(self, pulse):
+        self.commands.append((pulse, (pulse.correction_id, pulse.delta_us, pulse.count, pulse.expires_ns)))
         result = super().adjust(pulse)
         if self.bad_ack:
             result.correction_id += 1
@@ -92,12 +94,16 @@ class ExternalSyncTests(unittest.TestCase):
         self.assertGreater(completed.correction_id, 0)
         self.assertEqual(completed.state, "restored")
         self.assertGreater(completed.restored_timestamp_ns, 0)
+        for pulse, expected in self.follower.commands:
+            self.assertEqual((pulse.correction_id, pulse.delta_us, pulse.count, pulse.expires_ns), expected)
         mapping = self.session.clock()
         timing = self.follower.snapshot().frames[-1]
         self.assertTrue(mapping.valid)
         self.assertEqual(mapping.map(timing.sensor_timestamp_ns), timing.sensor_timestamp_ns)
         before = self.follower.sequence
         self.session.stop()
+        for pulse, expected in self.follower.commands:
+            self.assertEqual((pulse.correction_id, pulse.delta_us, pulse.count, pulse.expires_ns), expected)
         self.assertEqual(self.session.status().state, "stopped")
         await_condition(lambda: self.follower.sequence > before + 2, timeout=1)
         first_binding = self.follower.bindings[-1]

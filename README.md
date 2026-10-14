@@ -17,7 +17,7 @@ python3 -m venv .venv
 .venv/bin/python -m pip install .
 ```
 
-The package builds and includes the native library. A Linux build requires the camera SDK; a build with `BCAMSYNC_WITH_LIBCAMERA=OFF` is only for software validation and cannot open cameras.
+The package builds and includes the native library. The managed Arducam backend requires its camera SDK. Set `BCAMSYNC_WITH_LIBCAMERA=OFF` for external acquisition integrations that use their own SDK, or for software-only capture; that build still provides the synchronization runtime.
 
 For a C++ installation:
 
@@ -76,6 +76,35 @@ The complete [Python example](examples/capture.py) and [C++ example](examples/ca
 The image queue is a bounded FIFO: when full it drops the oldest undelivered packet. If applications retain all pool storage, new image delivery is skipped while timing observation and synchronization continue. Increase `queue_capacity` or `pool_capacity` to suit consumption and retention; the default pool holds twelve board images. The acquisition path copies each raw board image once into this reusable pool; Python view creation copies no pixels. Throughput and timing should be measured with release builds on the target nodes.
 
 `status()` reports group readiness, faults, and each unit's phase, P95, maximum error, and last measured window boundary. Startup readiness requires two settled windows with P95 at most 0.5 ms and maximum at most 1 ms; the network clock gate is 0.1 ms by default. These are controller thresholds. The synchronization target is sub-millisecond alignment. Frame access works during synchronization startup and after a synchronization fault. Clock, transport, or phase faults clear readiness and appear in status while local acquisition continues. Camera failures appear through frame access. Applications that require synchronized frames may call `wait_ready()` and inspect status; restarting synchronization requires an explicit stop and new start.
+
+## Attach an existing capture system
+
+Use `SyncSession` when your application already owns acquisition. It uses the same coordination, clock mapping, phase control, and status implementation as managed `Session`. It does not initialize cameras, consume images, configure exposure or gain, or stop your capture pipeline.
+
+Load a camera-independent `SyncConfig`, such as [external_two_nodes.json](examples/configs/external_two_nodes.json), and provide one `SyncUnit` adapter for each local unit. Managed configurations can project the same group settings through `Config.sync_config()`. The shared handshake compares topology, reference, cadence, and clock mode; it does not depend on camera backends. Managed and external nodes can participate in the same group.
+
+```python
+from bcamsync import SyncConfig, SyncSession
+
+config = SyncConfig.from_file("examples/configs/external_two_nodes.json")
+# capture is your existing application, and adapter implements SyncUnit.
+capture.start()
+try:
+    with SyncSession(config, "node-a", {"board-a1": adapter}) as synchronization:
+        capture.run()  # Keep your existing image processing or recording flow.
+finally:
+    capture.stop()
+```
+
+An adapter implements `bind(session_id, round_id)`, `snapshot()`, `adjust(pulse)`, `cancel()`, and `fault()`. These methods run on the synchronization worker and should return promptly; SDK commands can be submitted to the application's existing control queue. Enqueue a `Pulse` value in C++; Python callbacks receive an owned command object that may be retained. `bind` establishes a control namespace without starting capture. `snapshot` returns recent frame timings and the latest correction feedback, including observations for frames whose images the application discarded. A returned snapshot's unit ID must identify that adapter.
+
+`FrameTiming.sensor_timestamp_ns` retains the immutable sensor time in nanoseconds. `FrameTiming.timestamp_ns`, the snapshot boundary, restoration feedback, and control expiry use the local `CLOCK_BOOTTIME` domain (`boot_time_ns()`); adapters using another SDK clock convert it and report mapping uncertainty. `synchronization.clock().map(local_timestamp_ns)` translates local time to group time and returns zero when its mapping is unavailable.
+
+`adjust` accepts a bounded period pulse; acceptance does not acknowledge actual completion. SDK completion feedback must identify the correction and the observed baseline-restoration boundary. `cancel` requests baseline restoration, and synchronization shutdown waits for that feedback within `request_timeout_seconds`. Missing feedback is reported in status. External capture continues after synchronization stop, remote group stop, or a synchronization fault. Reusing a `SyncSession` binds a newer round; attaching another session establishes a new namespace. Both preserve the application's capture lifetime.
+
+The executable [external capture example](examples/external_capture.py) implements an application-owned synthetic producer using `PhaseActuator` to separate duration submission from completion. Run `.venv/bin/python examples/external_capture.py` to observe correction and capture continuing after synchronization stops. In C++, include `<bcamsync/sync.hpp>`, implement `SyncUnit`, and construct `SyncSession(config, local_node, local_interfaces)` with shared adapter ownership. Python subclasses are retained while the session uses their callbacks. Pixel data never crosses this interface.
+
+For physical multi-node capture, the default clock mode uses the same transient Ethernet setup and private chronyd as managed acquisition. `clock_mode: "host"` explicitly selects host-clock mapping for same-host software endpoints.
 
 ## Optional developer host
 
