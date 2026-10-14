@@ -17,6 +17,20 @@ ClockEstimate tracking_estimate(const SyncConfig& config, const std::string& loc
                                 const std::string& csv, std::int64_t realtime,
                                 std::int64_t boottime, std::int64_t mapping_uncertainty = 0);
 
+/// Internal platform helper shared by synchronization and optional management services.
+class NetworkLink {
+  public:
+    NetworkLink(std::string interface, std::string connection_id);
+    ~NetworkLink();
+    NetworkLink(const NetworkLink&) = delete;
+    NetworkLink& operator=(const NetworkLink&) = delete;
+    std::string start(const std::atomic<bool>& stopping, std::int64_t deadline_ns);
+    void stop();
+  private:
+    class Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
 /// Own only transient network activation and a private, non-stepping chronyd.
 class NodePlatform {
   public:

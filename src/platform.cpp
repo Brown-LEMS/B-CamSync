@@ -140,29 +140,17 @@ ClockEstimate tracking_estimate(const SyncConfig& config, const std::string& loc
     return result;
 }
 
-class NodePlatform::Impl {
+class NetworkLink::Impl {
   public:
-    SyncConfig config;
-    std::string local, directory;
-    bool started = false;
+    std::string interface, connection_id, address;
 #ifdef __linux__
     sd_bus* bus = nullptr;
     std::string activation;
-    pid_t child = -1;
-    int discovery = -1;
-    std::atomic<bool> discovery_stopping{false};
-    std::thread discovery_thread;
-    std::mutex mutex;
-    std::condition_variable changed;
-    std::map<std::string, std::string> addresses;
-    std::string discovery_fault;
-
     static void dbus_check(int code) {
         if (code < 0)
             throw std::runtime_error(std::string("NetworkManager D-Bus: ") + std::strerror(-code));
     }
     void activate(std::int64_t deadline) {
-        const auto& interface = config.node(local).interface;
         dbus_check(sd_bus_open_system(&bus));
         const auto remaining = static_cast<std::uint64_t>(std::max<std::int64_t>(1, (deadline - monotonic_ns()) / 1000));
         dbus_check(sd_bus_set_method_call_timeout(bus, remaining));
@@ -201,7 +189,7 @@ class NodePlatform::Impl {
         try {
             dbus_check(sd_bus_message_open_container(request, 'a', "{sa{sv}}"));
             setting("connection");
-            value("id", ("bcamsync-" + config.group_id + "-" + local).c_str());
+            value("id", connection_id.c_str());
             value("type", "802-3-ethernet");
             value("interface-name", interface.c_str());
             dbus_check(sd_bus_message_append(request, "{sv}", "autoconnect", "b", 0));
@@ -238,21 +226,93 @@ class NodePlatform::Impl {
         ifaddrs* interfaces = nullptr;
         if (getifaddrs(&interfaces))
             throw std::runtime_error("cannot inspect synchronization interface");
-        std::string address;
+        std::string result;
         for (auto entry = interfaces; entry; entry = entry->ifa_next) {
             if (!entry->ifa_addr || entry->ifa_addr->sa_family != AF_INET ||
-                config.node(local).interface != entry->ifa_name)
+                interface != entry->ifa_name)
                 continue;
             const auto* ipv4 = reinterpret_cast<const sockaddr_in*>(entry->ifa_addr);
             if ((ntohl(ipv4->sin_addr.s_addr) & 0xffff0000U) != 0xa9fe0000U)
                 continue;
             char text[INET_ADDRSTRLEN];
             if (inet_ntop(AF_INET, &ipv4->sin_addr, text, sizeof(text)))
-                address = text;
+                result = text;
         }
         freeifaddrs(interfaces);
-        return address;
+        return result;
     }
+#endif
+    Impl(std::string device, std::string id)
+        : interface(std::move(device)), connection_id(std::move(id)) {
+        if (interface.empty() || connection_id.empty())
+            throw std::invalid_argument("network interface and connection ID must not be empty");
+    }
+};
+
+NetworkLink::NetworkLink(std::string interface, std::string connection_id)
+    : impl_(std::make_unique<Impl>(std::move(interface), std::move(connection_id))) {}
+NetworkLink::~NetworkLink() { stop(); }
+
+std::string NetworkLink::start(const std::atomic<bool>& stopping, std::int64_t deadline_ns) {
+    if (!impl_->address.empty())
+        throw std::runtime_error("network link already started");
+    startup_check(stopping, deadline_ns);
+#ifdef __linux__
+    try {
+        impl_->activate(deadline_ns);
+        auto next_progress = std::int64_t{0};
+        while ((impl_->address = impl_->link_address()).empty()) {
+            startup_check(stopping, deadline_ns);
+            if (monotonic_ns() >= next_progress) {
+                std::cerr << "Waiting for link-local IPv4 address on " << impl_->interface << '\n';
+                next_progress = monotonic_ns() + 1000000000LL;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        return impl_->address;
+    } catch (...) {
+        stop();
+        throw;
+    }
+#else
+    throw std::runtime_error("transient networking requires Linux and NetworkManager");
+#endif
+}
+
+void NetworkLink::stop() {
+#ifdef __linux__
+    if (impl_->bus) {
+        if (!impl_->activation.empty()) {
+            // Closing this bus also disconnects the lifetime-bound activation on crash.
+            sd_bus_set_method_call_timeout(impl_->bus, 1000000);
+            sd_bus_call_method(impl_->bus, "org.freedesktop.NetworkManager",
+                "/org/freedesktop/NetworkManager", "org.freedesktop.NetworkManager",
+                "DeactivateConnection", nullptr, nullptr, "o", impl_->activation.c_str());
+        }
+        sd_bus_flush_close_unref(impl_->bus);
+        impl_->bus = nullptr;
+        impl_->activation.clear();
+    }
+#endif
+    impl_->address.clear();
+}
+
+class NodePlatform::Impl {
+  public:
+    SyncConfig config;
+    std::string local, directory;
+    bool started = false;
+#ifdef __linux__
+    std::unique_ptr<NetworkLink> link;
+    pid_t child = -1;
+    int discovery = -1;
+    std::atomic<bool> discovery_stopping{false};
+    std::thread discovery_thread;
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::map<std::string, std::string> addresses;
+    std::string discovery_fault;
+
     void discover(const std::string& address) {
         const unsigned interface = if_nametoindex(config.node(local).interface.c_str());
         if (!interface)
@@ -409,17 +469,10 @@ void NodePlatform::start(SyncConfig& resolved, const std::atomic<bool>& stopping
     try {
         if (resolved.network_mode == "auto") {
             std::cerr << "Activating transient synchronization link " << resolved.node(impl_->local).interface << '\n';
-            impl_->activate(deadline_ns);
-            std::string address;
+            impl_->link = std::make_unique<NetworkLink>(resolved.node(impl_->local).interface,
+                "bcamsync-" + resolved.group_id + "-" + impl_->local);
+            const auto address = impl_->link->start(stopping, deadline_ns);
             auto next_progress = std::int64_t{0};
-            while ((address = impl_->link_address()).empty()) {
-                startup_check(stopping, deadline_ns);
-                if (monotonic_ns() >= next_progress) {
-                    std::cerr << "Waiting for link-local IPv4 address on " << resolved.node(impl_->local).interface << '\n';
-                    next_progress = monotonic_ns() + 1000000000LL;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            }
             impl_->discover(address);
             std::unique_lock<std::mutex> lock(impl_->mutex);
             next_progress = 0;
@@ -517,18 +570,7 @@ void NodePlatform::stop() {
         while (waitpid(impl_->child, nullptr, 0) < 0 && errno == EINTR) {}
         impl_->child = -1;
     }
-    if (impl_->bus) {
-        if (!impl_->activation.empty()) {
-            // Closing this bus also disconnects the lifetime-bound activation on crash.
-            sd_bus_set_method_call_timeout(impl_->bus, 1000000);
-            sd_bus_call_method(impl_->bus, "org.freedesktop.NetworkManager",
-                "/org/freedesktop/NetworkManager", "org.freedesktop.NetworkManager",
-                "DeactivateConnection", nullptr, nullptr, "o", impl_->activation.c_str());
-        }
-        sd_bus_flush_close_unref(impl_->bus);
-        impl_->bus = nullptr;
-        impl_->activation.clear();
-    }
+    impl_->link.reset();
 #endif
     if (!impl_->directory.empty()) {
         std::error_code error;

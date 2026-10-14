@@ -103,6 +103,24 @@ void private_configuration() {
     require(clock_config(config, "node-a", "/tmp/another-clock").find("server 10.77.0.2") != std::string::npos,
             "reference selection changes per instance without a deployment registry");
 }
+void link_startup_validation() {
+    bool rejected = false;
+    try { NetworkLink invalid("", "test"); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    require(rejected, "network activation requires an explicit interface");
+    NetworkLink link("eth0", "link-test");
+    std::atomic<bool> stopping{true};
+    rejected = false;
+    try { link.start(stopping, monotonic_ns() + 1000000000LL); }
+    catch (const std::runtime_error&) { rejected = true; }
+    require(rejected, "cancelled activation must not contact NetworkManager");
+    stopping = false;
+    rejected = false;
+    try { link.start(stopping, monotonic_ns() - 1); }
+    catch (const std::runtime_error&) { rejected = true; }
+    require(rejected, "expired activation must not contact NetworkManager");
+    link.stop();
+}
 void software_lifecycle() {
     auto config = configuration();
     config.clock_mode = "host";
@@ -170,6 +188,7 @@ int main(int argc, char** argv) {
     try {
         mapping();
         private_configuration();
+        link_startup_validation();
         software_lifecycle();
         if (argc == 2 && std::string(argv[1]) == "--private-clock")
             private_clock_smoke();
