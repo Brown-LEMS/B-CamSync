@@ -181,3 +181,6 @@ cmake --install build
 ```
 
 Add `-DBCAMSYNC_WITH_LIBCAMERA=OFF` for SDK-independent builds. Applications use `find_package(BCamSync CONFIG REQUIRED)` and link `BCamSync::bcamsync`; pass the installation prefix through `CMAKE_PREFIX_PATH`. See the [CMake example](examples/cmake_consumer).
+
+## Contributors
+Tangtangfang Fang (tangtangfang_fang@brown.edu)
