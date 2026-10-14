@@ -16,14 +16,10 @@ namespace bcamsync {
 namespace {
 constexpr std::int64_t second_ns = 1000000000;
 std::int64_t sensor_clock_ns() {
-#ifdef CLOCK_BOOTTIME
     timespec value{};
     if (clock_gettime(CLOCK_BOOTTIME, &value) != 0)
         throw std::runtime_error("Cannot read fake sensor clock");
     return static_cast<std::int64_t>(value.tv_sec) * second_ns + value.tv_nsec;
-#else
-    return monotonic_ns();
-#endif
 }
 CorrectionStatus correction_status(const PhaseActuator::State& state) {
     return {state.state, state.correction_id, state.restored_timestamp_ns};
@@ -41,10 +37,6 @@ class FakeBackend final : public AcquisitionBackend {
     std::deque<FrameTiming> timing_;
     std::string session_id_, fault_;
     std::uint64_t round_id_ = 0;
-    bool common_time_ = false;
-    std::int64_t mapping_offset_ns_ = 0;
-
-    std::int64_t domain_now() const { return common_time_ ? realtime_ns() : sensor_clock_ns(); }
     std::int64_t baseline_us() const { return 1000000 / fps_; }
     void capture(std::int64_t sensor_ns, std::int64_t deadline_ns) noexcept {
         try {
@@ -67,7 +59,7 @@ class FakeBackend final : public AcquisitionBackend {
                 FrameTiming timing;
                 timing.camera_sequence = sequence;
                 timing.sensor_timestamp_ns = sensor_ns;
-                timing.timestamp_ns = sensor_ns + mapping_offset_ns_;
+                timing.timestamp_ns = sensor_ns;
                 timing.requested_duration_us = timing.reported_duration_us = submitted.duration_us;
                 timing.correction_id = submitted.correction_id;
                 actuator_->completed(submitted, sequence, timing.timestamp_ns);
@@ -143,7 +135,7 @@ class FakeBackend final : public AcquisitionBackend {
             throw std::invalid_argument("Invalid fake sensor phase or drift");
     }
     ~FakeBackend() override { stop(); }
-    void start(const std::string& session, std::uint64_t round, bool common_time) override {
+    void start(const std::string& session, std::uint64_t round) override {
         std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
         if (worker_.joinable())
             throw std::runtime_error("Fake camera is already started; stop before restarting");
@@ -155,23 +147,20 @@ class FakeBackend final : public AcquisitionBackend {
             actuator_ = std::move(actuator);
             session_id_ = session;
             round_id_ = round;
-            common_time_ = common_time;
             {
                 std::lock_guard<std::mutex> lock(state_mutex_);
                 timing_.clear();
                 fault_.clear();
             }
             const auto sensor_now = sensor_clock_ns();
-            const auto domain = common_time_ ? realtime_ns() : sensor_now;
             const auto mono = monotonic_ns();
-            mapping_offset_ns_ = domain - sensor_now;
             const auto period = baseline_us() * 1000;
-            auto first = domain - domain % period + options_.initial_phase_us * 1000 % period;
-            while (first <= domain)
+            auto first = sensor_now - sensor_now % period + options_.initial_phase_us * 1000 % period;
+            while (first <= sensor_now)
                 first += period;
             stopping_ = false;
-            worker_ = std::thread([this, first, mono, domain] {
-                capture(first - mapping_offset_ns_, mono + (first - domain));
+            worker_ = std::thread([this, first, mono, sensor_now] {
+                capture(first, mono + (first - sensor_now));
             });
         } catch (...) {
             stopping_ = true;
@@ -215,7 +204,7 @@ class FakeBackend final : public AcquisitionBackend {
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
             result.frames.assign(timing_.begin(), timing_.end());
-            result.snapshot_timestamp_ns = domain_now();
+            result.snapshot_timestamp_ns = sensor_clock_ns();
         }
         if (actuator_)
             result.correction = correction_status(actuator_->snapshot());
@@ -227,7 +216,7 @@ class FakeBackend final : public AcquisitionBackend {
             throw std::runtime_error("Cannot adjust a stopped fake camera");
         return correction_status(actuator_->adjust(session_id_, round_id_, pulse.correction_id,
                                                    pulse.delta_us, pulse.count, pulse.expires_ns,
-                                                   domain_now(), monotonic_ns(), baseline_us(),
+                                                   sensor_clock_ns(), monotonic_ns(), baseline_us(),
                                                    std::max<std::int64_t>(1, baseline_us() - 1000), baseline_us() + 1000));
     }
     void cancel() override {

@@ -28,7 +28,7 @@ template <class F> void rejects(F action) {
     require(rejected, "expected invalid session operation rejection");
 }
 struct Probe {
-    std::atomic<bool> running{false}, common_time{false}, fail_cancel{false}, fail_stop{false},
+    std::atomic<bool> running{false}, fail_cancel{false}, fail_stop{false},
         empty_timing{false}, capture_failure{false}, pause_read{false}, read_entered{false};
     std::atomic<unsigned> starts{0}, stops{0}, snapshots{0}, snapshot_delay_ms{0};
 };
@@ -37,9 +37,8 @@ class SyntheticBackend final : public AcquisitionBackend {
   public:
     SyntheticBackend(UnitConfig unit, std::shared_ptr<Probe> probe, unsigned fps = 40)
         : fps_(fps), unit_(std::move(unit)), probe_(std::move(probe)) {}
-    void start(const std::string& session, std::uint64_t round, bool common) override {
+    void start(const std::string& session, std::uint64_t round) override {
         require(!session.empty() && round != 0, "backend must receive a synchronization identity");
-        probe_->common_time = common;
         probe_->running = true;
         ++probe_->starts;
     }
@@ -109,16 +108,10 @@ class SyntheticBackend final : public AcquisitionBackend {
 
   private:
     std::int64_t timestamp() const {
-        if (probe_->common_time)
-            return realtime_ns();
-#ifdef CLOCK_BOOTTIME
         timespec value{};
         if (clock_gettime(CLOCK_BOOTTIME, &value) != 0)
             throw std::runtime_error("cannot read fixture capture clock");
         return static_cast<std::int64_t>(value.tv_sec) * 1000000000LL + value.tv_nsec;
-#else
-        return monotonic_ns();
-#endif
     }
     unsigned fps_;
     UnitConfig unit_;
@@ -184,8 +177,6 @@ void local_session() {
     session.start();
     require(session.wait_ready(8s), "single-node boards must converge without image consumption");
     require(p0->snapshots > 1 && p1->snapshots > 1, "runtime continually observes all boards");
-    require(!p0->common_time && !p1->common_time,
-            "same-node synchronization uses local monotonic domain");
     const auto status = session.status();
     require(status.ready && status.fault.empty() && status.units.size() == 2,
             "group reports both local units ready");
@@ -203,6 +194,9 @@ void local_session() {
     auto other = session.read("follower", 100ms);
     require(held && other && held->unit_id == "reference" && other->unit_id == "follower",
             "read routes packets to requested board");
+    require(held->clock_valid && held->timestamp_ns == held->sensor_timestamp_ns &&
+                other->clock_valid && other->timestamp_ns == other->sensor_timestamp_ns,
+            "single-node runtime preserves the backend local clock domain");
     require(held->views == 4 && held->view_width() == 4, "board packets expose four camera views");
     const auto value = held->view_data(0)[0];
     const auto sequence = held->sequence;
@@ -240,11 +234,13 @@ void network_session() {
     }
     require(ready, "coordinator must align remote unit");
     require(follower.wait_ready(2s), "readiness propagates to follower session");
-    require(!a->common_time && !b->common_time,
-            "backends retain local sensor time under cross-node synchronization");
     const auto mapped = coordinator.read("reference", 100ms);
     require(mapped && mapped->clock_valid && mapped->timestamp_ns > mapped->sensor_timestamp_ns,
             "runtime maps cross-node frame timestamps without changing sensor time");
+    require(mapped->sequence == static_cast<std::uint64_t>(mapped->sensor_timestamp_ns / (1000000000LL / config.fps)),
+            "common-clock delivery preserves the original sensor capture identity");
+    const auto retained_sensor = mapped->sensor_timestamp_ns, retained_common = mapped->timestamp_ns;
+    const auto retained_pixel = mapped->view_data(0)[0];
     for (const auto& state : follower.status().units)
         if (state.unit_id != config.reference_unit)
             require(state.measurement_end_ns > 0,
@@ -276,6 +272,9 @@ void network_session() {
     require(coordinator.wait_ready(8s) && follower.wait_ready(2s),
             "stopped sessions restart with a new group session");
     require(a->starts == 2 && b->starts == 2, "restart initializes both local backends");
+    require(mapped->sensor_timestamp_ns == retained_sensor && mapped->timestamp_ns == retained_common &&
+                mapped->view_data(0)[0] == retained_pixel,
+            "retained sensor time, mapped metadata, and pixels survive restart");
     follower.stop();
     const auto deadline = std::chrono::steady_clock::now() + 3s;
     GroupStatus state;
@@ -444,7 +443,12 @@ void early_boot_history() {
     auto config = configuration(false);
     auto probe = std::make_shared<Probe>();
     SyntheticBackend backend(config.units.front(), probe);
-    backend.start("early-boot", 1, false);
+    backend.start("early-boot", 1);
+    const auto raw = backend.read(100ms);
+    const auto observation = backend.snapshot();
+    require(raw && raw->timestamp_ns == raw->sensor_timestamp_ns &&
+                raw->sensor_timestamp_ns <= observation.snapshot_timestamp_ns,
+            "acquisition fixture exposes node-local source timestamps before runtime mapping");
     for (const auto now : {25000000LL, 1000000000LL, 5975000000LL, 6000000000LL})
         validate_timing(backend.snapshot_at(now), now);
     bool pending = false;

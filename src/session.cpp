@@ -26,7 +26,7 @@ class ManagedUnit final : public SyncUnit {
 public:
     explicit ManagedUnit(AcquisitionBackend& backend) : backend_(backend) {}
     void start_capture(const std::string& identity, std::uint64_t round) {
-        backend_.start(identity, round, false);
+        backend_.start(identity, round);
         identity_ = identity;
         round_ = round;
     }

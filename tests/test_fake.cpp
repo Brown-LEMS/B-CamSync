@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <ctime>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -14,6 +15,12 @@ namespace {
 void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
+}
+std::int64_t boot_ns() {
+    timespec value{};
+    if (clock_gettime(CLOCK_BOOTTIME, &value) != 0)
+        throw std::runtime_error("cannot read test capture clock");
+    return static_cast<std::int64_t>(value.tv_sec) * 1000000000LL + value.tv_nsec;
 }
 template <class Action> void rejects(Action action) {
     bool rejected = false;
@@ -54,8 +61,8 @@ void phase_and_packets() {
     b.fake.initial_phase_us = 4000;
     auto cameras = make_fake_backends({a, b});
     auto &reference = *cameras[0], &follower = *cameras[1];
-    reference.start("fake-session", 1, false);
-    follower.start("fake-session", 1, false);
+    reference.start("fake-session", 1);
+    follower.start("fake-session", 1);
     await(
         [&] {
             return reference.snapshot().frames.size() >= 94 &&
@@ -63,12 +70,18 @@ void phase_and_packets() {
         },
         4s, "fake timing must progress without application image reads");
     const auto left = reference.snapshot(), right = follower.snapshot();
+    for (const auto* snapshot : {&left, &right})
+        for (const auto& frame : snapshot->frames)
+            require(frame.timestamp_ns == frame.sensor_timestamp_ns && frame.mapping_span_ns == 0,
+                    "backend timing retains sensor timestamps without common-clock mapping");
     const auto initial = estimate_phase(
         left, right, std::max(left.snapshot_timestamp_ns, right.snapshot_timestamp_ns));
     require(std::abs(initial.phase_ns - 4000000) <= 1, "configured initial phase is measurable");
     auto held = reference.read(500ms);
     require(held && held->views == 4 && held->view_width() == 8 && held->dropped_before > 0,
             "slow consumption drops old packets and retains four camera views");
+    require(held->timestamp_ns == held->sensor_timestamp_ns,
+            "backend image packets retain node-local sensor time");
     const auto pixel = held->view_data(0)[0];
     require(pixel == static_cast<std::uint8_t>(held->sequence),
             "synthetic pixel identity follows capture sequence");
@@ -134,7 +147,7 @@ void phase_and_packets() {
     require(follower.fault().empty(), "successful restoration has no shutdown fault");
     rejects([&] { follower.adjust(command); });
     require(!follower.read(10ms), "closed fake camera ends image delivery");
-    follower.start("new-fake-session", 1, false);
+    follower.start("new-fake-session", 1);
     require(static_cast<bool>(follower.read(1s)),
             "fake camera restarts with a new synchronization identity");
     require(follower.snapshot().frames.front().camera_sequence == 0,
@@ -149,16 +162,20 @@ void drift_and_validation() {
     std::cout << "checking explicit fake timing options\n" << std::flush;
     const auto config = unit("drifting");
     auto cameras = make_fake_backends({config}, {{32, 8, 0, 80}});
-    cameras[0]->start("drift-session", 1, true);
+    cameras[0]->start("drift-session", 1);
     await([&] { return cameras[0]->snapshot().frames.size() >= 8; }, 2s,
           "drifting sensor should produce frames");
+    const auto before = boot_ns();
     const auto snapshot = cameras[0]->snapshot();
+    const auto after = boot_ns();
     const auto &last = snapshot.frames.back(),
                &previous = snapshot.frames[snapshot.frames.size() - 2];
     require(last.sensor_timestamp_ns - previous.sensor_timestamp_ns == 25002000,
             "configured frequency drift affects sensor intervals deterministically");
-    require(std::abs(snapshot.snapshot_timestamp_ns - realtime_ns()) < 1000000000,
-            "cross-node fake acquisition exposes the realtime common domain");
+    require(snapshot.snapshot_timestamp_ns >= before && snapshot.snapshot_timestamp_ns <= after,
+            "fake observations always use node-local CLOCK_BOOTTIME");
+    require(last.timestamp_ns == last.sensor_timestamp_ns && last.timestamp_ns <= after,
+            "fake sensor timestamps stay in the observation clock domain");
     cameras[0]->stop();
     rejects([&] { make_fake_backends({config}, std::vector<FakeOptions>{}); });
     rejects([&] { make_fake_backends({config}, {{32, 8, 0, 1001}}); });
@@ -166,9 +183,9 @@ void drift_and_validation() {
     auto bad = config;
     bad.fake.width = 0;
     rejects([&] { make_fake_backends({bad}); });
-    rejects([&] { cameras[0]->start("", 0, false); });
+    rejects([&] { cameras[0]->start("", 0); });
     auto fast = make_fake_backends({config}, 80);
-    fast[0]->start("group-cadence", 1, false);
+    fast[0]->start("group-cadence", 1);
     await([&] { return fast[0]->snapshot().frames.size() >= 3; }, 1s, "group FPS drives fake cadence");
     const auto timing = fast[0]->snapshot();
     require(timing.frames.back().requested_duration_us == 12500,
@@ -178,7 +195,7 @@ void drift_and_validation() {
     buffered.queue_capacity = 65;
     buffered.pool_capacity = 66;
     auto ample = make_fake_backends({buffered});
-    ample[0]->start("larger-queue", 1, false);
+    ample[0]->start("larger-queue", 1);
     require(static_cast<bool>(ample[0]->read(1s)), "storage policy accepts any representable pool larger than queue");
     ample[0]->stop();
     rejects([&] { make_fake_backends({config}, 0); });

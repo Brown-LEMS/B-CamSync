@@ -5,10 +5,11 @@
 #include <string>
 namespace bcamsync {
 /// SDK boundary: timing continues even when no application reads image packets.
+/// Timing observations, packet timestamps, and pulse expiry use node-local CLOCK_BOOTTIME.
 class AcquisitionBackend {
 public:
     virtual ~AcquisitionBackend() = default;
-    virtual void start(const std::string &session_id, std::uint64_t round_id, bool common_time) = 0;
+    virtual void start(const std::string &session_id, std::uint64_t round_id) = 0;
     virtual void stop() = 0;
     virtual TimingSnapshot snapshot() const = 0;
     virtual CorrectionStatus adjust(const Pulse &pulse) = 0;

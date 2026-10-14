@@ -59,7 +59,7 @@ std::uint16_t free_port() {
 class FixtureBackend final : public AcquisitionBackend {
 public:
     explicit FixtureBackend(bool empty_reads) : empty_reads_(empty_reads) {}
-    void start(const std::string &, std::uint64_t, bool) override { running_ = true; }
+    void start(const std::string &, std::uint64_t) override { running_ = true; }
     void stop() override { running_ = false; }
     TimingSnapshot snapshot() const override {
         TimingSnapshot result;

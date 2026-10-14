@@ -158,7 +158,7 @@ class ArducamBackend final : public AcquisitionBackend {
     libcamera::Stream *raw_ = nullptr;
     unsigned stride_ = 0;
     std::int64_t minimum_duration_ = 0, maximum_duration_ = 0;
-    bool acquired_ = false, camera_started_ = false, connected_ = false, common_time_ = false;
+    bool acquired_ = false, camera_started_ = false, connected_ = false;
     std::atomic<bool> running_{false};
     mutable std::mutex lifecycle_mutex_;
     std::unique_ptr<PhaseActuator> actuator_;
@@ -170,7 +170,7 @@ class ArducamBackend final : public AcquisitionBackend {
     std::int64_t next_manual_progress_ = 0;
     std::string session_id_;
     std::uint64_t round_id_ = 0, sequence_ = 0;
-    std::int64_t last_sensor_ = 0, last_timestamp_ = 0;
+    std::int64_t last_sensor_ = 0;
 
     mutable std::mutex state_mutex_;
     std::condition_variable timing_changed_;
@@ -184,8 +184,6 @@ class ArducamBackend final : public AcquisitionBackend {
     std::deque<Completion> deliveries_;
     bool delivery_stop_ = true;
     std::thread copier_;
-
-    std::int64_t domain_now() const { return common_time_ ? realtime_ns() : boot_ns(); }
 
     void fail(const char *message) noexcept {
         try {
@@ -232,11 +230,6 @@ class ArducamBackend final : public AcquisitionBackend {
                 timing.camera_sequence = metadata.sequence;
                 timing.sensor_timestamp_ns = *sensor;
                 timing.timestamp_ns = *sensor;
-                if (common_time_) {
-                    const auto before = boot_ns(), real = realtime_ns(), after = boot_ns();
-                    timing.mapping_span_ns = after - before;
-                    timing.timestamp_ns += real - (before + (after - before) / 2);
-                }
                 timing.requested_duration_us = completion.submission.phase.duration_us;
                 timing.reported_duration_us = *duration;
                 timing.correction_id = completion.submission.phase.correction_id;
@@ -314,10 +307,9 @@ class ArducamBackend final : public AcquisitionBackend {
         if (!running_.load()) return;
         if (completion.startup) { requeue(completion.request); return; }
         const auto &timing = completion.timing;
-        if (timing.sensor_timestamp_ns <= last_sensor_ || timing.timestamp_ns <= last_timestamp_)
-            throw std::runtime_error("Camera sensor or common time stopped increasing");
+        if (timing.sensor_timestamp_ns <= last_sensor_)
+            throw std::runtime_error("Camera sensor timestamp stopped increasing");
         last_sensor_ = timing.sensor_timestamp_ns;
-        last_timestamp_ = timing.timestamp_ns;
         if (!gain_locked_) {
             warmup(completion);
             requeue(completion.request);
@@ -424,16 +416,15 @@ public:
         : config_(std::move(config)), fps_(fps), manager_(std::move(manager)) {}
     ~ArducamBackend() override { stop(); }
 
-    void start(const std::string &session, std::uint64_t round, bool common_time) override {
+    void start(const std::string &session, std::uint64_t round) override {
         std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
         if (camera_) throw std::runtime_error("Camera backend already started");
         actuator_ = std::make_unique<PhaseActuator>();
         actuator_->bind(session, round);
         session_id_ = session;
         round_id_ = round;
-        common_time_ = common_time;
         sequence_ = 0;
-        last_sensor_ = last_timestamp_ = 0;
+        last_sensor_ = 0;
         requested_gain_ = config_.auto_gain ? 1.0F : config_.analogue_gain;
         gain_locked_ = false;
         gain_state_ = "waiting_controls";
@@ -553,7 +544,7 @@ public:
         std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
         TimingSnapshot result;
         result.unit_id = config_.id;
-        result.snapshot_timestamp_ns = domain_now();
+        result.snapshot_timestamp_ns = boot_ns();
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
             result.frames.assign(timing_.begin(), timing_.end());
@@ -565,7 +556,7 @@ public:
         std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
         if (!running_.load()) throw std::runtime_error("Cannot adjust a stopped camera");
         return correction_status(actuator_->adjust(session_id_, round_id_, pulse.correction_id, pulse.delta_us, pulse.count, pulse.expires_ns,
-                                                   domain_now(), monotonic_ns(), 1000000 / fps_, minimum_duration_, maximum_duration_));
+                                                   boot_ns(), monotonic_ns(), 1000000 / fps_, minimum_duration_, maximum_duration_));
     }
     void cancel() override {
         std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
