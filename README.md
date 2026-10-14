@@ -108,26 +108,57 @@ For physical multi-node capture, the default clock mode uses the same transient 
 
 ## Optional developer host
 
-Applications can use local `Session` directly without a developer host. For remote development, `bcamsync.management` supplies a thin `NodeService` around a node-local Session. The separate `bcamsync_host` package supplies `GroupClient` and `NodeTarget` for management requests over SSH. The reference unit's node remains the synchronization coordinator. A client disconnect leaves node sessions running; stopping requires an explicit command.
+HTTP management is an optional application service. Local `Session` and `SyncSession` use does not require it. Connect the nodes and developer workstation to the same dedicated Ethernet switch; the workstation needs an IPv4 link-local address on that interface. Its Wi-Fi can continue providing Internet access. The workstation discovers management endpoints and does not participate in synchronization or clock reference selection.
 
-Deploy each node's configuration and run the optional foreground service there:
-
-```sh
-.venv/bin/python -m bcamsync.management serve group.json node-a --socket /run/user/1000/bcamsync.sock
-```
-
-The service accepts configuration inspection, start, status, and stop through its local Unix socket. It does not start acquisition until requested. It can run under the project's existing service supervision; it does not install a daemon or change configuration files. Node applications can use `NodeService.session` to consume local frames while serving management requests in another thread.
-
-Install the host client in a developer-host virtual environment with `.venv/bin/python -m pip install ./host`. This package uses the Python standard library and requires no camera SDK, C++ build, NumPy, or node package.
-
-The [host example](examples/manage_group.py) reads a separate targets JSON mapping node IDs to `ssh_host`, `python`, and `socket` on each node. Copy [host_targets.json](examples/configs/host_targets.json) and adjust the SSH aliases, installed Python paths, and socket paths. It checks shared synchronization settings before starting followers and then the reference node; local camera, exposure, gain, and buffering settings may differ. Host targets describe management access and are separate from synchronization-network addresses. The host interface carries commands and status; images stay local.
+Run the service on each node with its deployed camera configuration:
 
 ```sh
-.venv/bin/python examples/manage_group.py group.json targets.json check
-.venv/bin/python examples/manage_group.py group.json targets.json start
-.venv/bin/python examples/manage_group.py group.json targets.json status
-.venv/bin/python examples/manage_group.py group.json targets.json stop
+.venv/bin/python -m bcamsync.http_management group.json node-a
 ```
+
+In `auto` mode the service activates the configured Ethernet interface once and retains its temporary connection across acquisition start/stop. It discovers peer addresses before creating the local acquisition session. Exiting the service releases its network connection. `existing` mode uses configured node addresses; `--address` selects an already configured local management address. Single-node configurations without network settings can use `--address` or specify a node interface. Neither connecting a client nor querying configuration starts cameras; a client disconnect leaves acquisition running.
+
+The HTTP interface provides `GET /configuration`, `GET /status`, `POST /start`, and `POST /stop`. POST bodies are JSON objects with an optional `operation_id` UUID. Replies contain `ok` and either `result` or `error`. The node owns its acquisition session, which local application code can access through `HttpNodeService.session`. Camera settings remain in the configuration file. Management discovery uses link-scoped multicast UDP port 58082; HTTP defaults to TCP port 58083. These are separate from synchronization and clock traffic.
+
+Install the independent host client with `.venv/bin/python -m pip install ./host`. It uses only the Python standard library and needs no camera SDK, C++ build, NumPy, node package, SSH credentials, or targets file. On macOS it reads interface addresses with `ifconfig`; on Linux it uses `ip`. The [host example](examples/manage_group.py) discovers nodes automatically, checks their shared synchronization settings, and starts followers before the reference node. Use `--interface en7` to select a workstation adapter when desired:
+
+```sh
+.venv/bin/python examples/manage_group.py group.json discover
+.venv/bin/python examples/manage_group.py group.json check
+.venv/bin/python examples/manage_group.py group.json start
+.venv/bin/python examples/manage_group.py group.json status
+.venv/bin/python examples/manage_group.py group.json stop
+```
+
+In Python, call `bcamsync_host.discover(group_id)` and construct `HttpGroupClient(config_dict, targets)`. `discover` returns node IDs and `HttpNodeTarget.base_url` values, including services whose acquisition has not started. Group control requires every configured node to be available. The existing `bcamsync.management` Unix-socket service and SSH `GroupClient` remain available; select that transport in the host example with `--ssh-targets targets.json`.
+
+## Browser preview example
+
+[preview.py](examples/preview.py) is an independent node application which extends the HTTP service with a browser page and JPEG snapshots. Install its optional Pillow dependency and run it instead of the plain management service:
+
+```sh
+.venv/bin/python -m pip install '.[preview]'
+.venv/bin/python examples/preview.py group.json node-a
+# On the workstation, discover the page addresses and start the whole group:
+.venv/bin/python examples/manage_group.py group.json discover
+.venv/bin/python examples/manage_group.py group.json start
+```
+
+Open each discovered URL in a browser. The page shows each local board's four grayscale views and node state, with local start/stop controls. For a multi-node group, use the host example to control the complete group. Closing a page leaves acquisition running. The example alone consumes local frames, scales and encodes JPEGs at 5 fps by default, and retains only the latest snapshot per board. Slow browser consumption does not queue images or block acquisition. Preview remains available while synchronization is converging or reports a fault, and clears when acquisition stops. To add preview to your own pipeline, publish from your existing frame consumer rather than adding a competing `read()` consumer. Encoding, browser routes, and preview threads are absent from the library.
+
+For a single-node fake preview on a Mac, build the Linux image and software first, then publish its HTTP port:
+
+```sh
+bash tools/container.sh image
+bash tools/container.sh build
+docker run --rm -p 127.0.0.1:58083:58083 \
+  --mount "type=bind,source=$PWD,target=/src,readonly" \
+  --mount "type=bind,source=$PWD/build-linux,target=/work/build,readonly" \
+  -e PYTHONPATH=/work/build/gcc-software/python -w /src bcamsync-dev:bookworm \
+  bash -c 'python examples/preview.py examples/configs/fake_one_node.json node-a --address "$(hostname -i)"'
+```
+
+Open `http://127.0.0.1:58083` and use Start node. This exercises HTTP control and preview with synthetic images; device and optical checks use the actual nodes.
 
 ## Run the device workflow
 
