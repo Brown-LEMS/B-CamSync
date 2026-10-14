@@ -68,7 +68,8 @@ class SyntheticBackend final : public AcquisitionBackend {
             FrameTiming f;
             f.camera_sequence = last - count + 1 + i;
             f.timestamp_ns = static_cast<std::int64_t>(f.camera_sequence) * period;
-            f.sensor_timestamp_ns = f.timestamp_ns - probe_->sensor_offset_ns;
+            // A later sensor epoch keeps early-boot history positive at nonzero offsets.
+            f.sensor_timestamp_ns = f.timestamp_ns + probe_->sensor_offset_ns;
             f.requested_duration_us = f.reported_duration_us = period / 1000;
             result.frames.push_back(f);
         }
@@ -87,7 +88,7 @@ class SyntheticBackend final : public AcquisitionBackend {
         auto packet = std::make_shared<FramePacket>();
         packet->unit_id = unit_.id;
         packet->timestamp_ns = timestamp();
-        packet->sensor_timestamp_ns = packet->timestamp_ns - probe_->sensor_offset_ns;
+        packet->sensor_timestamp_ns = packet->timestamp_ns + probe_->sensor_offset_ns;
         packet->sequence =
             static_cast<std::uint64_t>(packet->timestamp_ns / (1000000000LL / fps_));
         packet->width = unit_.fake.width;
@@ -198,8 +199,8 @@ void local_session() {
     auto other = session.read("follower", 100ms);
     require(held && other && held->unit_id == "reference" && other->unit_id == "follower",
             "read routes packets to requested board");
-    require(held->clock_valid && held->timestamp_ns == held->sensor_timestamp_ns + p0->sensor_offset_ns &&
-                other->clock_valid && other->timestamp_ns == other->sensor_timestamp_ns + p1->sensor_offset_ns,
+    require(held->clock_valid && held->sensor_timestamp_ns == held->timestamp_ns + p0->sensor_offset_ns &&
+                other->clock_valid && other->sensor_timestamp_ns == other->timestamp_ns + p1->sensor_offset_ns,
             "runtime maps backend local timestamps while preserving original SDK sensor readings");
     require(held->views == 4 && held->view_width() == 4, "board packets expose four camera views");
     const auto value = held->view_data(0)[0];
@@ -454,8 +455,12 @@ void early_boot_history() {
     require(raw && raw->timestamp_ns == raw->sensor_timestamp_ns &&
                 raw->sensor_timestamp_ns <= observation.snapshot_timestamp_ns,
             "acquisition fixture exposes node-local source timestamps before runtime mapping");
-    for (const auto now : {25000000LL, 1000000000LL, 5975000000LL, 6000000000LL})
-        validate_timing(backend.snapshot_at(now), now);
+    for (const auto offset : {0LL, 1000000000LL, 2000000000LL}) {
+        probe->sensor_offset_ns = offset;
+        for (const auto now : {25000000LL, 1000000000LL, 2000000000LL, 5975000000LL, 6000000000LL,
+                               8000000000LL, 10000000000LL})
+            validate_timing(backend.snapshot_at(now), now);
+    }
     bool pending = false;
     try { validate_timing(backend.snapshot_at(1), 1); }
     catch (const WindowPending&) { pending = true; }
