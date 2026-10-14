@@ -17,7 +17,7 @@ ClockEstimate tracking_estimate(const SyncConfig& config, const std::string& loc
                                 const std::string& csv, std::int64_t realtime,
                                 std::int64_t boottime, std::int64_t mapping_uncertainty = 0);
 
-/// Internal platform helper shared by synchronization and optional management services.
+/// Internal NetworkManager activation helper used by NetworkSession.
 class NetworkLink {
   public:
     NetworkLink(std::string interface, std::string connection_id);
@@ -31,7 +31,7 @@ class NetworkLink {
     std::unique_ptr<Impl> impl_;
 };
 
-/// Own only transient network activation and a private, non-stepping chronyd.
+/// Compose NetworkSession with a private, non-stepping chronyd for one synchronization run.
 class NodePlatform {
   public:
     NodePlatform(SyncConfig config, std::string local);

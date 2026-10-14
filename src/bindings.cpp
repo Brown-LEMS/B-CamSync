@@ -2,6 +2,7 @@
 #include "python_frame.hpp"
 #include "platform.hpp"
 #include "sync_bindings.hpp"
+#include "network_bindings.hpp"
 #include <cmath>
 #include <filesystem>
 #include <limits>
@@ -125,6 +126,7 @@ PYBIND11_MODULE(_native, module) {
         .def_readonly("units", &GroupStatus::units);
 
     bcamsync::python::bind_sync(module);
+    bcamsync::python::bind_network(module);
 
     py::class_<FrameHandle>(module, "FramePacket",
                             "A board frame whose readonly views retain native storage.")

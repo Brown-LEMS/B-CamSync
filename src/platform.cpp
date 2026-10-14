@@ -1,4 +1,5 @@
 #include "platform.hpp"
+#include "bcamsync/network.hpp"
 #include "process.hpp"
 #include <algorithm>
 #include <arpa/inet.h>
@@ -311,23 +312,24 @@ void NetworkLink::stop() {
     impl_->address.clear();
 }
 
-class NodePlatform::Impl {
-  public:
-    SyncConfig config;
-    std::string local, directory;
-    bool started = false;
-#ifdef __linux__
-    std::unique_ptr<NetworkLink> link;
-    pid_t child = -1;
-    int discovery = -1;
-    std::atomic<bool> discovery_stopping{false};
-    std::thread discovery_thread;
-    std::mutex mutex;
-    std::condition_variable changed;
-    std::map<std::string, std::string> addresses;
-    std::string discovery_fault;
+} // namespace bcamsync::detail
 
-    void discover(const std::string& address) {
+namespace bcamsync {
+class NetworkSession::Impl {
+public:
+    SyncConfig config;
+    std::string local, address;
+    bool started = false;
+    std::atomic<bool> stopping{false};
+    mutable std::mutex lifecycle, mutex;
+    std::condition_variable changed;
+    std::string discovery_fault;
+    std::unique_ptr<detail::NetworkLink> link;
+#ifdef __linux__
+    int discovery = -1;
+    std::thread discovery_thread;
+    std::map<std::string, std::pair<std::string, std::int64_t>> addresses;
+    void discover(const std::string& local_address) {
         const unsigned interface = if_nametoindex(config.node(local).interface.c_str());
         if (!interface)
             throw std::runtime_error("unknown synchronization interface");
@@ -344,7 +346,7 @@ class NodePlatform::Impl {
         option(IPPROTO_IP, IP_MULTICAST_ALL, &no, sizeof(no));
         ip_mreqn membership{};
         inet_pton(AF_INET, "239.255.58.80", &membership.imr_multiaddr);
-        inet_pton(AF_INET, address.c_str(), &membership.imr_address);
+        inet_pton(AF_INET, local_address.c_str(), &membership.imr_address);
         membership.imr_ifindex = static_cast<int>(interface);
         option(IPPROTO_IP, IP_ADD_MEMBERSHIP, &membership, sizeof(membership));
         option(IPPROTO_IP, IP_MULTICAST_IF, &membership, sizeof(membership));
@@ -357,15 +359,14 @@ class NodePlatform::Impl {
         if (bind(discovery, reinterpret_cast<sockaddr*>(&endpoint), sizeof(endpoint)))
             throw std::runtime_error("cannot bind discovery socket");
         endpoint.sin_addr = membership.imr_multiaddr;
-        addresses[local] = address;
-        discovery_stopping = false;
+        addresses[local] = {local_address, monotonic_ns()};
         discovery_thread = std::thread([this, interface, endpoint, discovery_config = config] {
             try {
                 const auto contract = nlohmann::json::parse(discovery_config.sync_json());
                 const std::string announcement = nlohmann::json{
                     {"group", discovery_config.group_id}, {"node", local}, {"sync", contract}}.dump();
                 auto next_announce = std::int64_t{0};
-                while (!discovery_stopping) {
+                while (!stopping) {
                     if (monotonic_ns() >= next_announce) {
                         if (sendto(discovery, announcement.data(), announcement.size(), 0,
                                    reinterpret_cast<const sockaddr*>(&endpoint), sizeof(endpoint)) < 0)
@@ -411,9 +412,10 @@ class NodePlatform::Impl {
                     inet_ntop(AF_INET, &source.sin_addr, text, sizeof(text));
                     std::lock_guard<std::mutex> lock(mutex);
                     const auto existing = addresses.find(id);
-                    if (existing != addresses.end() && existing->second != text)
+                    if (existing != addresses.end() && existing->second.first != text &&
+                        monotonic_ns() - existing->second.second < 3000000000LL)
                         throw std::runtime_error("multiple addresses claim synchronization node: " + id);
-                    addresses[id] = text;
+                    addresses[id] = {text, monotonic_ns()};
                     changed.notify_all();
                 }
             } catch (const std::exception& error) {
@@ -423,6 +425,157 @@ class NodePlatform::Impl {
             }
         });
     }
+#endif
+    Impl(SyncConfig value, std::string node) : config(std::move(value)), local(std::move(node)) {
+        config.validate();
+        const auto& own = config.node(local);
+        if (config.network_mode == "auto" && own.interface.empty())
+            throw std::invalid_argument("network session requires a local interface in auto mode");
+        if (config.network_mode == "existing") validate_address(own.address);
+    }
+    static void validate_address(const std::string& value) {
+        in_addr address{};
+        if (inet_pton(AF_INET, value.c_str(), &address) != 1 ||
+            ntohl(address.s_addr) == 0 || (ntohl(address.s_addr) >> 28) >= 14)
+            throw std::invalid_argument("network session requires a local unicast IPv4 address");
+    }
+    void check(const std::atomic<bool>& cancelled, std::int64_t deadline) const {
+        if (cancelled || stopping) throw std::runtime_error("network session operation cancelled");
+        if (monotonic_ns() >= deadline) throw std::runtime_error("network session deadline exceeded");
+    }
+    void cleanup() {
+        stopping = true;
+        changed.notify_all();
+#ifdef __linux__
+        if (discovery_thread.joinable()) discovery_thread.join();
+        if (discovery >= 0) { close(discovery); discovery = -1; }
+#endif
+        link.reset();
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+#ifdef __linux__
+            addresses.clear();
+#endif
+            discovery_fault.clear();
+            address.clear();
+        }
+        started = false;
+    }
+};
+namespace {
+std::int64_t network_deadline(std::chrono::milliseconds timeout) {
+    const auto now = monotonic_ns();
+    if (timeout.count() <= 0 || timeout.count() >
+        (std::numeric_limits<std::int64_t>::max() - now) / 1000000LL)
+        throw std::invalid_argument("network timeout must be positive and its deadline representable");
+    return now + timeout.count() * 1000000LL;
+}
+}
+NetworkSession::NetworkSession(SyncConfig config, std::string local)
+    : impl_(std::make_unique<Impl>(std::move(config), std::move(local))) {}
+NetworkSession::~NetworkSession() { stop(); }
+void NetworkSession::start(std::chrono::milliseconds timeout) {
+    start(impl_->stopping, network_deadline(timeout));
+}
+void NetworkSession::start_discovery(std::string address) {
+    Impl::validate_address(address);
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        impl_->address = std::move(address);
+    }
+#ifdef __linux__
+    if (impl_->config.network_mode == "auto") impl_->discover(impl_->address);
+#else
+    if (impl_->config.network_mode == "auto")
+        throw std::runtime_error("network discovery requires Linux");
+#endif
+    impl_->started = true;
+}
+void NetworkSession::start(const std::atomic<bool>& cancelled, std::int64_t deadline) {
+    std::lock_guard<std::mutex> lock(impl_->lifecycle);
+    if (impl_->started) throw std::runtime_error("network session already started");
+    impl_->stopping = false;
+    impl_->check(cancelled, deadline);
+    try {
+        std::string address = impl_->config.node(impl_->local).address;
+        if (impl_->config.network_mode == "auto") {
+            std::cerr << "Activating synchronization link " << impl_->config.node(impl_->local).interface << '\n';
+            impl_->link = std::make_unique<detail::NetworkLink>(impl_->config.node(impl_->local).interface,
+                "bcamsync-" + impl_->config.group_id + "-" + impl_->local);
+            address = impl_->link->start(cancelled, deadline);
+        }
+        impl_->check(cancelled, deadline);
+        start_discovery(std::move(address));
+        std::cerr << "Synchronization link ready: " << impl_->address << '\n';
+    } catch (...) {
+        impl_->cleanup();
+        throw;
+    }
+}
+SyncConfig NetworkSession::resolve(std::chrono::milliseconds timeout) {
+    std::atomic<bool> cancelled{false};
+    return resolve(cancelled, network_deadline(timeout));
+}
+SyncConfig NetworkSession::resolve(const std::atomic<bool>& cancelled, std::int64_t deadline) {
+    std::lock_guard<std::mutex> lifecycle(impl_->lifecycle);
+    if (!impl_->started) throw std::runtime_error("network session is not started");
+    impl_->check(cancelled, deadline);
+    auto resolved = impl_->config;
+#ifdef __linux__
+    if (resolved.network_mode == "auto") {
+        auto next_progress = std::int64_t{0};
+        std::unique_lock<std::mutex> lock(impl_->mutex);
+        while (true) {
+            impl_->check(cancelled, deadline);
+            if (!impl_->discovery_fault.empty()) throw std::runtime_error(impl_->discovery_fault);
+            const auto now = monotonic_ns();
+            std::size_t found = 0;
+            for (const auto& node : resolved.nodes) {
+                const auto peer = impl_->addresses.find(node.id);
+                if (peer != impl_->addresses.end() && now - peer->second.second < 3000000000LL) ++found;
+            }
+            if (found == resolved.nodes.size()) break;
+            if (now >= next_progress) {
+                std::cerr << "Discovering group nodes: " << found << '/' << resolved.nodes.size() << '\n';
+                next_progress = now + 1000000000LL;
+            }
+            impl_->changed.wait_for(lock, std::chrono::nanoseconds(std::min<std::int64_t>(deadline - now, 100000000LL)));
+        }
+        for (auto& node : resolved.nodes) node.address = impl_->addresses.at(node.id).first;
+    }
+#endif
+    resolved.network_mode = "existing";
+    resolved.validate();
+    return resolved;
+}
+std::string NetworkSession::address() const {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->address;
+}
+std::string NetworkSession::fault() const {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->discovery_fault;
+}
+void NetworkSession::request_stop() {
+    impl_->stopping = true;
+    impl_->changed.notify_all();
+}
+void NetworkSession::stop() {
+    request_stop();
+    std::lock_guard<std::mutex> lock(impl_->lifecycle);
+    impl_->cleanup();
+}
+} // namespace bcamsync
+
+namespace bcamsync::detail {
+class NodePlatform::Impl {
+public:
+    SyncConfig config;
+    std::string local, directory;
+    bool started = false;
+    std::unique_ptr<NetworkSession> network;
+#ifdef __linux__
+    pid_t child = -1;
     void launch_clock() {
         char pattern[] = "/tmp/bcamsync-XXXXXX";
         const char* path = mkdtemp(pattern);
@@ -481,29 +634,10 @@ void NodePlatform::start(SyncConfig& resolved, const std::atomic<bool>& stopping
     }
 #ifdef __linux__
     try {
-        if (resolved.network_mode == "auto") {
-            std::cerr << "Activating transient synchronization link " << resolved.node(impl_->local).interface << '\n';
-            impl_->link = std::make_unique<NetworkLink>(resolved.node(impl_->local).interface,
-                "bcamsync-" + resolved.group_id + "-" + impl_->local);
-            const auto address = impl_->link->start(stopping, deadline_ns);
-            auto next_progress = std::int64_t{0};
-            impl_->discover(address);
-            std::unique_lock<std::mutex> lock(impl_->mutex);
-            next_progress = 0;
-            while (impl_->addresses.size() != resolved.nodes.size()) {
-                startup_check(stopping, deadline_ns);
-                if (!impl_->discovery_fault.empty())
-                    throw std::runtime_error(impl_->discovery_fault);
-                if (monotonic_ns() >= next_progress) {
-                    std::cerr << "Discovering group nodes: " << impl_->addresses.size() << '/' << resolved.nodes.size() << '\n';
-                    next_progress = monotonic_ns() + 1000000000LL;
-                }
-                impl_->changed.wait_for(lock, std::chrono::milliseconds(100));
-            }
-            for (auto& node : resolved.nodes)
-                node.address = impl_->addresses.at(node.id);
-            impl_->config = resolved;
-        }
+        impl_->network = std::make_unique<NetworkSession>(resolved, impl_->local);
+        impl_->network->start(stopping, deadline_ns);
+        resolved = impl_->network->resolve(stopping, deadline_ns);
+        impl_->config = resolved;
         std::cerr << "Starting private clock estimator for " << impl_->local << '\n';
         impl_->launch_clock();
         impl_->started = true;
@@ -546,11 +680,8 @@ ClockEstimate NodePlatform::sample() {
         std::string report;
         if (impl_->config.clock_mode != "host") {
 #ifdef __linux__
-            {
-                std::lock_guard<std::mutex> lock(impl_->mutex);
-                if (!impl_->discovery_fault.empty())
-                    throw std::runtime_error(impl_->discovery_fault);
-            }
+            if (impl_->network && !impl_->network->fault().empty())
+                throw std::runtime_error(impl_->network->fault());
             report = run_program({"chronyc", "-c", "-h", impl_->directory + "/chronyd.sock", "tracking"},
                                  impl_->config.request_timeout_seconds);
 #endif
@@ -570,21 +701,12 @@ ClockEstimate NodePlatform::sample() {
 
 void NodePlatform::stop() {
 #ifdef __linux__
-    impl_->discovery_stopping = true;
-    if (impl_->discovery_thread.joinable())
-        impl_->discovery_thread.join();
-    if (impl_->discovery >= 0) {
-        close(impl_->discovery);
-        impl_->discovery = -1;
-    }
-    impl_->addresses.clear();
-    impl_->discovery_fault.clear();
     if (impl_->child > 0) {
         kill(impl_->child, SIGKILL);
         while (waitpid(impl_->child, nullptr, 0) < 0 && errno == EINTR) {}
         impl_->child = -1;
     }
-    impl_->link.reset();
+    impl_->network.reset();
 #endif
     if (!impl_->directory.empty()) {
         std::error_code error;
