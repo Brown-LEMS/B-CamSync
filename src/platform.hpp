@@ -17,7 +17,7 @@ ClockEstimate tracking_estimate(const SyncConfig& config, const std::string& loc
                                 const std::string& csv, std::int64_t realtime,
                                 std::int64_t boottime, std::int64_t mapping_uncertainty = 0);
 
-/// Internal NetworkManager activation helper used by NetworkSession.
+/// Reuse an active interface IPv4 or own a transient NetworkManager activation.
 class NetworkLink {
   public:
     NetworkLink(std::string interface, std::string connection_id);

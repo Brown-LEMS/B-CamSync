@@ -13,7 +13,8 @@ public:
     ~NetworkSession();
     NetworkSession(const NetworkSession&) = delete;
     NetworkSession& operator=(const NetworkSession&) = delete;
-    /// Establish the local link and announce immediately; peers need not have started.
+    /// In auto mode reuse an active interface IPv4, or create a transient link, then announce.
+    /// Peers need not have started; stop() preserves reused network connections.
     void start(std::chrono::milliseconds timeout = std::chrono::seconds(60));
     /// Resolve auto-mode peers, or retain explicit endpoints, and return an existing-network configuration.
     SyncConfig resolve(std::chrono::milliseconds timeout = std::chrono::seconds(60));

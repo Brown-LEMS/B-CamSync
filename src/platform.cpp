@@ -1,4 +1,5 @@
 #include "platform.hpp"
+#include "network_address.hpp"
 #include "bcamsync/network.hpp"
 #include "process.hpp"
 #include <algorithm>
@@ -226,6 +227,13 @@ class NetworkLink::Impl {
             throw;
         }
     }
+    std::string available_address(bool link_local_only = false) const {
+        ifaddrs* interfaces = nullptr;
+        if (getifaddrs(&interfaces))
+            throw std::runtime_error("cannot inspect synchronization interface");
+        const std::unique_ptr<ifaddrs, decltype(&freeifaddrs)> owner(interfaces, &freeifaddrs);
+        return select_link_address(interfaces, interface, link_local_only);
+    }
     std::string link_address(std::int64_t deadline) const {
         const auto remaining = static_cast<std::uint64_t>(std::max<std::int64_t>(1, (deadline - monotonic_ns()) / 1000));
         dbus_check(sd_bus_set_method_call_timeout(bus, remaining));
@@ -235,23 +243,7 @@ class NetworkLink::Impl {
         if (state >= 3)
             throw std::runtime_error("transient network activation ended before acquiring an address");
         if (state != 2) return {};
-        ifaddrs* interfaces = nullptr;
-        if (getifaddrs(&interfaces))
-            throw std::runtime_error("cannot inspect synchronization interface");
-        std::string result;
-        for (auto entry = interfaces; entry; entry = entry->ifa_next) {
-            if (!entry->ifa_addr || entry->ifa_addr->sa_family != AF_INET ||
-                interface != entry->ifa_name)
-                continue;
-            const auto* ipv4 = reinterpret_cast<const sockaddr_in*>(entry->ifa_addr);
-            if ((ntohl(ipv4->sin_addr.s_addr) & 0xffff0000U) != 0xa9fe0000U)
-                continue;
-            char text[INET_ADDRSTRLEN];
-            if (inet_ntop(AF_INET, &ipv4->sin_addr, text, sizeof(text)))
-                result = text;
-        }
-        freeifaddrs(interfaces);
-        return result;
+        return available_address(true);
     }
 #endif
     Impl(std::string device, std::string id)
@@ -271,6 +263,12 @@ std::string NetworkLink::start(const std::atomic<bool>& stopping, std::int64_t d
     startup_check(stopping, deadline_ns);
 #ifdef __linux__
     try {
+        impl_->address = impl_->available_address();
+        startup_check(stopping, deadline_ns);
+        if (!impl_->address.empty()) {
+            std::cerr << "Reusing synchronization IPv4 " << impl_->address << " on " << impl_->interface << '\n';
+            return impl_->address;
+        }
         impl_->activate(stopping, deadline_ns);
         auto next_progress = std::int64_t{0};
         while (true) {
@@ -499,7 +497,7 @@ void NetworkSession::start(const std::atomic<bool>& cancelled, std::int64_t dead
     try {
         std::string address = impl_->config.node(impl_->local).address;
         if (impl_->config.network_mode == "auto") {
-            std::cerr << "Activating synchronization link " << impl_->config.node(impl_->local).interface << '\n';
+            std::cerr << "Preparing synchronization link " << impl_->config.node(impl_->local).interface << '\n';
             impl_->link = std::make_unique<detail::NetworkLink>(impl_->config.node(impl_->local).interface,
                 "bcamsync-" + impl_->config.group_id + "-" + impl_->local);
             address = impl_->link->start(cancelled, deadline);

@@ -1,4 +1,5 @@
 #include "platform.hpp"
+#include "network_address.hpp"
 #include <atomic>
 #include <chrono>
 #include <fstream>
@@ -121,6 +122,58 @@ void link_startup_validation() {
     require(rejected, "expired activation must not contact NetworkManager");
     link.stop();
 }
+#ifdef __linux__
+struct InterfaceAddress {
+    ifaddrs entry{};
+    sockaddr_in address{}, broadcast{};
+    explicit InterfaceAddress(const char* value, const char* interface = "eth0") {
+        address.sin_family = AF_INET;
+        require(inet_pton(AF_INET, value, &address.sin_addr) == 1, "valid address fixture");
+        entry.ifa_name = const_cast<char*>(interface);
+        entry.ifa_flags = IFF_UP | IFF_RUNNING;
+        entry.ifa_addr = reinterpret_cast<sockaddr*>(&address);
+    }
+};
+void address_selection() {
+    require(select_link_address(nullptr, "eth0").empty(), "no address requires link-local activation");
+    InterfaceAddress assigned("192.168.1.20"), local("169.254.2.3"), lower("192.168.1.10");
+    local.entry.ifa_next = &assigned.entry;
+    assigned.entry.ifa_next = &lower.entry;
+    require(select_link_address(&local.entry, "eth0") == "192.168.1.10",
+            "existing ordinary IPv4 takes priority with deterministic numeric ordering");
+    require(select_link_address(&local.entry, "eth0", true) == "169.254.2.3",
+            "owned link activation waits specifically for a link-local address");
+    require(select_link_address(&lower.entry, "eth0", true).empty(),
+            "ordinary addresses do not complete link-local activation");
+    require(select_link_address(&local.entry, "other").empty(), "only the configured interface is reused");
+    assigned.entry.ifa_next = &local.entry;
+    local.entry.ifa_next = nullptr;
+    require(select_link_address(&assigned.entry, "eth0") == "192.168.1.20",
+            "address order cannot make link-local win over ordinary IPv4");
+    require(select_link_address(&local.entry, "eth0") == "169.254.2.3",
+            "an existing link-local address is reusable");
+    for (const auto value : {"0.0.0.0", "0.1.2.3", "127.0.0.1", "239.1.2.3", "255.255.255.255"}) {
+        InterfaceAddress invalid(value);
+        require(select_link_address(&invalid.entry, "eth0").empty(), "non-unicast addresses are unusable");
+    }
+    InterfaceAddress unavailable("10.0.0.1");
+    for (const unsigned flags : {0U, static_cast<unsigned>(IFF_UP), static_cast<unsigned>(IFF_RUNNING),
+                                static_cast<unsigned>(IFF_UP | IFF_RUNNING | IFF_LOOPBACK)}) {
+        unavailable.entry.ifa_flags = flags;
+        require(select_link_address(&unavailable.entry, "eth0").empty(),
+                "down, disconnected, and loopback interfaces are not reused");
+    }
+    unavailable.entry.ifa_flags = IFF_UP | IFF_RUNNING | IFF_BROADCAST;
+    unavailable.broadcast = unavailable.address;
+    unavailable.entry.ifa_broadaddr = reinterpret_cast<sockaddr*>(&unavailable.broadcast);
+    require(select_link_address(&unavailable.entry, "eth0").empty(), "broadcast addresses are not reused");
+    unavailable.entry.ifa_broadaddr = nullptr;
+    unavailable.address.sin_family = AF_INET6;
+    require(select_link_address(&unavailable.entry, "eth0").empty(), "IPv6 does not satisfy IPv4 startup");
+    unavailable.entry.ifa_addr = nullptr;
+    require(select_link_address(&unavailable.entry, "eth0").empty(), "entries without addresses are ignored");
+}
+#endif
 void software_lifecycle() {
     auto config = configuration();
     config.clock_mode = "host";
@@ -189,6 +242,9 @@ int main(int argc, char** argv) {
         mapping();
         private_configuration();
         link_startup_validation();
+#ifdef __linux__
+        address_selection();
+#endif
         software_lifecycle();
         if (argc == 2 && std::string(argv[1]) == "--private-clock")
             private_clock_smoke();
