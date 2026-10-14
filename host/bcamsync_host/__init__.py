@@ -1,4 +1,4 @@
-"""Optional SSH management of B-CamSync nodes, using only the Python standard library."""
+"""Optional HTTP and SSH management using only the Python standard library."""
 
 from __future__ import annotations
 
@@ -150,3 +150,6 @@ class GroupClient:
         if errors:
             raise RuntimeError(f"Group stop failed on nodes: {errors}")
         return {"reference_node": reference, "nodes": nodes}
+
+
+from .http import HttpGroupClient, HttpNodeTarget, discover, interface_addresses
