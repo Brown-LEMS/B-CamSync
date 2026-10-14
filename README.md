@@ -1,132 +1,219 @@
 # B-CamSync
 
-B-CamSync manages camera acquisition and continuous frame synchronization. Applications initialize a local session and pull board frame packets through C++ or Python. Image processing, recording, and storage belong to the application.
+B-CamSync (B = Brown) synchronizes cameras within and across computers, with C++ and Python interfaces. It continuously observes frame timing and adjusts frame phase against a selected reference unit. Applications can let B-CamSync manage their cameras or attach synchronization to an existing capture system.
 
-The first backend targets Arducam B0267 four-camera boards on Raspberry Pi 4 and Pi 5 with Raspberry Pi OS Bookworm arm64 and the matching Arducam/libcamera SDK (0.5.2 or later). One board is one synchronization unit. A node can host multiple boards; one selected board is the reference for the whole group. Its node runs the coordinator, while every other node runs a local session and executes corrections. Images stay on their own nodes.
+The managed camera backend targets Arducam B0267 four-camera boards on Raspberry Pi 4 and Pi 5 running Raspberry Pi OS Bookworm arm64. Each board is one synchronization unit. A node can host several units, and a group can span several nodes. The reference unit's node coordinates synchronization; images are consumed locally on each node. Your application owns image processing, recording, and storage.
 
-## Install on each node
+## Choose how to integrate
 
-Keep the working vendor camera stack and install its matching development headers and `libcamera.pc`. B-CamSync requires C++17, CMake, pkg-config, nlohmann-json, Python 3.11 or later, pybind11 3 or later, and NumPy. Linux builds also require libsystemd development headers. Physical multi-node sessions use NetworkManager and chrony.
+| Your application | Use | Who owns capture? |
+| --- | --- | --- |
+| Needs camera initialization and local frames | [`Session`](#capture-through-b-camsync) with `Config` | B-CamSync |
+| Already operates cameras and consumes images | [`SyncSession`](#synchronize-an-existing-capture-system) with `SyncConfig` and `SyncUnit` adapters | Your application |
 
-On Bookworm, install the general build and node tools, then build the Python package on the node:
+Both interfaces use the same synchronization runtime, clock mapping, control policy, and status reporting. HTTP control and browser preview are optional; ordinary node applications need neither a developer workstation nor a management service.
+
+## Install
+
+Build from this repository on each target node. Run the commands below from the repository root. For managed Arducam capture, keep the working vendor camera stack and install its matching development headers and `libcamera.pc` (libcamera 0.5.2 or later).
+
+### Python
+
+On Bookworm, install the build and node dependencies and create a virtual environment:
 
 ```sh
 sudo apt install build-essential cmake pkg-config nlohmann-json3-dev python3-dev python3-venv libsystemd-dev network-manager chrony
-pkg-config --modversion libcamera
 python3 -m venv .venv
+```
+
+For managed Arducam capture, check the SDK and install the package:
+
+```sh
+pkg-config --modversion libcamera
 .venv/bin/python -m pip install .
 ```
 
-The package builds and includes the native library. The managed Arducam backend requires its camera SDK. Set `BCAMSYNC_WITH_LIBCAMERA=OFF` for external acquisition integrations that use their own SDK, or for software-only capture; that build still provides the synchronization runtime.
+The Python package builds and includes the native C++ library. It requires Python 3.11 or later and installs NumPy and the Python build dependencies automatically.
 
-For a C++ installation:
+For an existing capture system using its own SDK, or for fake-camera testing, omit the Arducam backend:
 
 ```sh
-cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release -DBCAMSYNC_BUILD_PYTHON=OFF -DCMAKE_INSTALL_PREFIX="$HOME/.local"
+.venv/bin/python -m pip install . --config-settings=cmake.define.BCAMSYNC_WITH_LIBCAMERA=OFF
+```
+
+This still installs `Session` with fake acquisition, `SyncSession`, networking, and clock synchronization. Multi-node Ethernet setup uses NetworkManager; network clock mapping uses chrony.
+
+### C++
+
+The native build requires C++17, CMake, pkg-config, nlohmann-json 3.10 or later, and Linux libsystemd development headers, plus the matching libcamera SDK for managed Arducam capture.
+
+```sh
+cmake -S . -B build-release \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBCAMSYNC_BUILD_PYTHON=OFF \
+  -DCMAKE_INSTALL_PREFIX="$HOME/.local"
 cmake --build build-release --parallel
 cmake --install build-release
 ```
 
-Applications link `BCamSync::bcamsync` after `find_package(BCamSync CONFIG REQUIRED)` and include `<bcamsync/session.hpp>`. Pass the installation prefix through `CMAKE_PREFIX_PATH`.
+Add `-DBCAMSYNC_WITH_LIBCAMERA=OFF` when using your own acquisition SDK or fake cameras. In your application's CMake project:
 
-## Configure boards and nodes
+```cmake
+find_package(BCamSync CONFIG REQUIRED)
+target_link_libraries(your_application PRIVATE BCamSync::bcamsync)
+```
 
-Copy one of the configurations in [examples/configs](examples/configs): `two_nodes_one_board.json` for eight cameras on two nodes, `one_node_two_boards.json` for eight cameras on one node, or `two_nodes_two_boards.json` for sixteen cameras on two nodes. Keep group membership, reference unit, backend, and group frame rate consistent on all nodes. Camera IDs, platform profiles, exposure, gain, and buffering settings belong to each node's acquisition configuration.
+Pass the installation prefix through `CMAKE_PREFIX_PATH`. Include `<bcamsync/session.hpp>` for managed capture or `<bcamsync/sync.hpp>` for external capture. See the [C++ capture example](examples/capture.cpp) and [standalone CMake consumer](examples/cmake_consumer).
 
-List each node's exact SDK camera IDs before creating a session:
+## Configure your group
+
+Copy a configuration from [examples/configs](examples/configs):
+
+| Layout | Starting configuration |
+| --- | --- |
+| 8 cameras, 2 nodes, 1 board per node | [two_nodes_one_board.json](examples/configs/two_nodes_one_board.json) |
+| 8 cameras, 1 node, 2 boards | [one_node_two_boards.json](examples/configs/one_node_two_boards.json) |
+| 16 cameras, 2 nodes, 2 boards per node | [two_nodes_two_boards.json](examples/configs/two_nodes_two_boards.json) |
+| Pi 5, 2 nodes, 1 board per node | [two_nodes_one_board_pi5.json](examples/configs/two_nodes_one_board_pi5.json) |
+| Existing capture system, 2 nodes | [external_two_nodes.json](examples/configs/external_two_nodes.json) |
+
+The configuration names each node and synchronization unit, assigns units to nodes, and selects `reference_unit`. Keep group identity, membership, reference, `fps`, `clock_mode`, and `phase_policy` consistent across nodes. Camera IDs, backend profiles, exposure, gain, and buffering settings describe acquisition. External `SyncConfig` files contain no camera settings; a managed `Config` can also produce a `SyncConfig` through `config.sync_config()`.
+
+### Arducam camera settings
+
+Enumerate the local SDK camera IDs before filling in each board's `camera_id`:
 
 ```sh
 .venv/bin/python -c 'from bcamsync import enumerate_arducam_cameras; print(enumerate_arducam_cameras())'
 ```
 
-Replace each `camera_id` placeholder and verify the interface name. Both platform profiles use the same full `5120×800` board image, 8-bit sensor, R8 buffers, and four horizontal grayscale `uint8` views. `arducam_b0267_pi4` selects `/usr/share/libcamera/pipeline/rpi/vc4/rpi_apps.yaml`; `arducam_b0267_pi5` uses the default pipeline. Geometry and pipeline settings belong to the backend profile; configure neither width, height, nor view count for physical boards.
+For Pi 5, call `enumerate_arducam_cameras(profile="arducam_b0267_pi5")` and select that profile on its units. Pi 4 uses `arducam_b0267_pi4`, the default. Camera identity comes from SDK enumeration, rather than fixed `/dev/video*` names. Both profiles produce four grayscale `uint8` views, each 1280 × 800, from one 5120 × 800 board image.
 
-For Pi 5, select `"profile": "arducam_b0267_pi5"` on its units and enumerate with `enumerate_arducam_cameras(profile="arducam_b0267_pi5")`. The [Pi 5 two-node example](examples/configs/two_nodes_one_board_pi5.json) includes this selection. A group can contain Pi 4 and Pi 5 nodes; all boards on a node use that node's platform profile. Camera IDs come from the local SDK enumeration rather than fixed `/dev/video*` numbers.
+| Setting | Scope | Default / behavior |
+| --- | --- | --- |
+| `fps` | Group | 40; set once at the top level |
+| `profile` | Board | `arducam_b0267_pi4`; use `arducam_b0267_pi5` on Pi 5 |
+| `exposure_us` | Board | 10000; fixed during acquisition |
+| `auto_gain` | Board | `true`; calibrate at startup, then lock sensor gain |
+| `analogue_gain` | Board | 1.0; used with `auto_gain: false` |
+| `queue_capacity` | Board | 4 undelivered packets |
+| `pool_capacity` | Board | 12 board-image buffers |
 
-Set the top-level `fps` once for the group, and set `exposure_us` and the gain policy on individual units before starting a session. Exposure and gain apply to the whole board. Defaults are 40 fps, 10000 µs exposure, and `auto_gain: true`: startup calibration begins at 1×, meters the four views, and adjusts sensor analogue gain within the intersection of sensor limits and 1×–8×. Gain locks after three settled half-second observations, before phase calibration begins; it stays fixed throughout the session. Set `auto_gain: false` and choose `analogue_gain` for manual gain. Exposure stays fixed in both modes, and calibration never modifies image pixels.
+Automatic gain starts at 1× and meters the four views, adjusting sensor analogue gain within 1×–8× and the sensor's limits. It locks after three settled half-second observations before phase calibration. Exposure stays fixed, and calibration does not alter image pixels. Exposure must leave room within the frame period for the configured phase corrections. Geometry and raw packing belong to the profile.
 
-## Connect a multi-node group
+## Capture through B-CamSync
 
-The default `network.mode` is `"auto"`. Connect the nodes over a dedicated Ethernet link and set each node's synchronization `interface`, such as `eth0`. `Session.start()` starts local acquisition, activates a transient NetworkManager IPv4 link-local connection, discovers the configured node IDs on that interface, and establishes the group clock. Startup reports address assignment, discovery, and clock convergence progress. The application account uses NetworkManager's existing activation authorization.
-
-With the default `clock_mode: "network"`, each multi-node session runs its own `chronyd -x` process and maps sensor timestamps into the reference node's group time. This process leaves the system clock and system chrony configuration unchanged. Session shutdown releases its temporary network connection and clock process. Single-node groups use local sensor time and need no network or clock service.
-
-To use an already configured network, set `"network": {"mode": "existing"}` and supply each node's numeric IPv4 `address`. This mode retains existing addressing and uses the same private clock estimator. The default synchronization TCP port is 58080 and the private clock UDP port is 58081; `network.clock_port` selects another clock port. Changing `reference_unit` changes coordinator and clock-source roles on the next session. `Config` and `SyncConfig` both expose `clock_mode`; select `"host"` explicitly for same-host software endpoints. Camera backend selection never changes clock policy.
-
-Applications that need the link available before capture can own a `NetworkSession(config.sync_config(), local_node)` separately. Call `start()` to establish and announce the local address without waiting for peers, then `resolve()` to obtain an existing-network `SyncConfig` with current peer addresses. Managed applications copy its nodes into their acquisition `Config` and select `network_mode = "existing"`; external applications use the resolved `SyncConfig` directly. Retain the network across capture restarts and close capture or synchronization before calling `network.stop()`. `request_stop()` cancels pending discovery while retaining the link for orderly cleanup. Both `Session` and `SyncSession` accept `set_node_addresses(addresses)` while stopped. The [node service example](examples/serve_node.py) demonstrates this composition.
-
-## Consume local frames
-
-Start follower applications first, then the reference-node application. Every node loads its acquisition configuration and uses its own local node ID:
+Run a local `Session` on every node, using that node's ID. Start followers before the reference node. The session initializes local cameras and runs synchronization in the background while your application reads packets:
 
 ```python
 from bcamsync import Config, Session
 
-config = Config.from_file("examples/configs/two_nodes_one_board.json")
-with Session(config, "node-a") as session:
-    packet = session.read("board-a1", timeout_seconds=30)
-    if packet is not None:
+config = Config.from_file("group.json")
+with Session(config, "node-a") as cameras:
+    while cameras.status().state != "stopped":
+        packet = cameras.read("board-a1", timeout_seconds=1)
+        if packet is None:
+            continue
         camera0, camera1, camera2, camera3 = packet.views
-        # Readonly, strided NumPy arrays retaining the native frame storage.
-        print(session.status().state, packet.clock_valid)
+        print(packet.sequence, camera0.shape, cameras.status().ready)
 ```
 
-The complete [Python example](examples/capture.py) and [C++ example](examples/capture.cpp) consume all local boards and coordinate shutdown. Run the Python example on each node with `--seconds 30`; the reference application ends the group and followers wait for its stop. In an application, stop the reference session first for orderly group shutdown. After stopping, inspect `session.status().fault` for cleanup failures.
+Each packet contains one board's four views. NumPy views are readonly, have board row stride, and retain their native storage after the packet or session is released. The acquisition path copies the raw board image once into a reusable pool; constructing Python views does not copy pixels.
 
-`read()` waits for a board packet and returns `None` on timeout; C++ returns an empty shared pointer. Synchronization continues independently of reads. Each packet exposes sequence, sensor timestamp, synchronization timestamp, `clock_valid`, cumulative dropped count, requested and reported exposure/gain, and gain-lock state. Sensor controls have pipeline delay and quantization, so reported values may differ from requests. Single-node synchronization timestamps use the local boot-time domain; multi-node timestamps use the private group clock mapping. When that mapping is unavailable, `clock_valid` is false and `timestamp_ns` is zero; the local sensor timestamp and image remain available. Views keep their pixels alive after the packet or session is destroyed.
+`read()` returns `None` on timeout (an empty shared pointer in C++). The bounded FIFO drops the oldest undelivered packet when full. Retaining all pool buffers temporarily prevents new image delivery, while timing observation and synchronization continue. Use `sequence` and cumulative `dropped_before` to track delivery gaps, and size the queue and pool for your processing workload.
 
-The image queue is a bounded FIFO: when full it drops the oldest undelivered packet. If applications retain all pool storage, new image delivery is skipped while timing observation and synchronization continue. Increase `queue_capacity` or `pool_capacity` to suit consumption and retention; the default pool holds twelve board images. The acquisition path copies each raw board image once into this reusable pool; Python view creation copies no pixels. Throughput and timing should be measured with release builds on the target nodes.
+The packet also carries the original `sensor_timestamp_ns`, mapped `timestamp_ns`, `clock_valid`, and requested and reported exposure/gain. Single-node mapped timestamps use local boot time; multi-node timestamps use group time. When clock mapping is unavailable, `clock_valid` is false and `timestamp_ns` is zero; pixels and the sensor timestamp remain available.
 
-`status()` reports group readiness, faults, and each unit's phase, P95, maximum error, and last measured window boundary. Startup readiness requires two settled windows with P95 at most 0.5 ms and maximum at most 1 ms; the network clock gate is 0.1 ms by default. These are controller thresholds. The synchronization target is sub-millisecond alignment. Frame access works during synchronization startup and after a synchronization fault. Clock, transport, or phase faults clear readiness and appear in status while local acquisition continues. Camera failures appear through frame access. Applications that require synchronized frames may call `wait_ready()` and inspect status; restarting synchronization requires an explicit stop and new start.
+For a complete timed run on all local boards, use [capture.py](examples/capture.py):
 
-## Attach an existing capture system
+```sh
+# On node-b first, then node-a with its own ID:
+.venv/bin/python examples/capture.py group.json node-b --seconds 30
+```
 
-Use `SyncSession` when your application already owns acquisition. It uses the same coordination, clock mapping, phase control, and status implementation as managed `Session`. It does not initialize cameras, consume images, configure exposure or gain, or stop your capture pipeline.
+The reference application ends the group; followers finish after its stop. In your application, stop the reference session first for orderly group shutdown. Exiting a managed session closes its cameras.
 
-Load a camera-independent `SyncConfig`, such as [external_two_nodes.json](examples/configs/external_two_nodes.json), and provide one `SyncUnit` adapter for each local unit. Managed configurations can project the same group settings through `Config.sync_config()`. The shared handshake compares topology, reference, cadence, clock mode, and phase policy; it does not depend on camera backends. Managed and external nodes can participate in the same group.
+## Synchronize an existing capture system
+
+Use `SyncSession` when your project already owns camera configuration, capture, and image delivery. Provide a `SyncUnit` adapter for every local unit:
 
 ```python
 from bcamsync import SyncConfig, SyncSession
 
-config = SyncConfig.from_file("examples/configs/external_two_nodes.json")
-# capture is your existing application, and adapter implements SyncUnit.
+config = SyncConfig.from_file("sync.json")
+# capture and adapter are supplied by your application.
 capture.start()
 try:
-    with SyncSession(config, "node-a", {"board-a1": adapter}) as synchronization:
-        capture.run()  # Keep your existing image processing or recording flow.
+    with SyncSession(config, "node-a", {"board-a1": adapter}) as sync:
+        capture.run()  # Keep your existing frame consumer and processing pipeline.
+    # Synchronization has stopped; capture is still running.
 finally:
     capture.stop()
 ```
 
-An adapter implements `bind(session_id, round_id)`, `snapshot()`, `adjust(pulse)`, `cancel()`, and `fault()`. These methods run on the synchronization worker and should return promptly; SDK commands can be submitted to the application's existing control queue. Enqueue a `Pulse` value in C++; Python callbacks receive an owned command object that may be retained. `bind` establishes a control namespace without starting capture. `snapshot` returns recent frame timings and the latest correction feedback, including observations for frames whose images the application discarded. A returned snapshot's unit ID must identify that adapter.
+| Adapter method | Your implementation supplies |
+| --- | --- |
+| `bind(session_id, round_id)` | A fresh control namespace, without starting capture |
+| `snapshot()` | A `TimingSnapshot` with recent frame timings and correction feedback |
+| `adjust(pulse)` | Submission of a bounded frame-period correction |
+| `cancel()` | A request to restore the baseline period |
+| `fault()` | A capture/control error string, or an empty string |
 
-`FrameTiming.sensor_timestamp_ns` retains the immutable sensor time in nanoseconds. `FrameTiming.timestamp_ns`, the snapshot boundary, restoration feedback, and control expiry use the local `CLOCK_BOOTTIME` domain (`boot_time_ns()`); adapters using another SDK clock convert it and report mapping uncertainty. `synchronization.clock().map(local_timestamp_ns)` translates local time to group time and returns zero when its mapping is unavailable.
+Callbacks run on the synchronization worker and should return promptly. Observations include frames even when their images were discarded. Preserve original sensor timestamps; observation timestamps, snapshot boundaries, control expiry, and restoration boundaries use local `CLOCK_BOOTTIME` (`boot_time_ns()`). Convert other SDK clocks into this domain and report mapping uncertainty. `sync.clock().map(local_timestamp_ns)` provides group time.
 
-`adjust` accepts a bounded period pulse; acceptance does not acknowledge actual completion. SDK completion feedback must identify the correction and the observed baseline-restoration boundary. `cancel` requests baseline restoration, and synchronization shutdown waits for that feedback within `request_timeout_seconds`. Missing feedback is reported in status. External capture continues after synchronization stop, remote group stop, or a synchronization fault. Reusing a `SyncSession` binds a newer round; attaching another session establishes a new namespace. Both preserve the application's capture lifetime.
+Correction acceptance and completion are separate: report the correction identity and the observed return to baseline through snapshot feedback. `SyncSession.stop()` restores synchronization controls and leaves capture running. Managed and external nodes can share a group with the same synchronization settings.
 
-The executable [external capture example](examples/external_capture.py) implements an application-owned synthetic producer using `PhaseActuator` to separate duration submission from completion. Run `.venv/bin/python examples/external_capture.py` to observe correction and capture continuing after synchronization stops. In C++, include `<bcamsync/sync.hpp>`, implement `SyncUnit`, and construct `SyncSession(config, local_node, local_interfaces)` with shared adapter ownership. Python subclasses are retained while the session uses their callbacks. Pixel data never crosses this interface.
+The runnable [external_capture.py](examples/external_capture.py) demonstrates a synthetic application-owned producer and a complete adapter using `PhaseActuator`. It runs without a camera SDK and demonstrates capture continuing after synchronization stops.
 
-For physical multi-node capture, the default clock mode uses the same transient Ethernet setup and private chronyd as managed acquisition. `clock_mode: "host"` explicitly selects host-clock mapping for same-host software endpoints.
+## Networking and synchronization status
 
-Both configurations expose the same typed `phase_policy` (`PhasePolicy` in C++ and Python). A configuration file may supply selected fields, for example `"phase_policy": {"startup_delta_us": 500, "tracking_delta_us": 100}`; omitted fields retain the policy defaults. Use the same policy on every node. The runtime honors its observation cadence, correction limits, and readiness thresholds, while clock quality can impose a stricter timestamp uncertainty limit. Managed exposure validation reserves room for the configured correction limits.
+Connect nodes directly over Ethernet, or connect them through a dedicated switch. With the default `network.mode: "auto"`, configure each node's interface (for example, `eth0`). B-CamSync activates a transient NetworkManager IPv4 link-local connection and discovers the configured peers. No router, DHCP server, or handwritten node IP addresses are required. Activation uses the application's existing NetworkManager authorization.
 
-## Optional developer host
+Multi-node sessions default to `clock_mode: "network"`: each synchronization run manages a private `chronyd -x` instance and maps local timing into the reference node's group time. System time and system chrony configuration stay unchanged. Single-node synchronization uses local time without network clock setup.
 
-HTTP management is an optional application service. Local `Session` and `SyncSession` use does not require it. Connect the nodes and developer workstation to the same dedicated Ethernet switch; the workstation needs an IPv4 link-local address on that interface. Its Wi-Fi can continue providing Internet access. The workstation discovers management endpoints and does not participate in synchronization or clock reference selection.
+On an existing network, select `"network": {"mode": "existing"}` and provide numeric IPv4 node addresses. For same-host software endpoints, explicitly select `clock_mode: "host"`; choosing a fake camera backend does not change clock policy. Default ports are UDP 58079 for synchronization discovery, TCP 58080 for synchronization traffic, and UDP 58081 for the private clock service.
 
-Run the service on each node with its deployed camera configuration:
+Frame access is independent of synchronization readiness. Use `status()` to inspect readiness, faults, and per-unit phase/P95/maximum error. Call `wait_ready(timeout_seconds)` when your application needs to wait for synchronized operation. Clock, transport, and phase faults clear readiness while local managed capture continues; camera failures appear through frame access. Restart a stopped or faulted run explicitly with `stop()` followed by `start()`.
+
+Default readiness requires two settled windows with P95 error at most 0.5 ms and maximum error at most 1 ms; the default clock-quality limit is 0.1 ms. These are acceptance thresholds for the controller. Sub-millisecond alignment is the synchronization target; measure optical alignment on your hardware. Both configuration types expose `phase_policy`, so a file can override selected fields such as `"phase_policy": {"startup_delta_us": 500, "tracking_delta_us": 100}`.
+
+### Keep a network available across capture restarts
+
+Ordinary sessions manage their own network lifetime. If your application needs connectivity while cameras are stopped, own a separate `NetworkSession`:
+
+```python
+from bcamsync import Config, NetworkSession, Session
+
+config = Config.from_file("group.json")
+with NetworkSession(config.sync_config(), "node-a") as network:
+    resolved = network.resolve()
+    local = Config(config)
+    local.nodes = resolved.nodes
+    local.network_mode = "existing"
+    with Session(local, "node-a") as cameras:
+        run_application(cameras)  # Your application's frame consumer.
+    # The network remains available until its outer context exits.
+```
+
+For external capture, pass `resolved` directly to `SyncSession`. Network startup establishes and announces the local address without waiting for peers; `resolve()` waits for the group. Retain this network across capture restarts. Both session types accept `set_node_addresses(addresses)` while stopped. `network.request_stop()` cancels pending discovery without releasing the link; close capture/synchronization before `network.stop()`.
+
+## Optional workstation control and preview
+
+During development, connect the nodes and workstation to the same dedicated Ethernet switch. The workstation needs an IPv4 link-local address on that interface and can keep Wi-Fi for Internet access. Node synchronization continues independently of the workstation.
+
+Run the [node application](examples/serve_node.py) on each node:
 
 ```sh
 .venv/bin/python examples/serve_node.py group.json node-a
 ```
 
-In `auto` mode this example owns a `NetworkSession`, activates the configured Ethernet interface once, and retains its temporary connection across acquisition start/stop. It resolves peer addresses before creating or restarting its managed acquisition session. Exiting the example closes the HTTP transport and capture before releasing the network. `existing` mode uses configured node addresses; `--address` selects an already configured local management address. Single-node configurations without network settings can use `--address` or specify a node interface. Neither connecting a client nor querying configuration starts cameras; a client disconnect leaves acquisition running.
+This example owns networking, lazy managed capture, and an HTTP transport. Cameras start only after a start request. The network stays available across capture stops; exiting the example closes capture before releasing it. Use `--address` to choose an existing local HTTP address, including single-node usage without a configured synchronization interface.
 
-The HTTP interface provides `GET /configuration`, `GET /status`, `POST /start`, and `POST /stop`. POST bodies are JSON objects with an optional `operation_id` UUID. Replies contain `ok` and either `result` or `error`. To attach HTTP to an existing application, construct `NodeService(config, local_node, session=session)` with either a managed `Session` or an external `SyncSession`, then `HttpNodeService(controller, local_address)`. Pass `active=True` to the controller if the supplied session is already running. The caller owns the controller and session; stopping or closing the HTTP transport leaves them running. Call `controller.close()` when the application is ready to stop its session. HTTP creates no cameras, network connection, or synchronization clock; the standalone node example chooses those resources. Camera settings remain in the configuration file. Management discovery uses link-scoped multicast UDP port 58082; HTTP defaults to TCP port 58083. These are separate from synchronization and clock traffic.
-
-Install the independent host client with `.venv/bin/python -m pip install ./host`. It uses only the Python standard library and needs no camera SDK, C++ build, NumPy, node package, SSH credentials, or targets file. On macOS it reads interface addresses with `ifconfig`; on Linux it uses `ip`. The [host example](examples/manage_group.py) discovers nodes automatically, checks their shared synchronization settings, and starts followers before the reference node. Use `--interface en7` to select a workstation adapter when desired:
+On the workstation, install the independent standard-library-only host package and use discovery:
 
 ```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install ./host
 .venv/bin/python examples/manage_group.py group.json discover
 .venv/bin/python examples/manage_group.py group.json check
 .venv/bin/python examples/manage_group.py group.json start
@@ -134,89 +221,68 @@ Install the independent host client with `.venv/bin/python -m pip install ./host
 .venv/bin/python examples/manage_group.py group.json stop
 ```
 
-In Python, call `bcamsync_host.discover(group_id)` and construct `HttpGroupClient(config_dict, targets)`. `discover` returns node IDs and `HttpNodeTarget.base_url` values, including services whose acquisition has not started. Group control requires every configured node to be available. The existing `bcamsync.management` Unix-socket service and SSH `GroupClient` remain available; select that transport in the host example with `--ssh-targets targets.json`.
+Select a workstation adapter with `--interface en7` when needed. Group control starts followers before the reference node. HTTP discovery uses UDP 58082; HTTP defaults to TCP 58083. The host package requires no camera SDK, native build, or SSH credentials. Existing SSH control remains available through `--ssh-targets` and [host_targets.json](examples/configs/host_targets.json).
 
-## Browser preview example
-
-[preview.py](examples/preview.py) is an independent node application which extends the HTTP service with a browser page and JPEG snapshots. Install its optional Pillow dependency and run it instead of the plain management service:
+To preview cameras, run [preview.py](examples/preview.py) instead of the plain node application:
 
 ```sh
 .venv/bin/python -m pip install '.[preview]'
 .venv/bin/python examples/preview.py group.json node-a
-# On the workstation, discover the page addresses and start the whole group:
-.venv/bin/python examples/manage_group.py group.json discover
-.venv/bin/python examples/manage_group.py group.json start
 ```
 
-Open each discovered URL in a browser. The page shows each local board's four grayscale views and node state, with local start/stop controls. For a multi-node group, use the host example to control the complete group. Closing a page leaves acquisition running. The example alone consumes local frames, scales and encodes JPEGs at 5 fps by default, and retains only the latest snapshot per board. Slow browser consumption does not queue images or block acquisition. Preview remains available while synchronization is converging or reports a fault, and clears when acquisition stops. To add preview to your own pipeline, publish from your existing frame consumer rather than adding a competing `read()` consumer. Encoding, browser routes, and preview threads are absent from the library.
+Discover the node URLs and start the group with the host commands above, then open each URL in a browser. The example displays local boards and publishes the latest JPEGs at 5 fps by default. Closing a browser or host client leaves acquisition running. Preview is an independent frame-consuming application; when adding it to your own pipeline, publish from your existing consumer so readers do not compete for packets.
 
-For a single-node fake preview on a Mac, build the Linux image and software first, then publish its HTTP port:
+To add HTTP control to an existing node application, supply either session type to a controller:
+
+```python
+from bcamsync.management import NodeService
+from bcamsync.http_management import HttpNodeService
+
+controller = NodeService(config, "node-a", session=session)
+http = HttpNodeService(controller, local_address)
+http.serve()  # Call http.request_shutdown() from your application's shutdown path.
+```
+
+The routes are `GET /configuration`, `GET /status`, `POST /start`, and `POST /stop`. POST requests accept a JSON object with an optional `operation_id` UUID; responses contain `ok` and either `result` or `error`.
+
+Use `active=True` if the supplied session is already running. HTTP forwards requests to the controller. Closing the transport leaves the session with its caller; `controller.close()` stops that session. For `SyncSession`, this stops synchronization while your capture keeps running. The application owns shutdown: end HTTP and preview consumers, close the controller/session, then release any separately owned network. See [serve_node.py](examples/serve_node.py) for the complete composition and signal handling.
+
+## Try and validate
+
+Without cameras, use [fake_one_node.json](examples/configs/fake_one_node.json) or [fake_two_nodes.json](examples/configs/fake_two_nodes.json) with the capture and preview examples. These select fake acquisition and explicit same-host clock/network settings. Synthetic phase and drift exercise correction and frame ownership through the public APIs.
+
+For a Linux preview without the camera SDK:
+
+```sh
+.venv/bin/python -m pip install '.[preview]' --config-settings=cmake.define.BCAMSYNC_WITH_LIBCAMERA=OFF
+.venv/bin/python examples/preview.py examples/configs/fake_one_node.json node-a
+```
+
+Open `http://127.0.0.1:58083` and use Start node.
+
+For device runs, start [validate_device.py](tools/validate_device.py) on each follower, then the reference, using the same duration and repeat count:
+
+```sh
+.venv/bin/python tools/validate_device.py group.json node-b \
+  --seconds 600 --repeat 2 --output node-b-results.json
+```
+
+It reports frame delivery, rates, gaps, drops, synchronization metrics, retained-frame integrity, and shutdown. Timestamp/control checks and optical alignment measurements are separate parts of device validation.
+
+## Develop in Linux
+
+The [Dockerfile](Dockerfile) and [build script](tools/build.sh) provide the same Linux toolchain used by GitHub Actions. On Apple Silicon, the default container platform is ARM64. GCC is the default compiler; Clang provides sanitizer, fuzzing, and static-analysis checks.
 
 ```sh
 bash tools/container.sh image
-bash tools/container.sh build
-docker run --rm -p 127.0.0.1:58083:58083 \
-  --mount "type=bind,source=$PWD,target=/src,readonly" \
-  --mount "type=bind,source=$PWD/build-linux,target=/work/build,readonly" \
-  -e PYTHONPATH=/work/build/gcc-software/python -w /src bcamsync-dev:bookworm \
-  bash -c 'python examples/preview.py examples/configs/fake_one_node.json node-a --address "$(hostname -i)"'
+bash tools/container.sh build     # Incremental compilation
+bash tools/container.sh software  # Software tests and installation checks
+bash tools/container.sh sdk       # Compile the Arducam backend against libcamera
+bash tools/container.sh package   # Source distribution, node wheel, C++ archive, host package
+bash tools/container.sh address   # ASan/UBSan and native leak checks
+bash tools/container.sh thread    # Native TSan checks
 ```
 
-Open `http://127.0.0.1:58083` and use Start node. This exercises HTTP control and preview with synthetic images; device and optical checks use the actual nodes.
+Additional actions are `release`, `fuzz`, and `analyze`; set `BCAMSYNC_TOOLCHAIN=clang` for Clang builds or `BCAMSYNC_PLATFORM=linux/amd64` for an x86-64 host. Source is mounted readonly; builds, logs, and distribution artifacts are stored under `build-linux/`. The container SDK supports compilation and software checks; real capture uses the node's deployed vendor stack.
 
-## Run the device workflow
-
-On every node, run the operator validator using the same duration and repeat count. Start the follower first, then the reference shortly afterward:
-
-```sh
-.venv/bin/python tools/validate_device.py examples/configs/two_nodes_one_board.json node-b --seconds 600 --repeat 2 --output node-b-results.json
-# On the reference node:
-.venv/bin/python tools/validate_device.py examples/configs/two_nodes_one_board.json node-a --seconds 600 --repeat 2 --output node-a-results.json
-```
-
-The tool reports startup progress, per-board delivery, observed frame rate, sequence gaps, drops, timing-window metrics, retained-array integrity, and shutdown results. It validates local delivery and timestamp control; perform optical alignment measurements separately. The reference closes each run and followers confirm that shutdown before restarting. Repeat with another reference unit after updating the configurations between sessions.
-
-Run device capture and optical alignment measurements on the target nodes with their installed vendor SDK.
-
-## Fake acquisition and CI
-
-Set `backend` to `fake` to exercise the public session API without cameras. Select `clock_mode: "host"` and `network.mode: "existing"` explicitly for same-host software tests without node provisioning. The fake backend generates board pixels and timestamp observations, applies the same bounded phase actuator, and uses the same frame pool and queues. Per-unit `fake.width` and `fake.height` specify synthetic geometry; `fake.initial_phase_us` and `fake.drift_ppm` specify simulated phase and drift. The [single-node configuration](examples/configs/fake_one_node.json) and [two-node loopback configuration](examples/configs/fake_two_nodes.json) provide examples. Fake acquisition emits local boot-time observations through the same backend boundary; multi-host clock alignment remains part of the physical deployment.
-
-GitHub Actions uses the same Debian development image and build entry points as local container development. GCC checks run on native ARM64 and x86-64 runners; Clang supplies supplementary compilation, sanitizer, fuzzing, and static-analysis checks. CI retains build logs, source distributions, C++ archives, and Python wheels as artifacts. Actual capture and optical measurements are device checks.
-
-## Develop and build in Linux
-
-The [Dockerfile](Dockerfile) provides Debian 12, GCC 12, Clang 16, a separate Python 3.11 virtual environment, and pinned official libcamera 0.5.2 headers and libraries. Apple Silicon development uses native `linux/arm64` containers. Build the image once, then compile incrementally:
-
-```sh
-bash tools/container.sh image
-bash tools/container.sh build
-```
-
-The launcher mounts the source read-only and stores generated files in `build-linux/`. GCC is the default toolchain. Local development and GitHub Actions both call [tools/build.sh](tools/build.sh) through the same launcher. On an x86-64 host, select `BCAMSYNC_PLATFORM=linux/amd64`. Run `bash tools/container.sh` without arguments to open the development shell; its active Python environment belongs to the Linux image.
-
-| Action | Build and validation |
-| --- | --- |
-| `build` | Incremental Debug compilation with fake acquisition available; shares the `software` build directory |
-| `software` | Debug build, native/Python checks, and independent CMake/Python installation checks |
-| `release` | Release build with the real backend, software checks, and installed-package checks |
-| `sdk` | Compile the real backend and Python interface against the available SDK |
-| `package` | Build the node wheel from its source distribution, produce a C++ archive and separate host package, and validate isolated installations |
-| `address` | Clang ASan/UBSan, native leak checking, and instrumented Python ownership checks |
-| `thread` | Separate Clang TSan build for native concurrency checks |
-| `fuzz` | Bounded LLVM timing/control-message fuzzing, default 60 seconds |
-| `analyze` | Clang static analysis of native and SDK resource paths |
-
-```sh
-bash tools/container.sh software
-bash tools/container.sh package
-bash tools/container.sh address
-bash tools/container.sh thread
-BCAMSYNC_TOOLCHAIN=clang bash tools/container.sh sdk
-```
-
-`BCAMSYNC_TOOLCHAIN=clang` selects the supplementary compiler for normal builds; safety actions select Clang themselves. `BCAMSYNC_JOBS` controls build parallelism (default two). Logs are saved in `build-linux/logs/`; packages are saved in `build-linux/packages/gcc-aarch64/` for the default ARM64 build. Compiler and action build directories are separate. The image's SDK supports API compilation and fake acquisition checks; node installation uses the matching deployed Arducam SDK.
-
-Build, ownership, and packaging checks are software validation. NetworkManager activation, private-clock convergence, real camera throughput, and optical alignment require measurements on the target nodes.
-
-The architecture and durable decisions are described in [docs/design.md](docs/design.md).
+See [docs/design.md](docs/design.md) for architecture and design decisions.
