@@ -1,7 +1,7 @@
 """Test two Pi 5 boards with application-owned capture and SyncSession.
 
 libcamera supplies sensor timestamps and per-request frame-period controls.
-OpenCV display is optional; the default run measures synchronization only.
+OpenCV display and MJPG output are optional; the default measures synchronization only.
 """
 
 import argparse
@@ -96,6 +96,7 @@ class Capture:
         self.closed = threading.Event()
         self.display = display
         self.images = {}
+        self.writers = {}
         self.image_lock = threading.Lock()
         self.thread = None
         baseline = 1_000_000 // config["fps"]
@@ -108,7 +109,7 @@ class Capture:
             stack.callback(camera.release)
             configuration = camera.generate_configuration([libcamera.StreamRole.Viewfinder])
             stream = configuration.at(0)
-            stream.size = libcamera.Size(640, 480)
+            stream.size = libcamera.Size(1280, 200)
             stream.pixel_format = libcamera.PixelFormat("YUV420")
             stream.buffer_count = 8
             sensor = libcamera.SensorConfiguration()
@@ -154,6 +155,21 @@ class Capture:
         self.thread = threading.Thread(target=self.run, name="external-capture")
         self.thread.start()
 
+    def start_recording(self, directory):
+        directory.mkdir(parents=True, exist_ok=True)
+        with self.image_lock:
+            for _, stream, timing, _ in self.requests.values():
+                if timing.unit_id in self.writers:
+                    continue
+                path = directory / f"{timing.unit_id}.avi"
+                writer = self.cv2.VideoWriter(str(path), self.cv2.VideoWriter_fourcc(*"MJPG"),
+                                              1_000_000 / timing.baseline_us,
+                                              (stream.size.width, stream.size.height))
+                if not writer.isOpened():
+                    raise RuntimeError(f"Cannot open MJPG output: {path}")
+                self.writers[timing.unit_id] = writer
+                print(f"MJPG output: {path}", flush=True)
+
     def run(self):
         import numpy as np
         try:
@@ -173,14 +189,19 @@ class Capture:
                                            metadata[self.sdk.controls.SensorTimestamp],
                                            metadata[self.sdk.controls.FrameDuration],
                                            self.submitted[request.cookie])
-                            if self.display:
+                            if self.display or self.writers:
                                 with mmap.mmap(buffer.planes[0].fd, stream.frame_size,
                                                flags=mmap.MAP_SHARED, prot=mmap.PROT_READ) as pixels:
-                                    yuv = np.frombuffer(pixels, dtype=np.uint8).reshape(720, stream.stride)
+                                    yuv = np.frombuffer(pixels, dtype=np.uint8).reshape(
+                                        stream.size.height * 3 // 2, stream.stride)
                                     image = self.cv2.cvtColor(yuv, self.cv2.COLOR_YUV2BGR_I420)
                                     del yuv
                                 with self.image_lock:
-                                    self.images[timing.unit_id] = image
+                                    if self.display:
+                                        self.images[timing.unit_id] = image
+                                    writer = self.writers.get(timing.unit_id)
+                                    if writer is not None:
+                                        writer.write(image)
                         request.reuse()
                         self.queue(request)
         except Exception as error:
@@ -192,6 +213,8 @@ class Capture:
         self.closed.set()
         if self.thread is not None:
             self.thread.join()
+        for writer in self.writers.values():
+            writer.release()
 
 
 def status_record(status, captures):
@@ -214,9 +237,12 @@ def main():
     parser.add_argument("--repeat", type=int, default=2)
     parser.add_argument("--display", action="store_true", help="optional local OpenCV windows")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--video-dir", type=Path, help="optional downstream MJPG AVI output after readiness")
     args = parser.parse_args()
     if not math.isfinite(args.seconds) or args.seconds <= 0 or args.repeat < 1:
         parser.error("duration and repeat must be positive")
+    if args.video_dir is not None and args.repeat != 1:
+        parser.error("video output requires --repeat 1")
     document = json.loads(args.config.read_text())
     sync = SyncConfig.from_file(args.config)
     if len(sync.nodes) != 1 or len(sync.units) != 2:
@@ -242,6 +268,8 @@ def main():
                         if time.monotonic() >= deadline:
                             raise RuntimeError("Synchronization readiness timed out")
                     began = time.monotonic()
+                    if args.video_dir is not None:
+                        capture.start_recording(args.video_dir)
                     run_result = {"run": run + 1, "startup_seconds": began - startup}
                     result["runs"].append(run_result)
                     while time.monotonic() - began < args.seconds:

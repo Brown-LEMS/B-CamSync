@@ -166,6 +166,8 @@ mkdir -p results
 
 Each run waits for readiness, prints phase/p95/max metrics and observed frame rates once per second, then stops synchronization and checks that external capture continues. The next run restarts synchronization on those same cameras. The JSON output retains the configuration, readiness policy, status samples, and restart results. Default readiness targets are p95 ≤ 0.5 ms and max ≤ 1 ms over two settled windows; these are acceptance thresholds, not measured results. Add `--display` only when local OpenCV windows are wanted.
 
+For a short downstream recording, add `--seconds 5 --repeat 1 --video-dir results/mjpg`. After readiness, the example writes one 1280×200 MJPG AVI per board with all four view positions preserved horizontally. Recording remains application code in this example.
+
 ## Install
 
 Build from the repository root on each target node. Managed Arducam capture requires the working vendor camera stack and its matching libcamera development headers (0.5.2 or later).
