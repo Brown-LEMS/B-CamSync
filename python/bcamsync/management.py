@@ -17,7 +17,7 @@ import sys
 import threading
 from uuid import UUID, uuid4
 
-from . import Config, Session, SyncConfig, SyncSession
+from . import Config, NetworkSession, Session, SyncConfig, SyncSession
 
 
 LIMIT = 1024 * 1024
@@ -49,11 +49,12 @@ class NodeService:
 
     Applications may supply either session type. Closing HTTP leaves this
     controller with its caller; the foreground Unix service closes it on exit.
+    A supplied network must already be started and remains owned by its caller.
     """
 
     def __init__(self, config: Config | SyncConfig, local_node: str,
                  socket_path: str | Path | None = None, *, session: Session | SyncSession | None = None,
-                 active: bool = False):
+                 active: bool = False, network: NetworkSession | None = None):
         config.validate()
         config.node(local_node)
         self.config = config
@@ -66,6 +67,7 @@ class NodeService:
         if isinstance(config, SyncConfig) and session is None:
             raise ValueError("external synchronization requires a supplied SyncSession")
         self._session = session
+        self.network = network
         self._active = active
         self._operation = None
         self._closing = False
@@ -97,6 +99,9 @@ class NodeService:
                     raise RuntimeError("node session is already active; stop it explicitly first")
                 if self._session is None:
                     self._session = self._create_session()
+                elif self.network is not None:
+                    resolved = self.network.resolve(self.config.startup_timeout_seconds)
+                    self._session.set_node_addresses({node.id: node.address for node in resolved.nodes})
                 if self._shutdown.is_set():
                     raise RuntimeError("node service is closing")
                 self._session.start()
@@ -109,10 +114,19 @@ class NodeService:
                     self._session.stop()
                 self._active = False
                 self._operation = None
-            return _status(self._session, self.local_node, self._active, self._operation)
+            status = _status(self._session, self.local_node, self._active, self._operation)
+            if self.network is not None:
+                status["network"] = {"address": self.network.address, "fault": self.network.fault}
+            return status
 
     def _create_session(self) -> Session:
-        return Session(self.config, self.local_node)
+        config = self.config
+        if self.network is not None:
+            resolved = self.network.resolve(config.startup_timeout_seconds)
+            config = Config(config)
+            config.nodes = resolved.nodes
+            config.network_mode = "existing"
+        return Session(config, self.local_node)
 
     def close(self) -> None:
         """Close the session and end the foreground service."""

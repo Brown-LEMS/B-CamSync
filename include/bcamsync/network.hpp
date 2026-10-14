@@ -20,6 +20,8 @@ public:
     SyncConfig resolve(std::chrono::milliseconds timeout = std::chrono::seconds(60));
     /// Local IPv4 address while started; empty before start and after stop.
     std::string address() const;
+    /// Background discovery failure; an absent peer is pending, not a fault.
+    std::string fault() const;
     /// Cancel operations without releasing the local link; stop() completes cleanup.
     void request_stop();
     /// Cancel startup/resolution and release only this session's activation and discovery.
@@ -30,7 +32,6 @@ private:
     void start(const std::atomic<bool>& stopping, std::int64_t deadline_ns);
     SyncConfig resolve(const std::atomic<bool>& stopping, std::int64_t deadline_ns);
     void start_discovery(std::string address);
-    std::string fault() const;
     class Impl;
     std::unique_ptr<Impl> impl_;
 };

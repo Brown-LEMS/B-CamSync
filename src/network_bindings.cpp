@@ -31,6 +31,10 @@ void bind_network(py::module_& module) {
             py::gil_scoped_release release;
             return session.address();
         })
+        .def_property_readonly("fault", [](const NetworkSession& session) {
+            py::gil_scoped_release release;
+            return session.fault();
+        })
         .def("request_stop", &NetworkSession::request_stop, py::call_guard<py::gil_scoped_release>())
         .def("stop", &NetworkSession::stop, py::call_guard<py::gil_scoped_release>())
         .def("close", &NetworkSession::stop, py::call_guard<py::gil_scoped_release>())

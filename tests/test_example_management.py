@@ -30,6 +30,10 @@ class NodeApplicationTests(unittest.TestCase):
             def address(self):
                 return self.native.address
 
+            @property
+            def fault(self):
+                return self.native.fault
+
             def start(self, timeout):
                 self.native.start(timeout)
 

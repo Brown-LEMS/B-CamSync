@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
-from bcamsync import Config, FrameTiming, Session, SyncConfig, SyncSession, SyncUnit, TimingSnapshot, boot_time_ns
+from bcamsync import Config, FrameTiming, NetworkSession, Session, SyncConfig, SyncSession, SyncUnit, TimingSnapshot, boot_time_ns
 from bcamsync.http_management import HttpNodeService
 from bcamsync.management import NodeService
 from bcamsync_host import HttpGroupClient, HttpNodeTarget, discover
@@ -260,7 +260,10 @@ class HttpManagementTests(unittest.TestCase):
         sync.reference_unit = "sensor"
         capture = Capture()
         session = SyncSession(sync, "node-a", {"sensor": capture})
-        controller = NodeService(sync, "node-a", session=session)
+        network = NetworkSession(sync, "node-a")
+        network.start(1)
+        self.addCleanup(network.stop)
+        controller = NodeService(sync, "node-a", session=session, network=network)
         self.addCleanup(controller.close)
         with RunningService(HttpNodeService(controller, "127.0.0.1", http_port=0, discovery_port=udp_port())) as service:
             self.assertEqual(request(service, "POST", "/start", b"{}")[0], 200)
@@ -270,6 +273,13 @@ class HttpManagementTests(unittest.TestCase):
         controller.request("stop")
         self.assertTrue(capture.running)
         self.assertFalse(capture.attached)
+        self.assertEqual(network.address, "127.0.0.1")
+        controller.request("start")
+        self.assertTrue(session.wait_ready(2))
+        controller.close()
+        self.assertTrue(capture.running)
+        self.assertFalse(capture.attached)
+        self.assertEqual(network.address, "127.0.0.1")
 
 
 if __name__ == "__main__":

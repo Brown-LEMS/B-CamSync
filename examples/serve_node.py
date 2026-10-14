@@ -8,34 +8,16 @@ import argparse
 from pathlib import Path
 import signal
 
-from bcamsync import Config, NetworkSession, Session
+from bcamsync import Config, NetworkSession
 from bcamsync.http_management import HttpNodeService
-from bcamsync.management import NodeService, _operation_id
+from bcamsync.management import NodeService
 
 
 class ManagedNode(NodeService):
     """Example ownership of managed capture on a separately owned network session."""
 
     def __init__(self, config, local_node, network):
-        super().__init__(config, local_node)
-        self.network = network
-
-    def _create_session(self):
-        resolved = self.network.resolve(self.config.startup_timeout_seconds)
-        config = Config(self.config)
-        config.nodes = resolved.nodes
-        config.network_mode = "existing"
-        return Session(config, self.local_node)
-
-    def request(self, command, operation_id=None):
-        operation_id = _operation_id(operation_id)
-        with self._lock:
-            if self._closing or self._shutdown.is_set():
-                raise RuntimeError("node service is closing")
-            if command == "start" and not self._active and self._session is not None:
-                resolved = self.network.resolve(self.config.startup_timeout_seconds)
-                self._session.set_node_addresses({node.id: node.address for node in resolved.nodes})
-            return super().request(command, operation_id)
+        super().__init__(config, local_node, network=network)
 
 
 def run_node(config, local_node, *, address=None, http_port=58083,

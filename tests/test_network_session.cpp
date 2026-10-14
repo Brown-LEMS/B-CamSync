@@ -84,6 +84,8 @@ void discovery_lifetime() {
     detail::NetworkSessionTestAccess::start_on_link(first, "127.0.0.1");
     require(first.address() == "127.0.0.1", "local network starts before its peers exist");
     rejected([&] { first.resolve(50ms); }, "missing peer resolution must respect its deadline");
+    require(first.fault().empty() && first.address() == "127.0.0.1",
+            "peer timeout leaves local discovery running without a background fault");
     {
         NetworkSession second(config, "node-b");
         detail::NetworkSessionTestAccess::start_on_link(second, "127.0.0.2");
@@ -114,6 +116,7 @@ void contract_check() {
         mismatch = std::string(error.what()).find("configuration differs") != std::string::npos;
     }
     require(mismatch, "discovery must reject incompatible synchronization contracts");
+    require(!first.fault().empty(), "background discovery failure is observable without resolving again");
 }
 void duplicate_identity_check() {
     auto config = configuration();

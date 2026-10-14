@@ -30,6 +30,7 @@ class NetworkSessionTests(unittest.TestCase):
         with network as active:
             self.assertIs(active, network)
             self.assertEqual(active.address, "127.0.0.1")
+            self.assertEqual(active.fault, "")
             resolved = active.resolve(1)
             self.assertEqual(resolved.to_json(), config.to_json())
             self.assertEqual(resolved.node("node-b").address, "127.0.0.2")
