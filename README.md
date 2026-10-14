@@ -85,7 +85,7 @@ Install the package with its preview dependency on the Pi using `.venv/bin/pytho
 
 ```sh
 cp examples/configs/one_node_two_boards_pi5.json group.json
-.venv/bin/python -c 'from bcamsync import enumerate_arducam_cameras; print(enumerate_arducam_cameras())'
+.venv/bin/python -c 'from bcamsync import enumerate_arducam_cameras; print(enumerate_arducam_cameras("arducam_b0267_pi5"))'
 ```
 
 Replace both `camera_id` placeholders in `group.json`; both units explicitly select `arducam_b0267_pi5`. Start the application with the Pi's existing IPv4 address and a writable recording directory on the Pi, replacing the example address and path:
