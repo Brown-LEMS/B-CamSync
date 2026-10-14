@@ -1,4 +1,4 @@
-"""Real HTTP/UDP management with fake capture and explicit network ownership."""
+"""HTTP attaches to caller-owned sessions without camera or network ownership."""
 
 from contextlib import ExitStack, closing
 import http.client
@@ -6,13 +6,13 @@ import json
 from pathlib import Path
 import socket
 import threading
-import time
 import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
-from bcamsync import Config
+from bcamsync import Config, FrameTiming, Session, SyncConfig, SyncSession, SyncUnit, TimingSnapshot, boot_time_ns
 from bcamsync.http_management import HttpNodeService
+from bcamsync.management import NodeService
 from bcamsync_host import HttpGroupClient, HttpNodeTarget, discover
 
 
@@ -72,41 +72,79 @@ def request(service, method, path, body=None, headers=None):
 
 
 class HttpManagementTests(unittest.TestCase):
-    def test_discovery_before_capture_and_control_after_stop(self):
+    def test_discovery_before_capture_and_transport_shutdown_preserves_session(self):
         config = configuration()
-        with RunningService(HttpNodeService(config, "node-a", http_port=0, discovery_port=udp_port())) as service:
-            targets = discover(config.group_id, .7, "127.0.0.1", service.discovery_port)
-            self.assertEqual(targets, {"node-a": HttpNodeTarget(f"http://127.0.0.1:{service.http_port}")})
-            client = HttpGroupClient(json.loads(config.to_json()), targets)
-            self.assertTrue(client.check()["sync_contract_matches"])
-            self.assertIsNone(service.session)
-            client.start()
-            self.assertTrue(service.session.wait_ready(30))
-            packet = service.session.read("board-a1", 1)
-            self.assertIsNotNone(packet)
-            first = service.session
-            with self.assertRaisesRegex(RuntimeError, "stop the session"):
-                first.set_node_addresses({"node-a": "127.0.0.1"})
-            # Closing a connection is not a stop instruction.
-            request(service, "GET", "/status")
-            self.assertTrue(service.request("status")["active"])
-            client.stop()
-            self.assertFalse(client.status()["group"]["active"])
-            with self.assertRaisesRegex(ValueError, "every configured node"):
-                first.set_node_addresses({})
-            with self.assertRaises(ValueError):
-                first.set_node_addresses({"node-a": "invalid"})
-            self.assertTrue(service.listening.is_set())
-            self.assertEqual(discover(config.group_id, .6, "127.0.0.1", service.discovery_port), targets)
-            client.start()
-            self.assertIs(first, service.session)
-            self.assertTrue(service.session.wait_ready(30))
-            self.assertIsNotNone(service.session.read("board-a2", 1))
-            client.stop()
-        self.assertEqual(service.session.status().state, "stopped")
+        session = Session(config, "node-a")
+        controller = NodeService(config, "node-a", session=session)
+        self.addCleanup(controller.close)
+        with patch.object(controller, "_create_session", side_effect=AssertionError("capture factory called")):
+            with RunningService(HttpNodeService(controller, "127.0.0.1", http_port=0, discovery_port=udp_port())) as service:
+                targets = discover(config.group_id, .6, "127.0.0.1", service.discovery_port)
+                self.assertEqual(targets, {"node-a": HttpNodeTarget(f"http://127.0.0.1:{service.http_port}")})
+                client = HttpGroupClient(json.loads(config.to_json()), targets)
+                self.assertTrue(client.check()["sync_contract_matches"])
+                self.assertIs(service.session, session)
+                self.assertFalse(controller.request("status")["active"])
+                client.start()
+                self.assertTrue(session.wait_ready(30))
+                packet = session.read("board-a1", 1)
+                self.assertIsNotNone(packet)
+                with self.assertRaisesRegex(RuntimeError, "stop the session"):
+                    session.set_node_addresses({"node-a": "127.0.0.1"})
+                client.stop()
+                self.assertFalse(client.status()["group"]["active"])
+                with self.assertRaises(ValueError):
+                    session.set_node_addresses({"node-a": "invalid"})
+                self.assertEqual(discover(config.group_id, .5, "127.0.0.1", service.discovery_port), targets)
+                client.start()
+                self.assertIs(controller.session, session)
+                self.assertTrue(session.wait_ready(30))
+            # HTTP shutdown does not close the supplied controller or capture.
+            self.assertTrue(controller.request("status")["active"])
+            self.assertIsNotNone(session.read("board-a2", 1))
 
-    def test_invalid_http_requests_do_not_start_capture(self):
-        with RunningService(HttpNodeService(configuration(), "node-a", http_port=0, discovery_port=udp_port())) as service:
+    def test_attach_to_already_running_application_session(self):
+        config = configuration()
+        session = Session(config, "node-a")
+        session.start()
+        controller = NodeService(config, "node-a", session=session, active=True)
+        self.addCleanup(controller.close)
+        with RunningService(HttpNodeService(controller, "127.0.0.1", http_port=0, discovery_port=udp_port())) as service:
+            self.assertTrue(request(service, "GET", "/status")[1]["result"]["active"])
+            self.assertEqual(request(service, "POST", "/start", b"{}")[0], 409)
+            first = session.read("board-a1", 1)
+            self.assertIsNotNone(first)
+        following = session.read("board-a1", 1)
+        self.assertIsNotNone(following)
+        self.assertGreater(following.sequence, first.sequence)
+
+    def test_management_address_does_not_replace_synchronization_endpoints(self):
+        config = configuration("fake_two_nodes.json")
+        port = udp_port()
+        controllers = {}
+        with ExitStack() as stack:
+            for index, node in enumerate(config.nodes):
+                session = Session(config, node.id)
+                controller = NodeService(config, node.id, session=session)
+                controllers[node.id] = controller
+                self.addCleanup(controller.close)
+                stack.enter_context(RunningService(HttpNodeService(controller, f"127.0.0.{index + 2}",
+                                                    http_port=0, discovery_port=port)))
+            targets = discover(config.group_id, .8, "127.0.0.1", port)
+            self.assertEqual(set(targets), {"node-a", "node-b"})
+            self.assertTrue(targets["node-a"].base_url.startswith("http://127.0.0.2:"))
+            self.assertTrue(targets["node-b"].base_url.startswith("http://127.0.0.3:"))
+            client = HttpGroupClient(json.loads(config.to_json()), targets)
+            client.start()
+            self.assertTrue(controllers["node-a"].session.wait_ready(30))
+            self.assertIsNotNone(controllers["node-b"].session.read("board-b1", 1))
+            self.assertTrue(all(node.address == "127.0.0.1" for node in config.nodes))
+            client.stop()
+
+    def test_invalid_http_requests_do_not_create_capture(self):
+        controller = NodeService(configuration(), "node-a")
+        self.addCleanup(controller.close)
+        with RunningService(HttpNodeService(controller, "127.0.0.1", http_port=0, discovery_port=udp_port())) as service:
             for method, path, body, headers, expected in [
                 ("GET", "/start", None, {}, 404),
                 ("POST", "/status", None, {}, 404),
@@ -119,86 +157,22 @@ class HttpManagementTests(unittest.TestCase):
                     code, result = request(service, method, path, body, headers)
                     self.assertEqual(code, expected)
                     self.assertFalse(result["ok"])
-            self.assertIsNone(service.session)
-            code, _ = request(service, "GET", "/status")
-            self.assertEqual(code, 200)
+            self.assertIsNone(controller.session)
 
     def test_command_identity_prevents_stopping_another_operation(self):
-        with RunningService(HttpNodeService(configuration(), "node-a", http_port=0, discovery_port=udp_port())) as service:
+        controller = NodeService(configuration(), "node-a")
+        self.addCleanup(controller.close)
+        with RunningService(HttpNodeService(controller, "127.0.0.1", http_port=0, discovery_port=udp_port())) as service:
             owner = str(uuid4())
-            code, _ = request(service, "POST", "/start", json.dumps({"operation_id": owner}))
-            self.assertEqual(code, 200)
+            self.assertEqual(request(service, "POST", "/start", json.dumps({"operation_id": owner}))[0], 200)
             code, result = request(service, "POST", "/stop", json.dumps({"operation_id": str(uuid4())}))
             self.assertEqual(code, 409)
             self.assertFalse(result["ok"])
-            self.assertTrue(service.request("status")["active"])
-            code, _ = request(service, "POST", "/stop", json.dumps({"operation_id": owner}))
-            self.assertEqual(code, 200)
-
-    def test_auto_service_holds_network_across_group_restart(self):
-        config = configuration("fake_two_nodes.json")
-        config.network_mode = "auto"
-        nodes = config.nodes
-        for node in nodes:
-            node.interface = "eth0"
-        config.nodes = nodes
-        links = []
-
-        class Link:
-            def __init__(self, interface, identity):
-                self.interface, self.identity, self.starts, self.stops = interface, identity, 0, 0
-                links.append(self)
-
-            def start(self, timeout):
-                self.starts += 1
-                return "127.0.0.1"
-
-            def stop(self):
-                self.stops += 1
-
-        port = udp_port()
-        with patch("bcamsync.http_management._NetworkLink", Link):
-            with ExitStack() as stack:
-                services = {node.id: stack.enter_context(RunningService(HttpNodeService(config, node.id,
-                            http_port=0, discovery_port=port))) for node in nodes}
-                targets = discover(config.group_id, 1, "127.0.0.1", port)
-                self.assertEqual(set(targets), {"node-a", "node-b"})
-                client = HttpGroupClient(json.loads(config.to_json()), targets)
-                sessions = None
-                for iteration in range(2):
-                    if iteration:
-                        # Simulate a peer rejoining with a different local address.
-                        changed = {"node-a": "127.0.0.1", "node-b": "127.0.0.2"}
-                        for service in services.values():
-                            service._discovery.addresses = lambda: changed
-                    client.start()
-                    if sessions is None:
-                        sessions = {node: service.session for node, service in services.items()}
-                    else:
-                        self.assertTrue(all(service.session is sessions[node] for node, service in services.items()))
-                    self.assertTrue(services["node-a"].session.wait_ready(30))
-                    self.assertIsNotNone(services["node-b"].session.read("board-b1", 1))
-                    client.stop()
-                    self.assertTrue(all(link.starts == 1 and link.stops == 0 for link in links))
-                    self.assertTrue(all(service.listening.is_set() for service in services.values()))
-                for service in services.values():
-                    with patch.object(service._discovery, "addresses", side_effect=RuntimeError("peer absent")) as lookup:
-                        code, _ = request(service, "POST", "/start", b'{"operation_id":"wrong"}')
-                        self.assertEqual(code, 400)
-                        lookup.assert_not_called()
-                self.assertEqual(config.network_mode, "auto")
-                self.assertTrue(all(node.address == "127.0.0.1" for node in config.nodes))
-            self.assertTrue(all(link.stops == 1 for link in links))
-
-    def test_shutdown_rejects_queued_start_without_acquiring_cameras(self):
-        service = HttpNodeService(configuration(), "node-a", http_port=0, discovery_port=udp_port())
-        service.request_shutdown()
-        with self.assertRaisesRegex(RuntimeError, "closing"):
-            service.request("start")
-        self.assertIsNone(service.session)
+            self.assertTrue(controller.request("status")["active"])
+            self.assertEqual(request(service, "POST", "/stop", json.dumps({"operation_id": owner}))[0], 200)
 
     def test_shutdown_during_session_creation_does_not_start_capture(self):
-        service = HttpNodeService(configuration(), "node-a", http_port=0, discovery_port=udp_port())
+        controller = NodeService(configuration(), "node-a")
         entered, release = threading.Event(), threading.Event()
         from unittest.mock import Mock
         session = Mock()
@@ -211,78 +185,91 @@ class HttpManagementTests(unittest.TestCase):
 
         def start():
             try:
-                service.request("start")
+                controller.request("start")
             except RuntimeError as error:
                 errors.append(str(error))
 
-        with patch.object(service, "_create_session", create):
+        with patch.object(controller, "_create_session", create):
             thread = threading.Thread(target=start)
             thread.start()
             self.assertTrue(entered.wait(3))
-            service.request_shutdown()
+            controller.request_shutdown()
             release.set()
             thread.join(3)
             self.assertFalse(thread.is_alive())
         session.start.assert_not_called()
         self.assertEqual(errors, ["node service is closing"])
-        service.close()
+        controller.close()
 
-    def test_discovery_thread_start_failure_releases_network(self):
-        config = configuration()
-        config.network_mode = "auto"
-        nodes = config.nodes
-        nodes[0].interface = "eth0"
-        config.nodes = nodes
-        with patch("bcamsync.http_management._NetworkLink") as factory, \
-                patch("bcamsync.http_management._Discovery.start", side_effect=RuntimeError("thread start failed")):
-            factory.return_value.start.return_value = "127.0.0.1"
-            service = HttpNodeService(config, "node-a", http_port=0, discovery_port=udp_port())
-            with self.assertRaisesRegex(RuntimeError, "thread start failed"):
-                service.serve()
-            self.assertEqual(service._discovery.channel.fileno(), -1)
-            factory.return_value.stop.assert_called_once()
-
-    def test_failed_capture_cleanup_still_releases_discovery_and_network(self):
-        config = configuration()
-        config.network_mode = "auto"
-        nodes = config.nodes
-        nodes[0].interface = "eth0"
-        config.nodes = nodes
-        with patch("bcamsync.http_management._NetworkLink") as factory:
-            factory.return_value.start.return_value = "127.0.0.1"
-            service = HttpNodeService(config, "node-a", http_port=0, discovery_port=udp_port())
-            from unittest.mock import Mock
-            service._session = Mock()
-            service._session.stop.side_effect = RuntimeError("capture stop failed")
-            running = RunningService(service)
-            running.thread.start()
-            self.assertTrue(service.listening.wait(5))
-            service.request_shutdown()
-            running.thread.join(5)
-            self.assertFalse(running.thread.is_alive())
-            self.assertEqual([str(error) for error in running.errors], ["capture stop failed"])
-            self.assertEqual(service._discovery.channel.fileno(), -1)
-            self.assertFalse(service._discovery.thread.is_alive())
-            factory.return_value.stop.assert_called_once()
-
-    def test_failed_http_bind_releases_activated_link(self):
-        config = configuration()
-        config.network_mode = "auto"
-        nodes = config.nodes
-        nodes[0].interface = "eth0"
-        config.nodes = nodes
+    def test_failed_http_bind_does_not_close_supplied_controller(self):
+        controller = NodeService(configuration(), "node-a")
         with socket.socket() as occupied:
             occupied.bind(("127.0.0.1", 0))
             occupied.listen()
-            with patch("bcamsync.http_management._NetworkLink") as factory:
-                factory.return_value.start.return_value = "127.0.0.1"
-                service = HttpNodeService(config, "node-a", http_port=occupied.getsockname()[1],
-                                          discovery_port=udp_port())
-                with self.assertRaises(OSError):
-                    service.serve()
-                factory.return_value.stop.assert_called_once()
-                self.assertFalse(service.listening.is_set())
-                self.assertIsNone(service.session)
+            service = HttpNodeService(controller, "127.0.0.1", http_port=occupied.getsockname()[1],
+                                      discovery_port=udp_port())
+            with self.assertRaises(OSError):
+                service.serve()
+            self.assertFalse(service.listening.is_set())
+            self.assertFalse(controller.request("status")["active"])
+        controller.close()
+
+    def test_discovery_thread_start_failure_closes_transport_only(self):
+        controller = NodeService(configuration(), "node-a")
+        with patch("bcamsync.http_management._Discovery.start", side_effect=RuntimeError("thread start failed")):
+            service = HttpNodeService(controller, "127.0.0.1", http_port=0, discovery_port=udp_port())
+            with self.assertRaisesRegex(RuntimeError, "thread start failed"):
+                service.serve()
+            self.assertEqual(service._discovery.channel.fileno(), -1)
+            self.assertEqual(service._discovery.sender.fileno(), -1)
+            self.assertFalse(controller.request("status")["active"])
+        controller.close()
+
+    def test_external_session_control_never_owns_existing_capture(self):
+        class Capture(SyncUnit):
+            running = True
+            attached = False
+
+            def bind(self, session_id, round_id):
+                self.attached = True
+
+            def snapshot(self):
+                value = TimingSnapshot()
+                value.unit_id = "sensor"
+                value.snapshot_timestamp_ns = boot_time_ns()
+                frame = FrameTiming()
+                frame.camera_sequence = 1
+                frame.sensor_timestamp_ns = frame.timestamp_ns = value.snapshot_timestamp_ns - 1
+                value.frames = [frame]
+                return value
+
+            def adjust(self, pulse):
+                raise AssertionError("reference cannot receive corrections")
+
+            def cancel(self):
+                self.attached = False
+
+            def fault(self):
+                return ""
+
+        sync = configuration().sync_config()
+        sync.units = [sync.units[0]]
+        units = sync.units
+        units[0].id = "sensor"
+        sync.units = units
+        sync.reference_unit = "sensor"
+        capture = Capture()
+        session = SyncSession(sync, "node-a", {"sensor": capture})
+        controller = NodeService(sync, "node-a", session=session)
+        self.addCleanup(controller.close)
+        with RunningService(HttpNodeService(controller, "127.0.0.1", http_port=0, discovery_port=udp_port())) as service:
+            self.assertEqual(request(service, "POST", "/start", b"{}")[0], 200)
+            self.assertTrue(session.wait_ready(2))
+        self.assertTrue(capture.running)
+        self.assertTrue(capture.attached)
+        controller.request("stop")
+        self.assertTrue(capture.running)
+        self.assertFalse(capture.attached)
 
 
 if __name__ == "__main__":

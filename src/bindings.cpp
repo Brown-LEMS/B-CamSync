@@ -1,6 +1,5 @@
 #include "bcamsync/session.hpp"
 #include "python_frame.hpp"
-#include "platform.hpp"
 #include "sync_bindings.hpp"
 #include "network_bindings.hpp"
 #include <cmath>
@@ -44,18 +43,6 @@ py::array frame_view(const FrameHandle& frame, unsigned index) {
 
 PYBIND11_MODULE(_native, module) {
     module.doc() = "B-CamSync native acquisition and synchronization";
-    py::class_<detail::NetworkLink>(module, "_NetworkLink", py::release_gil_before_calling_cpp_dtor())
-        .def(py::init<std::string, std::string>())
-        .def("start", [](detail::NetworkLink& link, double seconds) {
-            const auto duration = timeout(seconds);
-            const auto now = monotonic_ns();
-            if (duration.count() > (std::numeric_limits<std::int64_t>::max() - now) / 1000000LL)
-                throw std::invalid_argument("network startup deadline overflows");
-            std::atomic<bool> stopping{false};
-            py::gil_scoped_release release;
-            return link.start(stopping, now + duration.count() * 1000000LL);
-        }, py::arg("timeout_seconds"))
-        .def("stop", &detail::NetworkLink::stop, py::call_guard<py::gil_scoped_release>());
     module.def("enumerate_arducam_cameras", &enumerate_arducam_cameras,
                py::arg("profile") = "arducam_b0267_pi4", py::call_guard<py::gil_scoped_release>(),
                "List exact local libcamera camera IDs before creating a session.");

@@ -6,6 +6,7 @@ from io import BytesIO
 import json
 from pathlib import Path
 import socket
+import sys
 import threading
 import time
 import unittest
@@ -14,9 +15,11 @@ from unittest.mock import patch
 from PIL import Image
 
 from bcamsync import Config
+from bcamsync.management import NodeService
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "examples"))
 spec = importlib.util.spec_from_file_location("preview_example", ROOT / "examples" / "preview.py")
 preview = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(preview)
@@ -35,9 +38,9 @@ class PreviewApplicationTests(unittest.TestCase):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as channel:
             channel.bind(("127.0.0.1", 0))
             discovery_port = channel.getsockname()[1]
-        self.service = preview.PreviewService(config, "node-a", http_port=0,
-                                              discovery_port=discovery_port,
-                                              address="127.0.0.1", max_width=32)
+        self.controller = NodeService(config, "node-a")
+        self.service = preview.PreviewService(self.controller, "127.0.0.1", http_port=0,
+                                              discovery_port=discovery_port, max_width=32)
         self.failures = []
 
         def serve():
@@ -56,6 +59,7 @@ class PreviewApplicationTests(unittest.TestCase):
         self.assertFalse(self.thread.is_alive(), "Preview application did not terminate")
         self.assertEqual(self.failures, [])
         self.assertTrue(all(not thread.is_alive() for thread in self.service._producers))
+        self.controller.close()
 
     def request(self, path, method="GET"):
         connection = HTTPConnection(self.service.address, self.service.http_port, timeout=5)
@@ -151,6 +155,23 @@ class PreviewApplicationTests(unittest.TestCase):
                     self.assertEqual(image.size, (32, 8))
             finally:
                 release.set()
+
+    def test_partial_producer_start_failure_joins_started_threads(self):
+        service = preview.PreviewService(self.controller, "127.0.0.1", http_port=0,
+                                        discovery_port=self.service.discovery_port)
+        original_start = threading.Thread.start
+
+        def start(thread):
+            if thread.name == "preview-board-a2":
+                raise RuntimeError("preview thread start failed")
+            return original_start(thread)
+
+        with patch.object(threading.Thread, "start", start):
+            with self.assertRaisesRegex(RuntimeError, "preview thread start failed"):
+                service.serve()
+        self.assertTrue(all(not thread.is_alive() for thread in service._producers))
+        # A preview startup failure leaves its caller's controller usable.
+        self.assertFalse(self.controller.request("status")["active"])
 
 
 if __name__ == "__main__":

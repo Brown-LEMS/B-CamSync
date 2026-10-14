@@ -17,7 +17,7 @@ import sys
 import threading
 from uuid import UUID, uuid4
 
-from . import Config, Session
+from . import Config, Session, SyncConfig, SyncSession
 
 
 LIMIT = 1024 * 1024
@@ -45,9 +45,15 @@ def _status(session, local_node: str, active: bool, operation_id: str | None) ->
 
 
 class NodeService:
-    """Own a local Session independently of connecting management clients."""
+    """Control a supplied session, or lazily own managed capture for Unix/SSH use.
 
-    def __init__(self, config: Config, local_node: str, socket_path: str | Path | None = None):
+    Applications may supply either session type. Closing HTTP leaves this
+    controller with its caller; the foreground Unix service closes it on exit.
+    """
+
+    def __init__(self, config: Config | SyncConfig, local_node: str,
+                 socket_path: str | Path | None = None, *, session: Session | SyncSession | None = None,
+                 active: bool = False):
         config.validate()
         config.node(local_node)
         self.config = config
@@ -55,16 +61,20 @@ class NodeService:
         self.socket_path = Path(socket_path) if socket_path is not None else None
         if self.socket_path is not None and not self.socket_path.is_absolute():
             raise ValueError("socket_path must be absolute")
-        self._session = None
-        self._active = False
+        if active and session is None:
+            raise ValueError("an active controller requires a supplied session")
+        if isinstance(config, SyncConfig) and session is None:
+            raise ValueError("external synchronization requires a supplied SyncSession")
+        self._session = session
+        self._active = active
         self._operation = None
         self._closing = False
         self._lock = threading.RLock()
         self._shutdown = threading.Event()
 
     @property
-    def session(self) -> Session | None:
-        """Local frame access; None before first start, a stopped Session after stop."""
+    def session(self) -> Session | SyncSession | None:
+        """The controlled session; image access is available only for managed Session."""
         with self._lock:
             return self._session
 

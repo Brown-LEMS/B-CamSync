@@ -12,7 +12,6 @@ from html import escape
 from io import BytesIO
 import math
 from pathlib import Path
-import signal
 import sys
 import threading
 import time
@@ -23,6 +22,7 @@ from PIL import Image
 
 from bcamsync import Config
 from bcamsync.http_management import HttpNodeService, ManagementHandler
+from serve_node import run_node
 
 
 def encode_packet(packet, max_width: int, quality: int) -> bytes:
@@ -69,14 +69,14 @@ class PreviewHandler(ManagementHandler):
 class PreviewService(HttpNodeService):
     """Example application: the sole local frame consumer plus latest JPEG snapshots."""
 
-    def __init__(self, config, local_node, *, preview_fps=5.0, max_width=1280,
+    def __init__(self, controller, address, *, preview_fps=5.0, max_width=1280,
                  jpeg_quality=80, **service_options):
         if not math.isfinite(preview_fps) or preview_fps <= 0:
             raise ValueError("preview_fps must be finite and positive")
         if not isinstance(max_width, int) or max_width < 1 or not 1 <= jpeg_quality <= 95:
             raise ValueError("max_width must be positive and JPEG quality must be in 1..95")
-        super().__init__(config, local_node, handler_class=PreviewHandler, **service_options)
-        self.units = {unit.id: unit for unit in config.units if unit.node_id == local_node}
+        super().__init__(controller, address, handler_class=PreviewHandler, **service_options)
+        self.units = {unit.id: unit for unit in self.config.units if unit.node_id == self.local_node}
         self.preview_fps = preview_fps
         self.max_width = max_width
         self.jpeg_quality = jpeg_quality
@@ -127,14 +127,12 @@ class PreviewService(HttpNodeService):
 
     def close(self):
         self.request_shutdown()
-        try:
-            super().close()
-        finally:
-            self._join_producers()
+        super().close()
+        self._join_producers()
 
     def _join_producers(self):
         for thread in self._producers:
-            if thread is not threading.current_thread():
+            if thread is not threading.current_thread() and thread.ident is not None:
                 thread.join()
 
     def serve(self):
@@ -244,16 +242,9 @@ def main():
     parser.add_argument("--address", help="existing local IPv4 address")
     parser.add_argument("--preview-fps", type=float, default=5)
     args = parser.parse_args()
-    service = PreviewService(Config.from_file(args.config), args.node, http_port=args.http_port,
-                             discovery_port=args.discovery_port, address=args.address, preview_fps=args.preview_fps)
-    previous = {}
-    try:
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            previous[sig] = signal.signal(sig, lambda *_: service.request_shutdown())
-        service.serve()
-    finally:
-        for sig, handler in previous.items():
-            signal.signal(sig, handler)
+    run_node(Config.from_file(args.config), args.node, address=args.address,
+             http_port=args.http_port, discovery_port=args.discovery_port,
+             server_class=PreviewService, preview_fps=args.preview_fps)
 
 
 if __name__ == "__main__":
