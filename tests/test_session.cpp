@@ -29,7 +29,7 @@ template <class F> void rejects(F action) {
 }
 struct Probe {
     std::atomic<bool> running{false}, common_time{false}, fail_cancel{false}, fail_stop{false},
-        empty_timing{false}, capture_failure{false};
+        empty_timing{false}, capture_failure{false}, pause_read{false}, read_entered{false};
     std::atomic<unsigned> starts{0}, stops{0}, snapshots{0}, snapshot_delay_ms{0};
 };
 /// Software fixture generates complete timing history independently of frame reads.
@@ -97,6 +97,10 @@ class SyntheticBackend final : public AcquisitionBackend {
         storage->pixels.assign(static_cast<std::size_t>(unit_.fake.width) * unit_.fake.height,
                                static_cast<std::uint8_t>(packet->sequence % 256));
         packet->storage = std::move(storage);
+        if (probe_->pause_read) {
+            probe_->read_entered = true;
+            while (probe_->pause_read) std::this_thread::sleep_for(1ms);
+        }
         return packet;
     }
     std::string fault() const override {
@@ -365,6 +369,38 @@ void startup_deadline() {
     session.stop();
     require(!probe->running, "explicit stop releases the acquisition backend");
 }
+void retained_read_during_address_refresh() {
+    auto config = configuration(true);
+    auto probe = std::make_shared<Probe>();
+    auto session = detail::SessionTestAccess::create(config, "a", backends(config, "a", {probe}));
+    session.start();
+    rejects([&] { session.set_node_addresses({{"a", "127.0.0.1"}, {"b", "127.0.0.2"}}); });
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (!probe->running && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(1ms);
+    require(probe->running, "backend starts before pending group coordination");
+    probe->pause_read = true;
+    std::shared_ptr<const FramePacket> delivered;
+    std::thread consumer([&] { delivered = session.read("reference", 1ms); });
+    while (!probe->read_entered && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(1ms);
+    if (!probe->read_entered) {
+        probe->pause_read = false;
+        consumer.join();
+        throw std::runtime_error("consumer did not borrow a packet");
+    }
+    session.stop();
+    rejects([&] { session.set_node_addresses({{"a", "127.0.0.1"}}); });
+    rejects([&] { session.set_node_addresses({{"a", "invalid"}, {"b", "127.0.0.2"}}); });
+    probe->pause_read = false;
+    for (unsigned i = 0; i < 2000; ++i)
+        session.set_node_addresses({{"a", "127.0.0.1"}, {"b", "127.0.0.2"}});
+    consumer.join();
+    require(delivered && delivered->sensor_timestamp_ns > 0 && !delivered->clock_valid,
+            "in-flight delivery remains readable while stopped network endpoints change");
+    require(probe->starts == 1 && probe->stops == 1,
+            "endpoint refresh retains camera ownership without starting capture");
+}
 void cached_clock_expiry() {
     auto config = configuration(true);
     config.clock_max_age_seconds = .05;
@@ -430,6 +466,7 @@ int main() {
         startup_deadline();
         acquisition_without_common_clock();
         cached_clock_expiry();
+        retained_read_during_address_refresh();
         std::cout << "session tests passed\n";
     } catch (const std::exception& e) {
         std::cerr << e.what() << '\n';

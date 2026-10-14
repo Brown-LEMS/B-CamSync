@@ -119,6 +119,12 @@ Session::Session(Config config, std::string node, std::vector<std::unique_ptr<Ac
     : impl_(std::make_unique<Impl>(std::move(config), std::move(node), std::move(backends))) {}
 Session::~Session() { stop(); }
 void Session::start() { impl_->start(); }
+void Session::set_node_addresses(const std::map<std::string, std::string>& addresses) {
+    std::lock_guard<std::mutex> lock(impl_->lifecycle);
+    if (impl_->worker.joinable())
+        throw std::runtime_error("stop the session before changing node addresses");
+    impl_->sync->set_node_addresses(addresses);
+}
 bool Session::wait_ready(std::chrono::milliseconds timeout) { return impl_->sync->wait_ready(timeout); }
 GroupStatus Session::status() const { return impl_->sync->status(); }
 void Session::stop() { impl_->stop(); }

@@ -157,6 +157,8 @@ PYBIND11_MODULE(_native, module) {
     py::class_<Session>(module, "Session", py::release_gil_before_calling_cpp_dtor())
         .def(py::init<Config, std::string>(), py::arg("config"), py::arg("local_node"))
         .def("start", &Session::start, py::call_guard<py::gil_scoped_release>())
+        .def("set_node_addresses", &Session::set_node_addresses, py::arg("addresses"),
+             py::call_guard<py::gil_scoped_release>(), "Refresh group IPv4 endpoints after stop without replacing camera ownership.")
         .def(
             "wait_ready",
             [](Session& session, double seconds) {

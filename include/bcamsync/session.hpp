@@ -3,6 +3,7 @@
 #include "sync_types.hpp"
 #include <chrono>
 #include <memory>
+#include <map>
 #include <string>
 namespace bcamsync {
 namespace detail { class SessionTestAccess; }
@@ -14,6 +15,8 @@ class Session {
     Session(const Session&) = delete;
     Session& operator=(const Session&) = delete;
     void start();
+    /// Refresh all node IPv4 addresses while stopped, retaining camera ownership.
+    void set_node_addresses(const std::map<std::string, std::string>& addresses);
     /// Optionally wait for synchronization; read() does not depend on readiness.
     bool wait_ready(std::chrono::milliseconds timeout);
     /// Return a local frame even while synchronization is starting or faulted.

@@ -9,6 +9,7 @@ public:
     SyncRuntime(SyncConfig config, std::string local_node, LocalSyncUnits units);
     ~SyncRuntime();
     void begin();
+    void set_node_addresses(const std::map<std::string, std::string>& addresses);
     void run();
     void request_stop();
     bool stopping() const;

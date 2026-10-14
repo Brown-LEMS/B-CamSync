@@ -3,6 +3,7 @@
 #include "platform.hpp"
 #include "wire.hpp"
 #include <algorithm>
+#include <arpa/inet.h>
 #include <atomic>
 #include <cmath>
 #include <condition_variable>
@@ -546,6 +547,25 @@ SyncRuntime::SyncRuntime(SyncConfig config, std::string node, LocalSyncUnits uni
     : impl_(std::make_unique<Impl>(std::move(config), std::move(node), std::move(units))) {}
 SyncRuntime::~SyncRuntime() = default;
 void SyncRuntime::begin() { impl_->begin(); }
+void SyncRuntime::set_node_addresses(const std::map<std::string, std::string>& addresses) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    auto config = impl_->config;
+    if (addresses.size() != config.nodes.size())
+        throw std::invalid_argument("addresses must identify every configured node");
+    for (auto& node : config.nodes) {
+        const auto found = addresses.find(node.id);
+        if (found == addresses.end())
+            throw std::invalid_argument("missing node address: " + node.id);
+        in_addr address{};
+        if (inet_pton(AF_INET, found->second.c_str(), &address) != 1 ||
+            ntohl(address.s_addr) == 0 || (ntohl(address.s_addr) >> 28) >= 14)
+            throw std::invalid_argument("node address must be a unicast IPv4 address");
+        node.address = found->second;
+    }
+    config.network_mode = "existing";
+    config.validate();
+    impl_->config = std::move(config);
+}
 void SyncRuntime::run() { impl_->run(); }
 void SyncRuntime::request_stop() { impl_->request_stop(); }
 bool SyncRuntime::stopping() const { return impl_->stopping.load(); }
