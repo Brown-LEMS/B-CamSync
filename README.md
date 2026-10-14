@@ -149,6 +149,23 @@ finally:
 
 The adapter implements `bind()`, `snapshot()`, `adjust()`, `cancel()`, and `fault()`. See [external_capture.py](examples/external_capture.py) for a complete adapter. Both integration methods share the same synchronization runtime; `SyncSession.stop()` restores controls without closing your capture system. Architecture and lifecycle details are in [docs/design.md](docs/design.md).
 
+### Pi 5 external capture test with OpenCV
+
+[opencv_sync.py](examples/opencv_sync.py) tests two boards through `SyncSession` with application-owned libcamera requests. It supplies sensor timestamps and frame-period corrections directly, using fixed 10000 µs exposure and 1× gain. This works without a four-camera brightness calibration, including the one-camera-per-board test setup. OpenCV windows are optional; the default run measures synchronization without displaying or recording images.
+
+Use the Pi 5 dual-board configuration above with both camera IDs filled in. The example requires the OS-provided Python libcamera and OpenCV packages, exposed through a project venv with system site packages. Keep NumPy below 2 for Bookworm's OpenCV binary:
+
+```sh
+sudo apt install python3-libcamera python3-opencv
+python3 -m venv --system-site-packages .venv
+.venv/bin/python -m pip install . 'numpy<2'
+mkdir -p results
+.venv/bin/python examples/opencv_sync.py group.json \
+  --seconds 60 --repeat 2 --output results/sync.json
+```
+
+Each run waits for readiness, prints phase/p95/max metrics and observed frame rates once per second, then stops synchronization and checks that external capture continues. The next run restarts synchronization on those same cameras. The JSON output retains the configuration, readiness policy, status samples, and restart results. Default readiness targets are p95 ≤ 0.5 ms and max ≤ 1 ms over two settled windows; these are acceptance thresholds, not measured results. Add `--display` only when local OpenCV windows are wanted.
+
 ## Install
 
 Build from the repository root on each target node. Managed Arducam capture requires the working vendor camera stack and its matching libcamera development headers (0.5.2 or later).
