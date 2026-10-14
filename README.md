@@ -77,6 +77,39 @@ Open the URLs returned by `discover` to see each node's four camera views. Disco
 
 Closing the browser leaves acquisition running. Preview is an independent example application that consumes frames; HTTP forwards control requests, while the node application owns capture and networking.
 
+## One Pi 5, two boards: remote preview and MJPG recording
+
+The [preview_record.py](examples/preview_record.py) application combines browser preview with Pi-local MJPEG recording. Recording is downstream example code; the library provides frame access and synchronization. Each board writes one full-resolution 5120×800 grayscale JPEG stream containing its four views side by side, giving eight camera views across the two boards. Preview is resized and sampled independently; recording processes every packet read by the application.
+
+Install the package with its preview dependency on the Pi using `.venv/bin/python -m pip install '.[preview]'`. Copy the Pi 5 template and enumerate the two board IDs:
+
+```sh
+cp examples/configs/one_node_two_boards_pi5.json group.json
+.venv/bin/python -c 'from bcamsync import enumerate_arducam_cameras; print(enumerate_arducam_cameras())'
+```
+
+Replace both `camera_id` placeholders in `group.json`; both units explicitly select `arducam_b0267_pi5`. Start the application with the Pi's existing IPv4 address and a writable recording directory on the Pi, replacing the example address and path:
+
+```sh
+.venv/bin/python examples/preview_record.py group.json node-a \
+  --address 192.168.1.50 --output-dir /mnt/ssd/bcamsync
+```
+
+Open `http://192.168.1.50:58083` on your workstation. Click **Start node** for both boards' preview, then **Start recording**. **Stop recording** closes the files while preview continues; **Stop node** stops capture and closes any recording. Closing the browser leaves capture and recording running. The following commands provide the same control from the workstation without installing the host package:
+
+```sh
+curl --fail-with-body -X POST http://192.168.1.50:58083/start
+curl --fail-with-body -X POST http://192.168.1.50:58083/record/start
+curl --fail-with-body http://192.168.1.50:58083/status
+# After the desired recording interval:
+curl --fail-with-body -X POST http://192.168.1.50:58083/record/stop
+curl --fail-with-body -X POST http://192.168.1.50:58083/stop
+```
+
+Each recording creates a new UUID directory containing `manifest.json`, two `board-N.mjpg` streams, two `board-N.jsonl` metadata files, and a final `summary.json`. The manifest maps filenames to board IDs. Each metadata line records the JPEG byte offset and length, sequence, sensor and mapped timestamps, clock validity, cumulative delivery drops, reported exposure/gain, gain lock, and view geometry. JPEGs are concatenated directly without a video container; playback timing comes from the metadata. Recording quality defaults to 90 and can be changed with `--recording-quality`; `--preview-fps` controls only preview. Progress is printed every five seconds, and `/status` includes recording counts, sequence gaps, output directory, and faults. A recording error is reported and terminates the application.
+
+Recording starts immediately when requested and includes frames during synchronization and gain warmup. Inspect `/status` for `ready`, phase metrics, and faults, and use frame metadata to select usable intervals. The two streams are independent board packets; match their sensor timestamps for this single-node case. The dual-board fake-backend checks validate remote controls, JPEG output, metadata, recording restart, and shutdown. Sustained 40 fps recording, disk throughput, phase quality, and optical alignment still require measurements on the actual Pi 5 and boards; use [validate_device.py](tools/validate_device.py) for the separate device workflow.
+
 ## Two integration methods
 
 ### Managed capture: `Session`
