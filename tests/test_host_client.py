@@ -33,7 +33,8 @@ class HostClientTests(unittest.TestCase):
         self.contract = {"group_id": "lab", "reference_unit": "board-a", "clock_mode": "network",
                          "fps": 40, "clock_domain": "common", "nodes": ["node-a", "node-b"],
                          "units": [{"id": "board-a", "node_id": "node-a"},
-                                   {"id": "board-b", "node_id": "node-b"}]}
+                                   {"id": "board-b", "node_id": "node-b"}],
+                         "phase_policy": deepcopy(self.client.sync_contract["phase_policy"])}
 
     def report(self, node_id):
         return {"node_id": node_id, "config": deepcopy(self.config),
@@ -101,6 +102,7 @@ assert "bcamsync" not in sys.modules
     def test_shared_membership_reference_and_fps_mismatch_block_start(self):
         changes = {"nodes": ["node-a", "node-c"], "reference_unit": "board-b", "fps": 41,
                    "clock_mode": "host",
+                   "phase_policy": {**self.contract["phase_policy"], "startup_delta_us": 100},
                    "units": [{"id": "board-a", "node_id": "node-a"},
                              {"id": "board-b", "node_id": "node-a"}]}
         for field, value in changes.items():
@@ -124,6 +126,8 @@ assert "bcamsync" not in sys.modules
         self.assertNotIn("backend", client.sync_contract)
         managed = deepcopy(self.config)
         managed["backend"] = "fake"
+        self.assertEqual(GroupClient(managed, self.targets).sync_contract["clock_mode"], "network")
+        managed["clock_mode"] = "host"
         self.assertEqual(GroupClient(managed, self.targets).sync_contract, client.sync_contract)
         managed["clock_mode"] = "network"
         self.assertEqual(GroupClient(managed, self.targets).sync_contract["clock_mode"], "network")

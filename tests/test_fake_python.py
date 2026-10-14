@@ -74,6 +74,7 @@ class FakePublicApiTests(unittest.TestCase):
     def test_local_phase_correction_frame_retention_and_session_restart(self):
         config = config_from_example("fake_one_node.json")
         self.assertEqual(config.backend, "fake")
+        self.assertEqual(config.clock_mode, "host")
         self.assertEqual(config.fps, 40)
         self.assertEqual(config.unit("board-a2").fake.initial_phase_us, 2000)
         self.assertEqual(config.unit("board-a2").fake.drift_ppm, 10)

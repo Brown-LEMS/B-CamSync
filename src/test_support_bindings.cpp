@@ -97,6 +97,7 @@ private:
 std::unique_ptr<Session> make_session(bool empty_reads) {
     Config config;
     config.backend = "fake";
+    config.clock_mode = "host";
     config.group_id = "python-ownership-fixture";
     config.reference_unit = "fixture-board";
     config.nodes = {{"fixture-node", "127.0.0.1", "", free_port()}};

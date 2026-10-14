@@ -71,6 +71,31 @@ void bind_sync(py::module_& module) {
         .def(py::init<>())
         .def_readwrite("id", &SyncUnitConfig::id)
         .def_readwrite("node_id", &SyncUnitConfig::node_id);
+    py::class_<PhasePolicy>(module, "PhasePolicy")
+        .def(py::init<>())
+        .def_readwrite("window_seconds", &PhasePolicy::window_seconds)
+        .def_readwrite("evaluation_seconds", &PhasePolicy::evaluation_seconds)
+        .def_readwrite("freshness_seconds", &PhasePolicy::freshness_seconds)
+        .def_readwrite("deadband_ms", &PhasePolicy::deadband_ms)
+        .def_readwrite("ready_p95_ms", &PhasePolicy::ready_p95_ms)
+        .def_readwrite("ready_max_ms", &PhasePolicy::ready_max_ms)
+        .def_readwrite("ready_windows", &PhasePolicy::ready_windows)
+        .def_readwrite("startup_delta_us", &PhasePolicy::startup_delta_us)
+        .def_readwrite("startup_frames", &PhasePolicy::startup_frames)
+        .def_readwrite("tracking_delta_us", &PhasePolicy::tracking_delta_us)
+        .def_readwrite("tracking_frames", &PhasePolicy::tracking_frames)
+        .def_readwrite("correction_interval_seconds", &PhasePolicy::correction_interval_seconds)
+        .def_readwrite("settling_seconds", &PhasePolicy::settling_seconds)
+        .def_readwrite("application_delay_seconds", &PhasePolicy::application_delay_seconds)
+        .def_readwrite("startup_max_corrections", &PhasePolicy::startup_max_corrections)
+        .def_readwrite("excursion_ms", &PhasePolicy::excursion_ms)
+        .def_readwrite("excursion_timeout_seconds", &PhasePolicy::excursion_timeout_seconds)
+        .def_readwrite("no_progress_corrections", &PhasePolicy::no_progress_corrections)
+        .def_readwrite("progress_ms", &PhasePolicy::progress_ms)
+        .def_readwrite("gain", &PhasePolicy::gain)
+        .def_readwrite("max_mapping_span_ns", &PhasePolicy::max_mapping_span_ns)
+        .def_readwrite("max_samples", &PhasePolicy::max_samples)
+        .def("validate", &PhasePolicy::validate);
     py::class_<SyncConfig>(module, "SyncConfig")
         .def(py::init<>())
         .def_readwrite("group_id", &SyncConfig::group_id)
@@ -78,6 +103,7 @@ void bind_sync(py::module_& module) {
         .def_readwrite("fps", &SyncConfig::fps)
         .def_readwrite("network_mode", &SyncConfig::network_mode)
         .def_readwrite("clock_mode", &SyncConfig::clock_mode)
+        .def_readwrite("phase_policy", &SyncConfig::phase_policy)
         .def_readwrite("clock_port", &SyncConfig::clock_port)
         .def_readwrite("nodes", &SyncConfig::nodes)
         .def_readwrite("units", &SyncConfig::units)
@@ -133,6 +159,8 @@ void bind_sync(py::module_& module) {
         .def(py::init<SyncConfig, std::string, LocalSyncUnits>(),
              py::arg("config"), py::arg("local_node"), py::arg("units"))
         .def("start", &SyncSession::start, py::call_guard<py::gil_scoped_release>())
+        .def("set_node_addresses", &SyncSession::set_node_addresses, py::arg("addresses"),
+             py::call_guard<py::gil_scoped_release>())
         .def("wait_ready", [](SyncSession& session, double seconds) {
             const auto duration = timeout(seconds);
             py::gil_scoped_release release;

@@ -1,4 +1,5 @@
 #include "bcamsync/sync_types.hpp"
+#include "phase_policy_json.hpp"
 #include <algorithm>
 #include <arpa/inet.h>
 #include <cmath>
@@ -10,6 +11,71 @@
 #include <time.h>
 
 namespace bcamsync {
+namespace detail {
+namespace {
+template<class T> T policy_integer(const nlohmann::json& object, const char* name, T initial) {
+    if (!object.contains(name)) return initial;
+    const auto& value = object.at(name);
+    if (!value.is_number_integer() ||
+        (!value.is_number_unsigned() && value.get<std::int64_t>() < 0) ||
+        value.get<std::uint64_t>() > static_cast<std::uint64_t>(std::numeric_limits<T>::max()))
+        throw std::invalid_argument(std::string("invalid phase policy integer: ") + name);
+    return value.get<T>();
+}
+} // namespace
+PhasePolicy phase_policy_from_json(const nlohmann::json& value) {
+    if (!value.is_object()) throw std::invalid_argument("phase_policy must be an object");
+    PhasePolicy policy;
+    policy.window_seconds = value.value("window_seconds", policy.window_seconds);
+    policy.evaluation_seconds = value.value("evaluation_seconds", policy.evaluation_seconds);
+    policy.freshness_seconds = value.value("freshness_seconds", policy.freshness_seconds);
+    policy.deadband_ms = value.value("deadband_ms", policy.deadband_ms);
+    policy.ready_p95_ms = value.value("ready_p95_ms", policy.ready_p95_ms);
+    policy.ready_max_ms = value.value("ready_max_ms", policy.ready_max_ms);
+    policy.ready_windows = policy_integer(value, "ready_windows", policy.ready_windows);
+    policy.startup_delta_us = policy_integer(value, "startup_delta_us", policy.startup_delta_us);
+    policy.startup_frames = policy_integer(value, "startup_frames", policy.startup_frames);
+    policy.tracking_delta_us = policy_integer(value, "tracking_delta_us", policy.tracking_delta_us);
+    policy.tracking_frames = policy_integer(value, "tracking_frames", policy.tracking_frames);
+    policy.correction_interval_seconds = value.value("correction_interval_seconds", policy.correction_interval_seconds);
+    policy.settling_seconds = value.value("settling_seconds", policy.settling_seconds);
+    policy.application_delay_seconds = value.value("application_delay_seconds", policy.application_delay_seconds);
+    policy.startup_max_corrections = policy_integer(value, "startup_max_corrections", policy.startup_max_corrections);
+    policy.excursion_ms = value.value("excursion_ms", policy.excursion_ms);
+    policy.excursion_timeout_seconds = value.value("excursion_timeout_seconds", policy.excursion_timeout_seconds);
+    policy.no_progress_corrections = policy_integer(value, "no_progress_corrections", policy.no_progress_corrections);
+    policy.progress_ms = value.value("progress_ms", policy.progress_ms);
+    policy.gain = value.value("gain", policy.gain);
+    policy.max_mapping_span_ns = policy_integer(value, "max_mapping_span_ns", policy.max_mapping_span_ns);
+    policy.max_samples = policy_integer(value, "max_samples", policy.max_samples);
+    policy.validate();
+    return policy;
+}
+nlohmann::json phase_policy_json(const PhasePolicy& policy) {
+    return {{"window_seconds", policy.window_seconds},
+            {"evaluation_seconds", policy.evaluation_seconds},
+            {"freshness_seconds", policy.freshness_seconds},
+            {"deadband_ms", policy.deadband_ms},
+            {"ready_p95_ms", policy.ready_p95_ms},
+            {"ready_max_ms", policy.ready_max_ms},
+            {"ready_windows", policy.ready_windows},
+            {"startup_delta_us", policy.startup_delta_us},
+            {"startup_frames", policy.startup_frames},
+            {"tracking_delta_us", policy.tracking_delta_us},
+            {"tracking_frames", policy.tracking_frames},
+            {"correction_interval_seconds", policy.correction_interval_seconds},
+            {"settling_seconds", policy.settling_seconds},
+            {"application_delay_seconds", policy.application_delay_seconds},
+            {"startup_max_corrections", policy.startup_max_corrections},
+            {"excursion_ms", policy.excursion_ms},
+            {"excursion_timeout_seconds", policy.excursion_timeout_seconds},
+            {"no_progress_corrections", policy.no_progress_corrections},
+            {"progress_ms", policy.progress_ms},
+            {"gain", policy.gain},
+            {"max_mapping_span_ns", policy.max_mapping_span_ns},
+            {"max_samples", policy.max_samples}};
+}
+} // namespace detail
 namespace {
 std::int64_t clock_value(clockid_t id) {
     timespec t{};
@@ -55,6 +121,7 @@ const SyncUnitConfig& SyncConfig::unit(const std::string& id) const {
 }
 std::string SyncConfig::reference_node() const { return unit(reference_unit).node_id; }
 void SyncConfig::validate() const {
+    phase_policy.validate();
     const auto valid_id = [](const std::string& id) {
         return !id.empty() && id.find('\0') == std::string::npos;
     };
@@ -108,6 +175,8 @@ SyncConfig SyncConfig::from_file(const std::string& path) {
     config.reference_unit = document.at("reference_unit");
     config.fps = unsigned_value(document, "fps", config.fps);
     config.clock_mode = document.value("clock_mode", config.clock_mode);
+    if (document.contains("phase_policy"))
+        config.phase_policy = detail::phase_policy_from_json(document.at("phase_policy"));
     if (document.contains("network")) {
         const auto& network = document.at("network");
         config.network_mode = network.value("mode", config.network_mode);
@@ -146,7 +215,8 @@ std::string SyncConfig::to_json() const {
         unit_values.push_back({{"id", unit.id}, {"node_id", unit.node_id}});
     return nlohmann::json({{"group_id", group_id}, {"reference_unit", reference_unit}, {"fps", fps},
         {"clock_mode", clock_mode}, {"network", {{"mode", network_mode}, {"clock_port", clock_port}}},
-        {"nodes", node_values}, {"units", unit_values}, {"clock_max_offset_ms", clock_max_offset_ms},
+        {"nodes", node_values}, {"units", unit_values}, {"phase_policy", detail::phase_policy_json(phase_policy)},
+        {"clock_max_offset_ms", clock_max_offset_ms},
         {"clock_max_age_seconds", clock_max_age_seconds}, {"request_timeout_seconds", request_timeout_seconds},
         {"startup_timeout_seconds", startup_timeout_seconds}}).dump();
 }
@@ -162,6 +232,6 @@ std::string SyncConfig::sync_json() const {
     for (const auto* unit : ordered) unit_values.push_back({{"id", unit->id}, {"node_id", unit->node_id}});
     return nlohmann::json({{"group_id", group_id}, {"reference_unit", reference_unit}, {"fps", fps},
         {"clock_mode", clock_mode}, {"clock_domain", nodes.size() == 1 ? "local" : "common"},
-        {"nodes", node_ids}, {"units", unit_values}}).dump();
+        {"nodes", node_ids}, {"units", unit_values}, {"phase_policy", detail::phase_policy_json(phase_policy)}}).dump();
 }
 } // namespace bcamsync

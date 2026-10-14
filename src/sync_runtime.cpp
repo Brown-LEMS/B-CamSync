@@ -437,8 +437,9 @@ class SyncRuntime::Impl {
             if (hello.at("node") != n.id)
                 throw std::runtime_error("peer node identity differs");
         }
-        PhasePolicy policy;
-        policy.max_mapping_span_ns = static_cast<std::int64_t>(std::ceil(config.clock_max_offset_ms * 1000000));
+        auto policy = config.phase_policy;
+        policy.max_mapping_span_ns = std::min(policy.max_mapping_span_ns,
+            static_cast<std::int64_t>(std::ceil(config.clock_max_offset_ms * 1000000)));
         std::map<std::string, PhaseController> controllers;
         for (const auto& u : config.units)
             if (u.id != config.reference_unit) {
@@ -539,7 +540,7 @@ class SyncRuntime::Impl {
             for (const auto& n : config.nodes)
                 if (n.id != local)
                     rpc(n.id, {{"command", "status"}, {"status", detail::status_json(s)}});
-            next = monotonic_ns() + 1000000000LL;
+            next = monotonic_ns() + static_cast<std::int64_t>(std::min(1.0, policy.evaluation_seconds) * 1e9);
         }
     }
 };

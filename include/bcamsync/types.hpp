@@ -27,10 +27,11 @@ struct Config {
     std::string group_id, reference_unit;
     std::string backend = "arducam";
     unsigned fps = 40;
-    std::string network_mode = "auto";
+    std::string network_mode = "auto", clock_mode = "network";
     std::uint16_t clock_port = 58081;
     std::vector<NodeConfig> nodes;
     std::vector<UnitConfig> units;
+    PhasePolicy phase_policy;
     double clock_max_offset_ms = 0.1, clock_max_age_seconds = 10.0;
     double request_timeout_seconds = 2.0, startup_timeout_seconds = 60.0;
     void validate() const;

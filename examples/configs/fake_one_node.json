@@ -1,6 +1,7 @@
 {
   "group_id": "fake-local",
   "backend": "fake",
+  "clock_mode": "host",
   "reference_unit": "board-a1",
   "fps": 40,
   "network": {

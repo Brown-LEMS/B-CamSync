@@ -12,6 +12,8 @@ public:
     SyncSession(const SyncSession&) = delete;
     SyncSession& operator=(const SyncSession&) = delete;
     void start();
+    /// Refresh all node IPv4 addresses while stopped, retaining the control namespace.
+    void set_node_addresses(const std::map<std::string, std::string>& addresses);
     bool wait_ready(std::chrono::milliseconds timeout);
     GroupStatus status() const;
     ClockMapping clock() const;

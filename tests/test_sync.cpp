@@ -52,7 +52,11 @@ public:
     std::string id;
     std::atomic<bool> running{false}, hold_restoration{false}, wrong_ack{false}, fail_snapshot{false}, fail_bind{false}, idle_feedback{false}, capture_fault{false};
     std::atomic<unsigned> starts{0}, binds{0}, cancels{0};
+    mutable std::atomic<unsigned> snapshots{0};
     std::atomic<std::uint64_t> sequence{0};
+    int control_margin_us = 1000;
+    std::atomic<int> largest_delta_us{0};
+    std::int64_t mapping_span_ns = 0;
     explicit Capture(std::string name, std::int64_t phase = 0) : id(std::move(name)), phase_(phase) {}
     ~Capture() override { stop_capture(); }
     void start_capture() {
@@ -107,12 +111,14 @@ public:
         ++binds;
     }
     TimingSnapshot snapshot() const override {
+        ++snapshots;
         if (fail_snapshot) throw std::runtime_error("external snapshot failure");
         std::lock_guard<std::mutex> lock(mutex_);
         TimingSnapshot result;
         result.unit_id = id;
         result.snapshot_timestamp_ns = boot_time_ns();
         result.frames.assign(frames_.begin(), frames_.end());
+        for (auto& frame : result.frames) frame.mapping_span_ns = mapping_span_ns;
         result.correction = status(actuator_->snapshot());
         if (idle_feedback && result.correction.correction_id) {
             result.correction.state = "idle";
@@ -122,8 +128,10 @@ public:
     }
     CorrectionStatus adjust(const Pulse& pulse) override {
         std::lock_guard<std::mutex> lock(mutex_);
+        largest_delta_us = std::max(largest_delta_us.load(), std::abs(pulse.delta_us));
         auto result = status(actuator_->adjust(session_, round_, pulse.correction_id, pulse.delta_us,
-            pulse.count, pulse.expires_ns, boot_time_ns(), monotonic_ns(), 25000, 24000, 26000));
+            pulse.count, pulse.expires_ns, boot_time_ns(), monotonic_ns(), 25000,
+            25000 - control_margin_us, 25000 + control_margin_us));
         if (wrong_ack) ++result.correction_id;
         return result;
     }
@@ -133,6 +141,10 @@ public:
         actuator_->cancel(session_, round_);
     }
     std::string fault() const override { return capture_fault ? "external capture fault" : ""; }
+    std::string binding_identity() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return session_;
+    }
     CorrectionStatus correction() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return status(actuator_->snapshot());
@@ -166,17 +178,23 @@ void application_ownership() {
     require(session.status().state == "stopped", "construction leaves capture unchanged");
     session.start();
     rejects([&] { session.start(); });
+    rejects([&] { session.set_node_addresses({{"a", "127.0.0.1"}}); });
     require(session.wait_ready(25s), "external capture converges through the shared runtime");
     require(follower->correction().correction_id > 0, "external controls actually execute");
     require(follower->correction().state == "restored", "readiness follows observed restoration");
     const auto before = follower->sequence.load();
+    const auto control_identity = follower->binding_identity();
     session.stop(); session.stop();
     require(session.status().state == "stopped" && session.status().fault.empty(), "external synchronization closes cleanly");
     require(reference->running && follower->running && reference->starts == 1 && follower->starts == 1,
             "stop leaves user-owned acquisition running");
     await([&] { return follower->sequence > before + 2; }, 1s, "capture continues after synchronization stop");
+    rejects([&] { session.set_node_addresses({}); });
+    rejects([&] { session.set_node_addresses({{"a", "invalid"}}); });
+    session.set_node_addresses({{"a", "127.0.0.1"}});
     session.start();
-    require(session.wait_ready(10s) && follower->binds == 2, "restart binds a new round without restarting capture");
+    require(session.wait_ready(10s) && follower->binds == 2 &&
+                follower->binding_identity() == control_identity, "restart binds a new round without restarting capture");
     session.stop();
     require(reference->starts == 1 && follower->starts == 1, "sync restart preserves camera lifetime");
 }
@@ -295,9 +313,52 @@ void remote_identity_and_disconnect() {
     first->capture_fault = false;
     failed.stop();
 }
+void supplied_phase_policy() {
+    auto config = group();
+    config.phase_policy.startup_delta_us = 100;
+    config.phase_policy.tracking_delta_us = 100;
+    config.phase_policy.evaluation_seconds = .1;
+    auto reference = std::make_shared<Capture>("reference");
+    auto follower = std::make_shared<Capture>("follower", 2000000);
+    follower->control_margin_us = 100;
+    reference->start_capture(); follower->start_capture();
+    SyncSession session(config, "a", {{"reference", reference}, {"follower", follower}});
+    session.start();
+    await([&] { return follower->snapshots > 5; }, 1s,
+          "runtime observations honor a supplied evaluation interval below one second");
+    require(session.wait_ready(25s), "supplied policy converges through a narrow external actuator");
+    require(follower->correction().correction_id > 0 && follower->largest_delta_us > 0 &&
+                follower->largest_delta_us <= 100,
+            "runtime corrections respect the supplied actuator margin");
+    session.stop();
+    require(session.status().fault.empty() && follower->running, "narrow policy restores without capture ownership");
+
+    auto invalid = config;
+    invalid.phase_policy.startup_delta_us = 1001;
+    const auto binds = follower->binds.load();
+    rejects([&] { SyncSession rejected(invalid, "a", {{"reference", reference}, {"follower", follower}}); });
+    require(follower->binds == binds, "invalid policy is rejected before callbacks begin");
+}
+void mapping_policy_intersection() {
+    for (const auto span : {50000LL, 200000LL}) {
+        auto config = group();
+        config.phase_policy.max_mapping_span_ns = span;
+        auto reference = std::make_shared<Capture>("reference");
+        auto follower = std::make_shared<Capture>("follower");
+        reference->mapping_span_ns = follower->mapping_span_ns = span == 50000 ? 75000 : 150000;
+        reference->start_capture(); follower->start_capture();
+        SyncSession session(config, "a", {{"reference", reference}, {"follower", follower}});
+        session.start();
+        rejects([&] { session.wait_ready(3s); });
+        require(session.status().fault.find("mapping uncertainty") != std::string::npos,
+                "phase policy retains both supplied and configured clock uncertainty bounds");
+        session.stop();
+    }
+}
 void mixed_nodes() {
     Config managed;
     managed.backend = "fake";
+    managed.clock_mode = "host";
     managed.group_id = "mixed-integration";
     managed.reference_unit = "reference";
     managed.nodes = {{"a", "127.0.0.1", "", free_port()}, {"b", "127.0.0.1", "", free_port()}};
@@ -323,7 +384,7 @@ void mixed_nodes() {
 } // namespace
 int main() {
     try {
-        application_ownership(); active_stop_and_feedback(); callback_errors_and_identity(); binding_cleanup(); remote_identity_and_disconnect(); mixed_nodes();
+        application_ownership(); supplied_phase_policy(); mapping_policy_intersection(); active_stop_and_feedback(); callback_errors_and_identity(); binding_cleanup(); remote_identity_and_disconnect(); mixed_nodes();
         std::cout << "external synchronization tests passed\n";
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

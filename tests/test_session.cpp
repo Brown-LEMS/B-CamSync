@@ -147,6 +147,7 @@ UnitConfig unit(const std::string& id, const std::string& node) {
 Config configuration(bool network) {
     Config config;
     config.backend = "fake";
+    config.clock_mode = "host";
     config.group_id = "software-session-fixture";
     config.reference_unit = "reference";
     config.nodes = {{"a", "127.0.0.1", "", free_port()}};
@@ -425,6 +426,7 @@ void acquisition_without_common_clock() {
 #ifdef __linux__
     auto config = configuration(true);
     config.backend = "arducam";
+    config.clock_mode = "network";
     config.network_mode = "existing";
     config.nodes[1].address = "127.0.0.2";
     config.startup_timeout_seconds = .2;

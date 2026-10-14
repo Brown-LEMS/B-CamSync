@@ -16,9 +16,35 @@ from uuid import uuid4
 
 LIMIT = 1024 * 1024
 
+# Defaults of the shared PhasePolicy protocol; the host package has no native dependency.
+_PHASE_POLICY_DEFAULTS = {
+    "window_seconds": 2,
+    "evaluation_seconds": 1,
+    "freshness_seconds": 1,
+    "deadband_ms": 0.25,
+    "ready_p95_ms": 0.5,
+    "ready_max_ms": 1,
+    "ready_windows": 2,
+    "startup_delta_us": 1000,
+    "startup_frames": 16,
+    "tracking_delta_us": 200,
+    "tracking_frames": 8,
+    "correction_interval_seconds": 2,
+    "settling_seconds": 0.25,
+    "application_delay_seconds": 0.25,
+    "startup_max_corrections": 5,
+    "excursion_ms": 2,
+    "excursion_timeout_seconds": 10,
+    "no_progress_corrections": 3,
+    "progress_ms": 0.05,
+    "gain": 0.8,
+    "max_mapping_span_ns": 100000,
+    "max_samples": 512,
+}
+
 
 def _sync_contract(config: Mapping) -> dict:
-    """Normalize only group membership, reference, clock domain, and frame rate."""
+    """Normalize shared membership, clock domain, cadence, and phase policy."""
     nodes = sorted(node["id"] for node in config["nodes"])
     units = sorted(({"id": unit["id"], "node_id": unit["node_id"]}
                     for unit in config["units"]), key=lambda unit: unit["id"])
@@ -30,13 +56,18 @@ def _sync_contract(config: Mapping) -> dict:
         raise ValueError("unit belongs to an unknown node")
     if config["reference_unit"] not in {unit["id"] for unit in units}:
         raise ValueError("reference_unit must identify a configured unit")
-    clock_mode = config.get("clock_mode", "host" if config.get("backend") == "fake" else "network")
+    clock_mode = config.get("clock_mode", "network")
     if clock_mode not in ("network", "host"):
         raise ValueError("clock_mode must be network or host")
+    supplied_policy = config.get("phase_policy", {})
+    if not isinstance(supplied_policy, Mapping):
+        raise ValueError("phase_policy must be an object")
+    phase_policy = {name: supplied_policy.get(name, value)
+                    for name, value in _PHASE_POLICY_DEFAULTS.items()}
     return {"group_id": config["group_id"], "reference_unit": config["reference_unit"],
             "clock_mode": clock_mode, "fps": config.get("fps", 40),
             "clock_domain": "local" if len(nodes) == 1 else "common",
-            "nodes": nodes, "units": units}
+            "nodes": nodes, "units": units, "phase_policy": phase_policy}
 
 
 @dataclass(frozen=True)

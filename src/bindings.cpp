@@ -91,6 +91,8 @@ PYBIND11_MODULE(_native, module) {
         .def_readwrite("backend", &Config::backend)
         .def_readwrite("fps", &Config::fps)
         .def_readwrite("network_mode", &Config::network_mode)
+        .def_readwrite("clock_mode", &Config::clock_mode)
+        .def_readwrite("phase_policy", &Config::phase_policy)
         .def_readwrite("clock_port", &Config::clock_port)
         .def_readwrite("nodes", &Config::nodes)
         .def_readwrite("units", &Config::units)

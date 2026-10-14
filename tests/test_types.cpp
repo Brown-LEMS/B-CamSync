@@ -77,6 +77,9 @@ void topology() {
     invalid([](Config& x) { x.units[0].pool_capacity = x.units[0].queue_capacity; });
     invalid([](Config& x) { x.units[0].queue_capacity = std::numeric_limits<unsigned>::max(); });
     invalid([](Config& x) { x.network_mode = "unknown"; });
+    invalid([](Config& x) { x.clock_mode = "unknown"; });
+    invalid([](Config& x) { x.phase_policy.startup_delta_us = 1001; });
+    invalid([](Config& x) { x.phase_policy.gain = std::numeric_limits<double>::quiet_NaN(); });
     invalid([](Config& x) { x.clock_port = 0; });
     invalid([](Config& x) { x.network_mode = "auto"; x.nodes[0].interface.clear(); });
     invalid([](Config& x) { x.backend = "fake"; x.units[0].fake.width = 15; });
@@ -99,6 +102,16 @@ void existing_address_network() {
     config.network_mode = "existing";
     for (auto& node : config.nodes) node.interface.clear();
     config.validate();
+}
+void exposure_policy_margin() {
+    auto config = valid();
+    config.units[0].exposure_us = 24800;
+    rejects([&] { config.validate(); });
+    config.phase_policy.startup_delta_us = 100;
+    config.phase_policy.tracking_delta_us = 100;
+    config.validate();
+    config.phase_policy.tracking_delta_us = 200;
+    rejects([&] { config.validate(); });
 }
 void shared_contract() {
     const auto c = valid();
@@ -128,6 +141,9 @@ void shared_contract() {
     changed.reference_unit = "board-b";
     require(c.sync_json() != changed.sync_json(), "chosen reference is shared");
     changed = c;
+    changed.phase_policy.startup_delta_us = 100;
+    require(c.sync_json() != changed.sync_json(), "phase policy is part of the shared synchronization contract");
+    changed = c;
     changed.fps = 50;
     require(c.sync_json() != changed.sync_json(), "group cadence is shared");
     changed = c;
@@ -143,6 +159,7 @@ void configuration_modes() {
     c.network_mode = "existing";
     rejects([&] { c.validate(); });
     c.backend = "fake";
+    c.clock_mode = "host";
     c.network_mode = "auto";
     rejects([&] { c.validate(); });
     c = valid();
@@ -248,6 +265,11 @@ void synchronization_types() {
     sync.nodes = {{"node-a", "", "", 58080}};
     sync.units = {{"sensor-a", "node-a"}, {"sensor-b", "node-a"}};
     sync.fps = 1000000;
+    sync.phase_policy.startup_delta_us = 100;
+    sync.phase_policy.tracking_frames = 4;
+    sync.phase_policy.ready_windows = 3;
+    sync.phase_policy.window_seconds = 1.5;
+    sync.phase_policy.max_mapping_span_ns = 50000;
     sync.validate();
     require(sync.reference_node() == "node-a", "reference selection needs only synchronization membership");
     require(sync.to_json().find("backend") == std::string::npos &&
@@ -264,8 +286,16 @@ void synchronization_types() {
     rejects([&] { host.validate(); });
     auto managed = valid();
     require(managed.sync_config().clock_mode == "network", "managed physical acquisition projects network clock mode");
+    const auto physical_contract = managed.sync_json();
     managed.backend = "fake";
-    require(managed.sync_config().clock_mode == "host", "managed fake acquisition projects same-host clock mode");
+    require(managed.sync_config().clock_mode == "network" && managed.sync_json() == physical_contract,
+            "acquisition backend selection cannot change synchronization clock policy");
+    managed.clock_mode = "host";
+    managed.phase_policy = sync.phase_policy;
+    require(managed.sync_config().clock_mode == "host" &&
+                managed.sync_config().phase_policy.startup_delta_us == 100 &&
+                managed.sync_config().phase_policy.max_mapping_span_ns == 50000,
+            "managed projection preserves explicit clock and phase policy");
     managed.units[0].camera_id.clear();
     managed.units[0].profile = "invalid SDK profile";
     managed.sync_config().validate();
@@ -288,7 +318,8 @@ void configuration_files() {
     const auto c = Config::from_file(file.path);
     require(c.unit("board").camera_id == "camera" && c.nodes[0].port == 59100,
             "configuration loads device and endpoint fields");
-    require(c.fps == 40 && c.network_mode == "auto" && c.clock_port == 58081, "configuration defaults");
+    require(c.fps == 40 && c.network_mode == "auto" && c.clock_mode == "network" && c.clock_port == 58081,
+            "configuration defaults");
     require(c.to_json().find("\"width\"") == std::string::npos, "physical geometry stays in the profile");
     require(c.unit("board").profile == "arducam_b0267_pi4" && c.unit("board").auto_gain,
             "default board profile selects startup gain calibration");
@@ -302,13 +333,22 @@ void configuration_files() {
     require(restored.to_json() == manual.to_json(), "resolved configuration round trip is complete");
     auto fake = c;
     fake.backend = "fake";
+    fake.clock_mode = "host";
+    fake.phase_policy.startup_delta_us = 100;
+    fake.phase_policy.tracking_delta_us = 50;
+    fake.phase_policy.deadband_ms = .1;
+    fake.phase_policy.max_samples = 256;
     fake.fps = 80;
     fake.network_mode = "existing";
     fake.clock_port = 12346;
     fake.units[0].fake = {32, 8, 1234, 25};
     file.write(fake.to_json());
     const auto restored_fake = Config::from_file(file.path);
-    require(restored_fake.fps == 80 && restored_fake.network_mode == "existing" &&
+    require(restored_fake.to_json() == fake.to_json() && restored_fake.clock_mode == "host" &&
+                restored_fake.phase_policy.startup_delta_us == 100 &&
+                restored_fake.phase_policy.tracking_delta_us == 50 &&
+                restored_fake.phase_policy.deadband_ms == .1 && restored_fake.phase_policy.max_samples == 256 &&
+                restored_fake.fps == 80 && restored_fake.network_mode == "existing" &&
                 restored_fake.clock_port == 12346 && restored_fake.units[0].fake.width == 32 &&
                 restored_fake.units[0].fake.height == 8 && restored_fake.units[0].fake.initial_phase_us == 1234 &&
                 restored_fake.units[0].fake.drift_ppm == 25,
@@ -341,6 +381,21 @@ void configuration_files() {
     rejects([&] { Config::from_file(file.path); });
     file.write("{}");
     rejects([&] { Config::from_file(file.path); });
+    file.write(R"({"group_id":"example","reference_unit":"board","nodes":[{"id":"node"}],"units":[{"id":"board","node_id":"node","camera_id":"camera"}],"phase_policy":{"startup_delta_us":1001}})");
+    rejects([&] { Config::from_file(file.path); });
+    rejects([&] { SyncConfig::from_file(file.path); });
+    for (const auto invalid_policy : {R"({"startup_frames":1.5})", R"({"ready_windows":4294967297})",
+                                      R"({"max_samples":-1})", R"({"max_mapping_span_ns":18446744073709551615})"}) {
+        auto malformed_policy = text;
+        malformed_policy.insert(malformed_policy.find("\"units\""),
+                                std::string("\"phase_policy\":") + invalid_policy + ",");
+        file.write(malformed_policy);
+        rejects([&] { Config::from_file(file.path); });
+        rejects([&] { SyncConfig::from_file(file.path); });
+    }
+    file.write(R"({"group_id":"example","reference_unit":"board","nodes":[{"id":"node"}],"units":[{"id":"board","node_id":"node","camera_id":"camera"}],"phase_policy":[]})");
+    rejects([&] { Config::from_file(file.path); });
+    rejects([&] { SyncConfig::from_file(file.path); });
     auto bad = text;
     const auto position = bad.find("59100");
     bad.replace(position, 5, "70000");
@@ -354,6 +409,7 @@ int main() {
         topology();
         shared_contract();
         existing_address_network();
+        exposure_policy_margin();
         configuration_modes();
         packet_views();
         synchronization_types();

@@ -1,5 +1,5 @@
 #pragma once
-#include "timing.hpp"
+#include "phase.hpp"
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -20,6 +20,8 @@ struct SyncConfig {
     std::uint16_t clock_port = 58081;
     std::vector<NodeConfig> nodes;
     std::vector<SyncUnitConfig> units;
+    /// Shared control and readiness policy; clock quality may impose a stricter mapping bound.
+    PhasePolicy phase_policy;
     double clock_max_offset_ms = 0.1, clock_max_age_seconds = 10.0;
     double request_timeout_seconds = 2.0, startup_timeout_seconds = 60.0;
     void validate() const;
@@ -28,7 +30,7 @@ struct SyncConfig {
     std::string reference_node() const;
     static SyncConfig from_file(const std::string& path);
     std::string to_json() const;
-    /// Canonical shared contract; local transport settings and quality thresholds are omitted.
+    /// Canonical shared contract; local transport settings and clock quality thresholds are omitted.
     std::string sync_json() const;
 };
 /// Add offset_ns to native local timestamps; unavailable clocks map to zero.

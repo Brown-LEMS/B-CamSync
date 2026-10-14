@@ -1,6 +1,8 @@
 """Python adapters execute real corrections while applications retain capture ownership."""
 
 import gc
+import json
+import tempfile
 from pathlib import Path
 import subprocess
 import sys
@@ -8,10 +10,11 @@ import time
 import unittest
 import weakref
 
-from bcamsync import SyncSession, SyncUnit
+from bcamsync import Config, PhasePolicy, SyncConfig, SyncSession, SyncUnit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "examples"))
+sys.path.insert(0, str(ROOT / "host"))
 from external_capture import SyntheticCapture, local_config
 
 
@@ -89,6 +92,8 @@ class ExternalSyncTests(unittest.TestCase):
 
     def test_correction_readiness_stop_and_restart_preserve_capture(self):
         self.session.start()
+        with self.assertRaisesRegex(RuntimeError, "stop the session"):
+            self.session.set_node_addresses({"local": "127.0.0.1"})
         self.assertTrue(self.session.wait_ready(25))
         completed = self.follower.actuator.snapshot()
         self.assertGreater(completed.correction_id, 0)
@@ -107,12 +112,53 @@ class ExternalSyncTests(unittest.TestCase):
         self.assertEqual(self.session.status().state, "stopped")
         await_condition(lambda: self.follower.sequence > before + 2, timeout=1)
         first_binding = self.follower.bindings[-1]
+        with self.assertRaises(ValueError):
+            self.session.set_node_addresses({})
+        self.session.set_node_addresses({"local": "127.0.0.1"})
         self.session.start()
         self.assertTrue(self.session.wait_ready(10))
         self.assertEqual(len(self.follower.bindings), 2)
         self.assertEqual(self.follower.bindings[-1][0], first_binding[0])
         self.assertGreater(self.follower.bindings[-1][1], first_binding[1])
         self.assertTrue(self.follower.thread.is_alive())
+
+    def test_policy_bindings_roundtrip_projection_and_host_contract(self):
+        from bcamsync_host import _sync_contract
+
+        config = Config.from_file(ROOT / "examples" / "configs" / "fake_two_nodes.json")
+        default_document = json.loads(config.to_json())
+        default_document.pop("phase_policy")
+        self.assertEqual(json.loads(config.sync_json()), _sync_contract(default_document))
+        policy = PhasePolicy()
+        policy.startup_delta_us = 100
+        policy.tracking_delta_us = 50
+        policy.window_seconds = 1.5
+        policy.max_mapping_span_ns = 50_000
+        config.phase_policy = policy
+        self.assertEqual(config.clock_mode, "host")
+        expected = json.loads(config.sync_json())
+        self.assertEqual(expected, _sync_contract(json.loads(config.to_json())))
+        self.assertEqual(expected, json.loads(config.sync_config().sync_json()))
+        self.assertEqual(expected, _sync_contract(json.loads(config.sync_config().to_json())))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(config.to_json())
+            restored = Config.from_file(path)
+            self.assertEqual(restored.to_json(), config.to_json())
+            path.write_text(config.sync_config().to_json())
+            self.assertEqual(SyncConfig.from_file(path).to_json(), config.sync_config().to_json())
+        config.backend = "arducam"
+        self.assertEqual(config.clock_mode, "host")
+        self.assertEqual(json.loads(config.sync_config().sync_json()), expected)
+        policy.startup_delta_us = 1001
+        config.phase_policy = policy
+        with self.assertRaises(ValueError):
+            config.validate()
+        invalid = local_config()
+        invalid.phase_policy.startup_delta_us = 1001
+        with self.assertRaises(ValueError):
+            SyncSession(invalid, "local", self.captures)
+        self.assertEqual(self.follower.bindings, [])
 
     def test_python_adapter_callbacks_survive_dropped_references(self):
         self.session.stop()

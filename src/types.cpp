@@ -1,5 +1,7 @@
 #include "bcamsync/types.hpp"
+#include "phase_policy_json.hpp"
 #include "arducam_profile.hpp"
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <limits>
@@ -37,10 +39,11 @@ SyncConfig Config::sync_config() const {
     config.reference_unit = reference_unit;
     config.fps = fps;
     config.network_mode = network_mode;
-    config.clock_mode = backend == "fake" ? "host" : "network";
+    config.clock_mode = clock_mode;
     config.clock_port = clock_port;
     config.nodes = nodes;
     for (const auto& unit : units) config.units.push_back({unit.id, unit.node_id});
+    config.phase_policy = phase_policy;
     config.clock_max_offset_ms = clock_max_offset_ms;
     config.clock_max_age_seconds = clock_max_age_seconds;
     config.request_timeout_seconds = request_timeout_seconds;
@@ -63,7 +66,8 @@ void Config::validate() const {
         unsigned width = detail::arducam_width, height = detail::arducam_height;
         if (backend == "arducam") {
             detail::arducam_pipeline(u.profile);
-            if (u.exposure_us >= 1000000 / static_cast<int>(fps) - 1000)
+            if (u.exposure_us >= 1000000 / static_cast<int>(fps) -
+                                     std::max(phase_policy.startup_delta_us, phase_policy.tracking_delta_us))
                 throw std::invalid_argument("exposure leaves no phase correction margin for " + u.id);
         } else {
             width = u.fake.width;
@@ -89,6 +93,9 @@ Config Config::from_file(const std::string& path) {
     c.group_id = j.at("group_id").get<std::string>();
     c.reference_unit = j.at("reference_unit").get<std::string>();
     c.backend = j.value("backend", c.backend);
+    c.clock_mode = j.value("clock_mode", c.clock_mode);
+    if (j.contains("phase_policy"))
+        c.phase_policy = detail::phase_policy_from_json(j.at("phase_policy"));
     c.fps = unsigned_value(j, "fps", c.fps);
     if (j.contains("network")) {
         const auto& network = j.at("network");
@@ -157,8 +164,9 @@ std::string Config::to_json() const {
         us.push_back(std::move(unit));
     }
     return nlohmann::json({{"group_id", group_id}, {"reference_unit", reference_unit}, {"backend", backend},
-        {"fps", fps}, {"network", {{"mode", network_mode}, {"clock_port", clock_port}}},
-        {"nodes", ns}, {"units", us}, {"clock_max_offset_ms", clock_max_offset_ms},
+        {"fps", fps}, {"clock_mode", clock_mode}, {"network", {{"mode", network_mode}, {"clock_port", clock_port}}},
+        {"nodes", ns}, {"units", us}, {"phase_policy", detail::phase_policy_json(phase_policy)},
+        {"clock_max_offset_ms", clock_max_offset_ms},
         {"clock_max_age_seconds", clock_max_age_seconds}, {"request_timeout_seconds", request_timeout_seconds},
         {"startup_timeout_seconds", startup_timeout_seconds}}).dump();
 }
