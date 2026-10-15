@@ -2,9 +2,9 @@
 
 ## Library role
 
-B-CamSync (B = Brown) is an independent camera library above camera drivers, intended for Brown lab projects and external researchers. Its primary usage flow is camera initialization followed by frame acquisition through the library. In ordinary use, the application accesses cameras through B-CamSync, which encapsulates the underlying driver and synchronization implementation.
+B-CamSync (B = Brown) is an independent camera synchronization library, intended for Brown lab projects and external researchers. It supports two application entry points: managed camera access through `Session`, and synchronization attached to existing acquisition through `SyncSession`. Both are supported integrations over the same synchronization runtime.
 
-This boundary gives applications one place to manage synchronized camera access. Camera lifecycle, timestamp handling, and synchronization can be coordinated internally, while applications consume frames and synchronization quality information.
+Managed access coordinates camera lifecycle, timestamp handling, synchronization, and local frame delivery. External access leaves acquisition and pixels with the application while consuming timing observations and applying bounded frame-period controls. Complete capture, preview, and recording workflows live in example applications; users start with the [user guide](../README.md) and [integration guide](integration.md).
 
 ## Responsibilities
 
