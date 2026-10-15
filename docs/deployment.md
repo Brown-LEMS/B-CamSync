@@ -6,6 +6,8 @@ These applications compose synchronization with network setup, remote controls, 
 
 All commands below run from the repository root. Example scripts and the separate host package are source files in this repository.
 
+The capture, node, and browser applications below use the optional managed `Session` integration. Complete the [managed installation](installation.md#optional-managed-capture) first; the recommended synchronization-only installation does not include that backend. Physical multi-node deployments also need the [network dependencies](installation.md#physical-multi-node-sessions).
+
 ## Two Raspberry Pi 4 nodes
 
 Use one B0267 board with four cameras on each Pi 4. Install B-CamSync on both nodes using the [installation guide](installation.md), then connect their Ethernet ports directly.
@@ -81,7 +83,7 @@ Closing the browser leaves acquisition running. Preview is an independent exampl
 
 ## One Pi 5, two boards: remote preview and MJPG recording
 
-The [preview_record.py](../examples/preview_record.py) application combines browser preview with Pi-local MJPEG recording. It imports [preview.py](../examples/preview.py); keep both files together if you copy this application into another project. Recording is downstream example code; the library provides frame access and synchronization. Each board writes one full-resolution 5120×800 grayscale JPEG stream containing its four views side by side, giving eight camera views across the two boards. Preview is resized and sampled independently; recording processes every packet read by the application.
+The [preview_record.py](../examples/preview_record.py) application combines browser preview with Pi-local MJPEG recording. It imports [preview.py](../examples/preview.py); keep both files together if you copy this application into another project. Recording is downstream example code; this library provides frame access and synchronization. Each board writes one full-resolution 5120×800 grayscale JPEG stream containing its four views side by side, giving eight camera views across the two boards. Preview is resized and sampled independently; recording processes every packet read by the application.
 
 Install the package with its preview dependency on the Pi using `.venv/bin/python -m pip install '.[preview]'`. Copy the Pi 5 template and enumerate the two board IDs:
 

@@ -1,0 +1,20 @@
+{
+  "group_id": "pi5-local",
+  "reference_unit": "board-a1",
+  "fps": 40,
+  "nodes": [
+    {"id": "node-a"}
+  ],
+  "units": [
+    {
+      "id": "board-a1",
+      "node_id": "node-a",
+      "camera_id": "REPLACE_WITH_FIRST_CAMERA_ID"
+    },
+    {
+      "id": "board-a2",
+      "node_id": "node-a",
+      "camera_id": "REPLACE_WITH_SECOND_CAMERA_ID"
+    }
+  ]
+}
