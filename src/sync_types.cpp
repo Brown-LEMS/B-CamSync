@@ -1,237 +1,95 @@
 #include "bcamsync/sync_types.hpp"
-#include "phase_policy_json.hpp"
-#include <algorithm>
-#include <arpa/inet.h>
-#include <cmath>
+#include "bcamsync/detail/phase_policy_json.hpp"
+#include "config_ffi.hpp"
 #include <fstream>
-#include <limits>
+#include <memory>
 #include <nlohmann/json.hpp>
-#include <set>
 #include <stdexcept>
-#include <time.h>
 
 namespace bcamsync {
+namespace {
+using Json = nlohmann::json;
+Json checked(char* value) {
+    if (!value) throw std::runtime_error("Rust configuration returned no result");
+    std::unique_ptr<char, decltype(&bcamsync_rust_string_free)> owner(value, bcamsync_rust_string_free);
+    auto response = Json::parse(owner.get());
+    if (response.contains("error")) {
+        if (response.value("kind", 1) == 4) throw std::overflow_error(response.at("error").get<std::string>());
+        throw std::invalid_argument(response.at("error").get<std::string>());
+    }
+    return response.at("ok");
+}
+Json document(const SyncConfig& config) {
+    Json nodes = Json::array(), units = Json::array();
+    for (const auto& n : config.nodes) nodes.push_back({{"id",n.id},{"address",n.address},{"interface",n.interface},{"port",n.port}});
+    for (const auto& u : config.units) units.push_back({{"id",u.id},{"node_id",u.node_id}});
+    return {{"group_id",config.group_id},{"reference_unit",config.reference_unit},{"fps",config.fps},
+        {"clock_mode",config.clock_mode},{"network",{{"mode",config.network_mode},{"clock_port",config.clock_port}}},
+        {"nodes",nodes},{"units",units},{"phase_policy",detail::phase_policy_json(config.phase_policy)},
+        {"clock_max_offset_ms",config.clock_max_offset_ms},{"clock_max_age_seconds",config.clock_max_age_seconds},
+        {"request_timeout_seconds",config.request_timeout_seconds},{"startup_timeout_seconds",config.startup_timeout_seconds}};
+}
+std::int64_t clock(int kind) {
+    std::int64_t value{};
+    if (!bcamsync_rust_clock_ns(kind, &value)) throw std::runtime_error("clock_gettime failed");
+    return value;
+}
+}
 namespace detail {
-namespace {
-template<class T> T policy_integer(const nlohmann::json& object, const char* name, T initial) {
-    if (!object.contains(name)) return initial;
-    const auto& value = object.at(name);
-    if (!value.is_number_integer() ||
-        (!value.is_number_unsigned() && value.get<std::int64_t>() < 0) ||
-        value.get<std::uint64_t>() > static_cast<std::uint64_t>(std::numeric_limits<T>::max()))
-        throw std::invalid_argument(std::string("invalid phase policy integer: ") + name);
-    return value.get<T>();
+nlohmann::json phase_policy_json(const PhasePolicy& p) {
+#define FIELD(name) {#name, p.name}
+    return {FIELD(window_seconds),FIELD(evaluation_seconds),FIELD(freshness_seconds),FIELD(deadband_ms),
+        FIELD(ready_p95_ms),FIELD(ready_max_ms),FIELD(ready_windows),FIELD(startup_delta_us),FIELD(startup_frames),
+        FIELD(tracking_delta_us),FIELD(tracking_frames),FIELD(correction_interval_seconds),FIELD(settling_seconds),
+        FIELD(application_delay_seconds),FIELD(startup_max_corrections),FIELD(excursion_ms),FIELD(excursion_timeout_seconds),
+        FIELD(no_progress_corrections),FIELD(progress_ms),FIELD(gain),FIELD(max_mapping_span_ns),FIELD(max_samples)};
+#undef FIELD
 }
-} // namespace
-PhasePolicy phase_policy_from_json(const nlohmann::json& value) {
-    if (!value.is_object()) throw std::invalid_argument("phase_policy must be an object");
-    PhasePolicy policy;
-    policy.window_seconds = value.value("window_seconds", policy.window_seconds);
-    policy.evaluation_seconds = value.value("evaluation_seconds", policy.evaluation_seconds);
-    policy.freshness_seconds = value.value("freshness_seconds", policy.freshness_seconds);
-    policy.deadband_ms = value.value("deadband_ms", policy.deadband_ms);
-    policy.ready_p95_ms = value.value("ready_p95_ms", policy.ready_p95_ms);
-    policy.ready_max_ms = value.value("ready_max_ms", policy.ready_max_ms);
-    policy.ready_windows = policy_integer(value, "ready_windows", policy.ready_windows);
-    policy.startup_delta_us = policy_integer(value, "startup_delta_us", policy.startup_delta_us);
-    policy.startup_frames = policy_integer(value, "startup_frames", policy.startup_frames);
-    policy.tracking_delta_us = policy_integer(value, "tracking_delta_us", policy.tracking_delta_us);
-    policy.tracking_frames = policy_integer(value, "tracking_frames", policy.tracking_frames);
-    policy.correction_interval_seconds = value.value("correction_interval_seconds", policy.correction_interval_seconds);
-    policy.settling_seconds = value.value("settling_seconds", policy.settling_seconds);
-    policy.application_delay_seconds = value.value("application_delay_seconds", policy.application_delay_seconds);
-    policy.startup_max_corrections = policy_integer(value, "startup_max_corrections", policy.startup_max_corrections);
-    policy.excursion_ms = value.value("excursion_ms", policy.excursion_ms);
-    policy.excursion_timeout_seconds = value.value("excursion_timeout_seconds", policy.excursion_timeout_seconds);
-    policy.no_progress_corrections = policy_integer(value, "no_progress_corrections", policy.no_progress_corrections);
-    policy.progress_ms = value.value("progress_ms", policy.progress_ms);
-    policy.gain = value.value("gain", policy.gain);
-    policy.max_mapping_span_ns = policy_integer(value, "max_mapping_span_ns", policy.max_mapping_span_ns);
-    policy.max_samples = policy_integer(value, "max_samples", policy.max_samples);
-    policy.validate();
-    return policy;
+PhasePolicy phase_policy_from_json(const nlohmann::json& input) {
+    const auto value = checked(bcamsync_rust_config(input.dump().c_str(), 2));
+    PhasePolicy p;
+#define READ(name) p.name = value.at(#name).get<decltype(p.name)>()
+    READ(window_seconds);READ(evaluation_seconds);READ(freshness_seconds);READ(deadband_ms);READ(ready_p95_ms);
+    READ(ready_max_ms);READ(ready_windows);READ(startup_delta_us);READ(startup_frames);READ(tracking_delta_us);
+    READ(tracking_frames);READ(correction_interval_seconds);READ(settling_seconds);READ(application_delay_seconds);
+    READ(startup_max_corrections);READ(excursion_ms);READ(excursion_timeout_seconds);READ(no_progress_corrections);
+    READ(progress_ms);READ(gain);READ(max_mapping_span_ns);READ(max_samples);
+#undef READ
+    return p;
 }
-nlohmann::json phase_policy_json(const PhasePolicy& policy) {
-    return {{"window_seconds", policy.window_seconds},
-            {"evaluation_seconds", policy.evaluation_seconds},
-            {"freshness_seconds", policy.freshness_seconds},
-            {"deadband_ms", policy.deadband_ms},
-            {"ready_p95_ms", policy.ready_p95_ms},
-            {"ready_max_ms", policy.ready_max_ms},
-            {"ready_windows", policy.ready_windows},
-            {"startup_delta_us", policy.startup_delta_us},
-            {"startup_frames", policy.startup_frames},
-            {"tracking_delta_us", policy.tracking_delta_us},
-            {"tracking_frames", policy.tracking_frames},
-            {"correction_interval_seconds", policy.correction_interval_seconds},
-            {"settling_seconds", policy.settling_seconds},
-            {"application_delay_seconds", policy.application_delay_seconds},
-            {"startup_max_corrections", policy.startup_max_corrections},
-            {"excursion_ms", policy.excursion_ms},
-            {"excursion_timeout_seconds", policy.excursion_timeout_seconds},
-            {"no_progress_corrections", policy.no_progress_corrections},
-            {"progress_ms", policy.progress_ms},
-            {"gain", policy.gain},
-            {"max_mapping_span_ns", policy.max_mapping_span_ns},
-            {"max_samples", policy.max_samples}};
 }
-} // namespace detail
-namespace {
-std::int64_t clock_value(clockid_t id) {
-    timespec t{};
-    if (clock_gettime(id, &t) != 0)
-        throw std::runtime_error("clock_gettime failed");
-    return static_cast<std::int64_t>(t.tv_sec) * 1000000000LL + t.tv_nsec;
-}
-unsigned unsigned_value(const nlohmann::json& object, const char* key, unsigned initial) {
-    if (!object.contains(key)) return initial;
-    const auto& value = object.at(key);
-    if (!value.is_number_integer() ||
-        (!value.is_number_unsigned() && value.get<std::int64_t>() < 0) ||
-        value.get<std::uint64_t>() > std::numeric_limits<unsigned>::max())
-        throw std::invalid_argument(std::string("invalid unsigned field: ") + key);
-    return value.get<unsigned>();
-}
-} // namespace
-std::int64_t monotonic_ns() { return clock_value(CLOCK_MONOTONIC); }
-std::int64_t realtime_ns() { return clock_value(CLOCK_REALTIME); }
-std::int64_t boot_time_ns() {
-#ifdef CLOCK_BOOTTIME
-    return clock_value(CLOCK_BOOTTIME);
-#else
-    return monotonic_ns();
-#endif
-}
-std::int64_t ClockMapping::map(std::int64_t local_ns) const {
-    if (!valid) return 0;
-    if ((offset_ns > 0 && local_ns > std::numeric_limits<std::int64_t>::max() - offset_ns) ||
-        (offset_ns < 0 && local_ns < std::numeric_limits<std::int64_t>::min() - offset_ns))
-        throw std::overflow_error("clock mapping exceeds timestamp range");
-    return local_ns + offset_ns;
+std::int64_t monotonic_ns() { return clock(0); }
+std::int64_t boot_time_ns() { return clock(1); }
+std::int64_t realtime_ns() { return clock(2); }
+std::int64_t ClockMapping::map(std::int64_t local) const {
+    return checked(bcamsync_rust_map_time(valid,offset_ns,local)).get<std::int64_t>();
 }
 const NodeConfig& SyncConfig::node(const std::string& id) const {
-    for (const auto& n : nodes)
-        if (n.id == id) return n;
+    for (const auto& n : nodes) if (n.id == id) return n;
     throw std::invalid_argument("unknown node: " + id);
 }
 const SyncUnitConfig& SyncConfig::unit(const std::string& id) const {
-    for (const auto& u : units)
-        if (u.id == id) return u;
+    for (const auto& u : units) if (u.id == id) return u;
     throw std::invalid_argument("unknown unit: " + id);
 }
 std::string SyncConfig::reference_node() const { return unit(reference_unit).node_id; }
-void SyncConfig::validate() const {
-    phase_policy.validate();
-    const auto valid_id = [](const std::string& id) {
-        return !id.empty() && id.find('\0') == std::string::npos;
-    };
-    if (!valid_id(group_id) || nodes.empty() || units.empty())
-        throw std::invalid_argument("invalid group identity or empty topology");
-    if (network_mode != "auto" && network_mode != "existing")
-        throw std::invalid_argument("network mode must be auto or existing");
-    if (clock_mode != "network" && clock_mode != "host")
-        throw std::invalid_argument("clock mode must be network or host");
-    if (!clock_port || !fps || fps > 1000000)
-        throw std::invalid_argument("invalid clock port or unrepresentable frame period");
-    const bool addressed = nodes.size() > 1 && (network_mode == "existing" || clock_mode == "host");
-    std::set<std::string> ids, addresses;
-    for (const auto& n : nodes) {
-        in_addr address{};
-        if (!valid_id(n.id) || !ids.insert(n.id).second || !n.port ||
-            n.interface.find('\0') != std::string::npos ||
-            (clock_mode == "network" && nodes.size() > 1 && network_mode == "auto" && n.interface.empty()) ||
-            (addressed && (inet_pton(AF_INET, n.address.c_str(), &address) != 1 ||
-                          !addresses.insert(n.address + ":" + std::to_string(n.port)).second)))
-            throw std::invalid_argument("invalid or duplicate node endpoint");
-    }
-    ids.clear();
-    unit(reference_unit);
-    for (const auto& u : units) {
-        node(u.node_id);
-        if (!valid_id(u.id) || !ids.insert(u.id).second)
-            throw std::invalid_argument("invalid or duplicate synchronization unit");
-    }
-    for (const auto& n : nodes)
-        if (std::none_of(units.begin(), units.end(), [&](const auto& u) { return u.node_id == n.id; }))
-            throw std::invalid_argument("node has no units: " + n.id);
-    if (!std::isfinite(clock_max_offset_ms) || clock_max_offset_ms <= 0 ||
-        static_cast<long double>(clock_max_offset_ms) * 1e6L >= std::numeric_limits<std::int64_t>::max())
-        throw std::invalid_argument("invalid clock offset threshold");
-    const auto available = std::numeric_limits<std::int64_t>::max() - monotonic_ns();
-    for (double value : {clock_max_age_seconds, request_timeout_seconds, startup_timeout_seconds})
-        if (!std::isfinite(value) || value <= 0 || static_cast<long double>(value) * 1e9L >= available)
-            throw std::invalid_argument("timeout is invalid or exceeds timestamp range");
-    const long double idle_seconds = 2 + static_cast<long double>(request_timeout_seconds) * (nodes.size() + 1);
-    if (idle_seconds * 1e9L >= available)
-        throw std::invalid_argument("group request budget exceeds timestamp range");
-}
+void SyncConfig::validate() const { checked(bcamsync_rust_config(document(*this).dump().c_str(), 0)); }
+std::string SyncConfig::to_json() const { return checked(bcamsync_rust_config(document(*this).dump().c_str(), 0)).dump(); }
+std::string SyncConfig::sync_json() const { return checked(bcamsync_rust_config(document(*this).dump().c_str(), 1)).dump(); }
 SyncConfig SyncConfig::from_file(const std::string& path) {
     std::ifstream input(path);
     if (!input) throw std::runtime_error("cannot open synchronization config: " + path);
-    nlohmann::json document;
-    input >> document;
+    Json raw; input >> raw;
+    const auto value = checked(bcamsync_rust_config(raw.dump().c_str(), 0));
     SyncConfig config;
-    config.group_id = document.at("group_id");
-    config.reference_unit = document.at("reference_unit");
-    config.fps = unsigned_value(document, "fps", config.fps);
-    config.clock_mode = document.value("clock_mode", config.clock_mode);
-    if (document.contains("phase_policy"))
-        config.phase_policy = detail::phase_policy_from_json(document.at("phase_policy"));
-    if (document.contains("network")) {
-        const auto& network = document.at("network");
-        config.network_mode = network.value("mode", config.network_mode);
-        const auto port = unsigned_value(network, "clock_port", config.clock_port);
-        if (!port || port > 65535) throw std::invalid_argument("invalid clock port");
-        config.clock_port = static_cast<std::uint16_t>(port);
-    }
-    for (const auto& value : document.at("nodes")) {
-        NodeConfig node;
-        node.id = value.at("id");
-        node.address = value.value("address", std::string{});
-        node.interface = value.value("interface", std::string{});
-        const auto port = unsigned_value(value, "port", node.port);
-        if (!port || port > 65535) throw std::invalid_argument("invalid node port");
-        node.port = static_cast<std::uint16_t>(port);
-        config.nodes.push_back(std::move(node));
-    }
-    for (const auto& value : document.at("units"))
-        config.units.push_back({value.at("id"), value.at("node_id")});
-#define SET(name) config.name = document.value(#name, config.name)
-    SET(clock_max_offset_ms);
-    SET(clock_max_age_seconds);
-    SET(request_timeout_seconds);
-    SET(startup_timeout_seconds);
-#undef SET
-    config.validate();
+    config.group_id = value.at("group_id"); config.reference_unit = value.at("reference_unit");
+    config.fps = value.at("fps"); config.clock_mode = value.at("clock_mode");
+    config.network_mode = value.at("network").at("mode"); config.clock_port = value.at("network").at("clock_port");
+    for (const auto& n : value.at("nodes")) config.nodes.push_back({n.at("id"),n.at("address"),n.at("interface"),n.at("port")});
+    for (const auto& u : value.at("units")) config.units.push_back({u.at("id"),u.at("node_id")});
+    config.phase_policy = detail::phase_policy_from_json(value.at("phase_policy"));
+    config.clock_max_offset_ms = value.at("clock_max_offset_ms"); config.clock_max_age_seconds = value.at("clock_max_age_seconds");
+    config.request_timeout_seconds = value.at("request_timeout_seconds"); config.startup_timeout_seconds = value.at("startup_timeout_seconds");
     return config;
-}
-std::string SyncConfig::to_json() const {
-    validate();
-    nlohmann::json node_values = nlohmann::json::array(), unit_values = nlohmann::json::array();
-    for (const auto& node : nodes)
-        node_values.push_back({{"id", node.id}, {"address", node.address},
-                               {"interface", node.interface}, {"port", node.port}});
-    for (const auto& unit : units)
-        unit_values.push_back({{"id", unit.id}, {"node_id", unit.node_id}});
-    return nlohmann::json({{"group_id", group_id}, {"reference_unit", reference_unit}, {"fps", fps},
-        {"clock_mode", clock_mode}, {"network", {{"mode", network_mode}, {"clock_port", clock_port}}},
-        {"nodes", node_values}, {"units", unit_values}, {"phase_policy", detail::phase_policy_json(phase_policy)},
-        {"clock_max_offset_ms", clock_max_offset_ms},
-        {"clock_max_age_seconds", clock_max_age_seconds}, {"request_timeout_seconds", request_timeout_seconds},
-        {"startup_timeout_seconds", startup_timeout_seconds}}).dump();
-}
-std::string SyncConfig::sync_json() const {
-    validate();
-    std::vector<std::string> node_ids;
-    for (const auto& node : nodes) node_ids.push_back(node.id);
-    std::sort(node_ids.begin(), node_ids.end());
-    std::vector<const SyncUnitConfig*> ordered;
-    for (const auto& unit : units) ordered.push_back(&unit);
-    std::sort(ordered.begin(), ordered.end(), [](const auto* left, const auto* right) { return left->id < right->id; });
-    nlohmann::json unit_values = nlohmann::json::array();
-    for (const auto* unit : ordered) unit_values.push_back({{"id", unit->id}, {"node_id", unit->node_id}});
-    return nlohmann::json({{"group_id", group_id}, {"reference_unit", reference_unit}, {"fps", fps},
-        {"clock_mode", clock_mode}, {"clock_domain", nodes.size() == 1 ? "local" : "common"},
-        {"nodes", node_ids}, {"units", unit_values}, {"phase_policy", detail::phase_policy_json(phase_policy)}}).dump();
 }
 } // namespace bcamsync

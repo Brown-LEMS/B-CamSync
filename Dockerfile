@@ -29,6 +29,7 @@ RUN git clone --depth 1 --branch "v${LIBCAMERA_VERSION}" \
     && rm -rf /opt/libcamera-source /opt/libcamera-build
 
 ARG RUST_VERSION=1.99.0
+ARG RUST_TSAN_TOOLCHAIN=nightly-2026-10-15
 ENV CARGO_HOME=/opt/rust/cargo
 ENV RUSTUP_HOME=/opt/rust/rustup
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
@@ -37,6 +38,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain "${RUST_VERSION}" \
     && rm /tmp/rustup-init.sh
 ENV PATH="/opt/rust/cargo/bin:${PATH}"
+# Thread checks rebuild Rust and std together; ordinary builds retain the stable default.
+RUN rustup toolchain install "${RUST_TSAN_TOOLCHAIN}" --profile minimal --component rust-src
+ENV BCAMSYNC_RUST_TSAN_TOOLCHAIN=${RUST_TSAN_TOOLCHAIN}
 
 ENV PKG_CONFIG_PATH=/opt/libcamera/lib/pkgconfig
 ENV LD_LIBRARY_PATH=/opt/libcamera/lib

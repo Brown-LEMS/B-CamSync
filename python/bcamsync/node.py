@@ -1,14 +1,20 @@
 """Serve node-local HTTP control with explicit or automatic network startup."""
 
+from __future__ import annotations
+
 import argparse
 from pathlib import Path
 import signal
 import sys
 import threading
+from typing import TYPE_CHECKING
 
-from . import Config, NetworkSession
+from . import NetworkSession
 from .http_management import HttpNodeService
 from .management import NodeService
+
+if TYPE_CHECKING:
+    from bcamsync_managed import Config
 
 
 def run_node(config: Config, local_node: str, *, network_startup: str = "explicit",
@@ -91,6 +97,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--discovery-port", type=int, default=58082)
     parser.add_argument("--address", help="local HTTP IPv4 address; required for explicit startup without a configured address")
     args = parser.parse_args(argv)
+    from bcamsync_managed import Config
+
     try:
         run_node(Config.from_file(args.config), args.node, network_startup=args.network_startup,
                  address=args.address, http_port=args.http_port, discovery_port=args.discovery_port)

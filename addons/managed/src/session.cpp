@@ -1,6 +1,6 @@
 #include "bcamsync/session.hpp"
 #include "bcamsync/fake.hpp"
-#include "sync_runtime.hpp"
+#include "bcamsync/detail/sync_runtime.hpp"
 #include <algorithm>
 #include <mutex>
 #include <thread>

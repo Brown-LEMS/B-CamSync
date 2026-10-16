@@ -16,8 +16,12 @@ import socketserver
 import sys
 import threading
 from uuid import UUID, uuid4
+from typing import TYPE_CHECKING
 
-from . import Config, NetworkSession, Session, SyncConfig, SyncSession
+from . import NetworkSession, SyncConfig, SyncSession
+
+if TYPE_CHECKING:
+    from bcamsync_managed import Config, Session
 
 
 LIMIT = 1024 * 1024
@@ -120,6 +124,8 @@ class NodeService:
             return status
 
     def _create_session(self) -> Session:
+        from bcamsync_managed import Config, Session
+
         config = self.config
         if self.network is not None:
             resolved = self.network.resolve(config.startup_timeout_seconds)
@@ -234,6 +240,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.mode == "serve":
+            from bcamsync_managed import Config
+
             service = NodeService(Config.from_file(args.config), args.node, args.socket)
             previous = {}
 

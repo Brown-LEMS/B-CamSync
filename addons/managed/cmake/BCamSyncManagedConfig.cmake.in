@@ -1,0 +1,5 @@
+@PACKAGE_INIT@
+include(CMakeFindDependencyMacro)
+find_dependency(BCamSync 0.1 CONFIG)
+include("${CMAKE_CURRENT_LIST_DIR}/BCamSyncManagedTargets.cmake")
+check_required_components(BCamSyncManaged)

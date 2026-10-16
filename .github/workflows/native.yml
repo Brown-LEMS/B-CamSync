@@ -40,9 +40,9 @@ jobs:
       - name: Build shared Debian development image
         run: |
           bash tools/container.sh image 2>&1 | tee "$RUNNER_TEMP/bcamsync-image.log"
-      - name: Validate software, Release, SDK, and package delivery
+      - name: Validate core, managed capture, Release, SDK, and package delivery
         run: |
-          for action in software release sdk package; do
+          for action in core software release sdk package; do
             bash tools/container.sh "$action" 2>&1 | tee "$RUNNER_TEMP/bcamsync-$action.log"
           done
       - name: Preserve validation logs and deliverable packages

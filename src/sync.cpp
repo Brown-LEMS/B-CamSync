@@ -1,5 +1,5 @@
 #include "bcamsync/sync.hpp"
-#include "sync_runtime.hpp"
+#include "bcamsync/detail/sync_runtime.hpp"
 #include <mutex>
 #include <thread>
 

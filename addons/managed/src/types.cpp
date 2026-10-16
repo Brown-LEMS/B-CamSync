@@ -1,5 +1,5 @@
 #include "bcamsync/types.hpp"
-#include "phase_policy_json.hpp"
+#include "bcamsync/detail/phase_policy_json.hpp"
 #include "arducam_profile.hpp"
 #include <algorithm>
 #include <cmath>

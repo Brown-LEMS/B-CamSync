@@ -1,5 +1,5 @@
 #pragma once
-#include "sync_types.hpp"
+#include "bcamsync/sync_types.hpp"
 #include <cstdint>
 #include <memory>
 #include <string>

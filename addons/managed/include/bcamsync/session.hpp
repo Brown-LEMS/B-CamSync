@@ -1,6 +1,6 @@
 #pragma once
 #include "backend.hpp"
-#include "sync_types.hpp"
+#include "bcamsync/sync_types.hpp"
 #include <chrono>
 #include <memory>
 #include <map>

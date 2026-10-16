@@ -1,0 +1,22 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=3.0", "bcamsync==0.1.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "bcamsync-managed"
+version = "0.1.0"
+description = "Optional managed camera acquisition for B-CamSync"
+requires-python = ">=3.11"
+dependencies = ["bcamsync==0.1.0", "numpy>=1.24"]
+
+[project.scripts]
+bcamsync-manage = "bcamsync.management:main"
+bcamsync-node = "bcamsync.node:main"
+
+[tool.scikit-build]
+wheel.packages = ["python/bcamsync_managed"]
+cmake.build-type = "Release"
+sdist.include = ["CMakeLists.txt", "cmake/**", "include/**", "src/**", "python/**"]
+
+[tool.scikit-build.cmake.define]
+BCAMSYNC_BUILD_PYTHON = "ON"
