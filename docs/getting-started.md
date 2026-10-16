@@ -88,6 +88,26 @@ PY
 
 This checks that the synchronization run passed and that both files contain readable images. The writers close when the script ends capture. They remain active briefly during its post-stop capture check, so the videos can slightly exceed the requested five seconds. Add `--display` only when local OpenCV windows are available; headless recording uses no display flag.
 
+## Browser preview over SSH
+
+The same external-capture example can serve both boards to your workstation's browser. It uses Python's standard-library HTTP server and OpenCV JPEG encoding, with no local X11 server or additional Python dependency. Run on the Pi:
+
+```sh
+.venv/bin/python examples/opencv_sync.py group.json \
+  --http-preview --continuous --repeat 1
+```
+
+In a workstation terminal, establish the SSH tunnel, replacing the user and address for your Pi:
+
+```sh
+ssh -N -o ExitOnForwardFailure=yes \
+  -L 127.0.0.1:8765:127.0.0.1:8765 bapd8@192.168.0.106
+```
+
+Open [http://127.0.0.1:8765](http://127.0.0.1:8765) in the workstation browser. The Pi HTTP service binds only to `127.0.0.1`. The page shows the latest image from each board during calibration and tracking, and updates synchronization status once per second. Frames older than one second are hidden. Closing the browser or tunnel leaves the Pi application running; use Ctrl+C in its terminal to stop synchronization and capture.
+
+Preview defaults to 10 fps independently of the configured 40 fps acquisition. `--preview-fps 5` reduces JPEG refresh frequency, and `--http-port` changes the Pi listening port; update the tunnel's destination port accordingly. Encoding and HTTP writes run on separate threads from acquisition. Continuous mode runs one synchronization session until interrupted and does not accumulate a test-sample history. Omit `--continuous` to retain the timed test runs. Recording remains off unless `--video-dir` is supplied.
+
 ## Understand the result
 
 The JSON report stores configuration, readiness policy, run results, and sampled synchronization status. Default readiness requires p95 ≤ 0.5 ms and max ≤ 1 ms over two settled windows. These are acceptance thresholds, separate from measurements. Phase metrics compare sensor timestamps, and reported fps is estimated from sensor timestamp history. Optical alignment and sustained recording/storage throughput require separate measurements on your experiment's setup.

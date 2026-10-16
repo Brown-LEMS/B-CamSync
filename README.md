@@ -37,6 +37,8 @@ The script waits for readiness before recording. It writes `board-a1.avi` and `b
 
 The example requires exactly one node and two boards. It uses their shared local clock and runs as one process. To reuse it in another project, copy `opencv_sync.py` and your completed `group.json`, and run it with the environment containing `bcamsync`, Python libcamera, and OpenCV.
 
+For live browser preview without XQuartz, run the same script on the Pi with `--http-preview --continuous --repeat 1`, then forward its loopback HTTP port with SSH. The page shows both boards and synchronization status; JPEG encoding runs in a separate thread at 10 fps by default. See [browser preview over SSH](docs/getting-started.md#browser-preview-over-ssh) for commands.
+
 ## Integrate into your project
 
 | Your application | API | Guide/example |
