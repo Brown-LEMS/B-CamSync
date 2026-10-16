@@ -5,3 +5,4 @@ dist
 results
 **/__pycache__
 **/*.pyc
+rust/target

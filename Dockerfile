@@ -28,6 +28,16 @@ RUN git clone --depth 1 --branch "v${LIBCAMERA_VERSION}" \
     && meson install -C /opt/libcamera-build \
     && rm -rf /opt/libcamera-source /opt/libcamera-build
 
+ARG RUST_VERSION=1.99.0
+ENV CARGO_HOME=/opt/rust/cargo
+ENV RUSTUP_HOME=/opt/rust/rustup
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup-init.sh \
+    && sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain "${RUST_VERSION}" \
+    && rm /tmp/rustup-init.sh
+ENV PATH="/opt/rust/cargo/bin:${PATH}"
+
 ENV PKG_CONFIG_PATH=/opt/libcamera/lib/pkgconfig
 ENV LD_LIBRARY_PATH=/opt/libcamera/lib
 ENV ASAN_SYMBOLIZER_PATH=/usr/bin/llvm-symbolizer-16
