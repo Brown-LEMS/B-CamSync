@@ -1,13 +1,23 @@
 """External example preserves sensor timing and observes baseline restoration."""
 
+from http.client import HTTPConnection
+from io import BytesIO
+import json
 from pathlib import Path
 import sys
+import threading
+import time
+from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock, patch
+
+import numpy as np
+from PIL import Image
 
 from bcamsync import Pulse, boot_time_ns
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples"))
-from opencv_sync import CameraTiming
+from opencv_sync import BrowserPreview, CameraTiming, main
 
 
 class CameraTimingTests(unittest.TestCase):
@@ -49,6 +59,131 @@ class CameraTimingTests(unittest.TestCase):
         self.assertEqual(self.unit.snapshot().correction.state, "restored")
         self.assertEqual(self.unit.next_submission().duration_us, 25000)
         self.assertEqual(self.unit.fault(), "")
+
+
+class BrowserPreviewTests(unittest.TestCase):
+    def setUp(self):
+        self.capture = SimpleNamespace(units={"board-a1": None, "board-a2": None},
+                                       images={}, image_lock=threading.Lock())
+
+        def encode(extension, image, options):
+            output = BytesIO()
+            Image.fromarray(image).save(output, format="JPEG")
+            return True, np.frombuffer(output.getvalue(), dtype=np.uint8)
+
+        self.capture.cv2 = SimpleNamespace(IMWRITE_JPEG_QUALITY=1, imencode=Mock(side_effect=encode))
+        self.preview = BrowserPreview(self.capture, port=0, fps=30)
+        self.preview.start()
+
+    def tearDown(self):
+        self.preview.close()
+        self.assertFalse(self.preview.http_thread.is_alive())
+        self.assertFalse(self.preview.encoder_thread.is_alive())
+
+    def request(self, path):
+        connection = HTTPConnection("127.0.0.1", self.preview.server.server_port, timeout=1)
+        try:
+            connection.request("GET", path)
+            response = connection.getresponse()
+            return response.status, response.read()
+        finally:
+            connection.close()
+
+    def publish(self, value):
+        with self.capture.image_lock:
+            self.capture.images = {unit: (time.monotonic(), np.full((200, 1280), value, dtype=np.uint8))
+                                   for unit in self.capture.units}
+
+    def image(self, unit="board-a1", value=None):
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            code, data = self.request(f"/preview/{unit}.jpg")
+            if code == 200:
+                with Image.open(BytesIO(data)) as decoded:
+                    decoded.load()
+                    self.assertEqual(decoded.size, (1280, 200))
+                    if value is None or decoded.getpixel((0, 0)) == value:
+                        return data
+            else:
+                self.assertEqual(code, 204)
+            time.sleep(0.01)
+        self.fail("Fresh JPEG did not arrive")
+
+    def test_loopback_http_boards_status_updates_and_stale_images(self):
+        self.assertEqual(self.preview.server.server_address[0], "127.0.0.1")
+        code, page = self.request("/")
+        self.assertEqual(code, 200)
+        for unit in self.capture.units:
+            self.assertIn(unit.encode(), page)
+        self.assertEqual(self.request("/preview/board-a1.jpg")[0], 204)
+        self.assertEqual(self.request("/preview/unknown.jpg")[0], 404)
+        self.assertEqual(self.request("/unknown")[0], 404)
+        self.preview.publish_status({"state": "calibrating", "ready": False})
+        self.assertEqual(json.loads(self.request("/status")[1]), {"state": "calibrating", "ready": False})
+        self.publish(64)
+        for unit in self.capture.units:
+            self.image(unit)
+        # HTTP clients can disconnect; the source continues publishing new frames.
+        self.publish(128)
+        self.image(value=128)
+        with self.capture.image_lock:
+            self.capture.images.clear()
+        time.sleep(1.05)
+        self.assertEqual(self.request("/preview/board-a1.jpg")[0], 204)
+
+    def test_slow_encoding_leaves_capture_lock_and_http_available(self):
+        entered, release, published = threading.Event(), threading.Event(), threading.Event()
+        encode = self.capture.cv2.imencode.side_effect
+
+        def slow_encode(*args):
+            entered.set()
+            release.wait(3)
+            return encode(*args)
+
+        self.capture.cv2.imencode.side_effect = slow_encode
+        self.publish(32)
+        try:
+            self.assertTrue(entered.wait(1))
+            thread = threading.Thread(target=lambda: (self.publish(96), published.set()))
+            thread.start()
+            self.assertTrue(published.wait(1), "JPEG encoding held the capture image lock")
+            thread.join()
+            self.assertEqual(self.request("/status")[0], 200)
+            self.assertEqual(self.request("/preview/board-a1.jpg")[0], 204)
+        finally:
+            release.set()
+        self.image(value=96)
+
+    def test_encoder_failure_is_reported(self):
+        self.capture.cv2.imencode.side_effect = RuntimeError("encoder failed")
+        self.publish(64)
+        self.preview.encoder_thread.join(2)
+        self.assertFalse(self.preview.encoder_thread.is_alive())
+        with self.assertRaisesRegex(RuntimeError, "encoder failed"):
+            self.preview.publish_status({"ready": True})
+
+
+class PreviewCleanupTests(unittest.TestCase):
+    def test_preview_cleanup_failure_still_stops_capture(self):
+        config = Path(__file__).resolve().parents[1] / "examples/configs/fake_one_node.json"
+        capture = Mock(units={})
+        preview = Mock()
+        preview.publish_status.side_effect = RuntimeError("encoder failed")
+        preview.close.side_effect = OSError("HTTP shutdown failed")
+        session = Mock()
+        session.wait_ready.return_value = True
+        session.status.return_value = SimpleNamespace(state="tracking", ready=True, fault="", units=[])
+        context = Mock()
+        context.__enter__ = Mock(return_value=session)
+        context.__exit__ = Mock(return_value=False)
+        with patch("sys.argv", ["opencv_sync", str(config), "--http-preview", "--continuous", "--repeat", "1"]), \
+                patch("opencv_sync.Capture", return_value=capture), \
+                patch("opencv_sync.BrowserPreview", return_value=preview), \
+                patch("opencv_sync.SyncSession", return_value=context), \
+                patch("opencv_sync.time.sleep"):
+            with self.assertRaisesRegex(OSError, "HTTP shutdown failed"):
+                main()
+        capture.stop.assert_called_once()
 
 
 if __name__ == "__main__":
