@@ -1,6 +1,6 @@
 # B-CamSync
 
-B-CamSync is a camera synchronization library with C++ and Python interfaces. This library measures frame-phase differences, applies bounded frame-period corrections through camera adapters, and reports synchronization quality within one node or across multiple nodes.
+B-CamSync is a camera synchronization library with a Rust core and interfaces for C++ and Python. This library measures frame-phase differences, applies bounded frame-period corrections through camera adapters, and reports synchronization quality within one node or across multiple nodes.
 
 **Start with `SyncSession` to add synchronization to your existing capture pipeline.** Your application continues to configure cameras, acquire frames, own image buffers, and record video. This library consumes sensor timing and requests timing corrections through your `SyncUnit` adapters; it does not take over acquisition in this integration.
 
@@ -10,7 +10,7 @@ B-CamSync is a camera synchronization library with C++ and Python interfaces. Th
 
 Use Raspberry Pi OS Bookworm arm64 with a working B0267 camera stack and compatible Python libcamera bindings. The lab has exercised this example on this topology, including synchronization restart while capture continues. The [first-run guide](docs/getting-started.md) walks through each step and explains the outputs.
 
-1. Open a terminal in this repository's root and complete the [SyncSession installation](docs/installation.md#python). It builds the synchronization interfaces with managed capture disabled; libcamera development headers, NetworkManager, and chrony are unnecessary for this single-node workflow.
+1. Open a terminal in this repository's root and complete the [SyncSession installation](docs/installation.md#python). It installs the synchronization core without the managed capture add-on; libcamera development headers, NetworkManager, and chrony are unnecessary for this single-node workflow.
 2. Enumerate cameras through your application's Python libcamera stack and copy the external-capture configuration:
 
 ```sh
@@ -45,9 +45,9 @@ For live browser preview without XQuartz, run the same script on the Pi with `--
 | --- | --- | --- |
 | Add synchronization to your existing acquisition and recording pipeline; recommended starting point | `SyncConfig` + `SyncSession` + `SyncUnit` adapters | [Integration guide](docs/integration.md), [`opencv_sync.py`](examples/opencv_sync.py) |
 | Learn the adapter with synthetic acquisition | `SyncSession` | [`external_capture.py`](examples/external_capture.py) |
-| Have this library configure cameras and deliver local frames; optional managed integration | `Config` + `Session` | [Managed capture](docs/integration.md#optional-managed-capture-session), [`capture.py`](examples/capture.py) |
+| Have the optional C++ add-on configure cameras and deliver local frames | `bcamsync_managed.Config` + `Session` | [Managed capture](docs/integration.md#optional-managed-capture-session), [`capture.py`](examples/capture.py) |
 
-`SyncSession.stop()` restores baseline frame-period controls while your application keeps capture running. The optional `Session` entry point also owns camera lifecycle and frame delivery; it requires a build with the managed Arducam backend enabled. Both entry points use the same synchronization runtime. See [the example catalog](examples/README.md) for complete applications and the files needed to copy each one.
+`SyncSession.stop()` restores baseline frame-period controls while your application keeps capture running. The separately installed `bcamsync-managed` add-on provides `Session`, which owns camera lifecycle and frame delivery and uses the same synchronization core. Existing explicit imports such as `from bcamsync import Config, Session` continue to work when that add-on is installed. Importing the core does not load the add-on or NumPy. See [the example catalog](examples/README.md) for complete applications and the files needed to copy each one.
 
 ## Guides
 

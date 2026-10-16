@@ -17,7 +17,7 @@ Start with `opencv_sync.py` to attach this library's `SyncSession` interface to 
 | [`manage_group.py`](manage_group.py) | Workstation control of node applications | `manage_group.py` and the separately installed `bcamsync_host` package |
 | [`capture.cpp`](capture.cpp), [`cmake_consumer/`](cmake_consumer) | C++ managed capture and linking against an installed library | Adapt these sources and their CMake build |
 
-All Python applications import the installed `bcamsync` package, except the workstation client, which imports `bcamsync_host`. `opencv_sync.py` additionally requires Python libcamera, OpenCV, and NumPy, and runs with managed capture disabled. `capture.py`, the node service, and preview/recording applications use managed capture and need that backend enabled; preview applications also require Pillow. See [installation](../docs/installation.md) for the separate installation commands.
+All node applications use the installed `bcamsync` core package; the workstation client uses `bcamsync_host`. `opencv_sync.py` additionally requires Python libcamera, OpenCV, and NumPy. `capture.py`, the node service, and managed preview/recording applications require the separately installed `bcamsync-managed` add-on; their existing explicit managed imports from `bcamsync` remain compatible. Managed preview applications also require Pillow. See [installation](../docs/installation.md) for the separate installation commands.
 
 The recommended Pi 5 application is self-contained in one script. For example, after copying it and your completed configuration into your own project and activating the appropriate environment:
 

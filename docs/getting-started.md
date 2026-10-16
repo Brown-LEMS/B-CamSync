@@ -8,7 +8,7 @@ The lab has exercised this application on one Raspberry Pi 5 with two Arducam B0
 
 ## 1. Install once
 
-Open a terminal in the shared repository checkout. Complete [the recommended Python installation](installation.md#python) using Raspberry Pi OS Bookworm arm64, the working B0267 vendor camera stack, and compatible Python libcamera bindings. That installation builds this library with `BCAMSYNC_WITH_LIBCAMERA=OFF`, which is sufficient for `SyncSession` and this application. It uses a venv with system site packages and `numpy<2` for OpenCV.
+Open a terminal in the shared repository checkout. Complete [the recommended Python installation](installation.md#python) using Raspberry Pi OS Bookworm arm64, the working B0267 vendor camera stack, and compatible Python libcamera bindings. That installation builds only the synchronization core, which is sufficient for `SyncSession` and this application. The managed capture add-on is unnecessary. It uses a venv with system site packages and `numpy<2` for OpenCV.
 
 Keep this terminal in the repository root for the following commands. Each command explicitly uses `.venv/bin/python`; the module import check in the installation guide must pass first. The camera drivers and libcamera stack must already support your boards; installing this library does not install that device software.
 

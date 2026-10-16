@@ -2,13 +2,13 @@
 
 [User guide](../README.md) · [First run on Pi 5](getting-started.md) · [Example catalog](../examples/README.md)
 
-This library adds continuous synchronization to a camera application. Start with `SyncSession`: your existing pipeline supplies sensor timing and applies requested frame-period controls through `SyncUnit` adapters. This library estimates phase, decides bounded corrections, and reports quality. Your application keeps camera configuration, acquisition threads, buffers, frame delivery, processing, and recording. `Session` is an optional integration for applications that want this library to own camera operations and frame delivery as well.
+This library adds continuous synchronization to a camera application. Start with `SyncSession`: your existing pipeline supplies sensor timing and applies requested frame-period controls through `SyncUnit` adapters. This library estimates phase, decides bounded corrections, and reports quality. Your application keeps camera configuration, acquisition threads, buffers, frame delivery, processing, and recording. The separately installed C++ managed capture add-on provides `Session` for applications that want camera operations and frame delivery handled for them.
 
-| Responsibility | Recommended: `SyncSession` | Optional managed: `Session` |
+| Responsibility | Recommended: `SyncSession` | Optional add-on: `Session` |
 | --- | --- | --- |
-| Configure, start, and close cameras | Application | This library |
-| Own capture buffers and deliver pixels | Application keeps its existing image path | This library provides local frame packets |
-| Supply sensor timing and apply frame-period controls | Application's `SyncUnit` adapters | This library's managed backend |
+| Configure, start, and close cameras | Application | Managed capture add-on |
+| Own capture buffers and deliver pixels | Application keeps its existing image path | Managed capture add-on provides local frame packets |
+| Supply sensor timing and apply frame-period controls | Application's `SyncUnit` adapters | Managed capture add-on's adapters |
 | Estimate phase, decide corrections, report quality | This library | This library |
 | Display, encode, and record | Application | Application |
 
@@ -71,7 +71,7 @@ Call `completed()` for a restoration submission only when device completion meta
 
 ## Optional managed capture: `Session`
 
-First enable the managed backend using the [optional managed installation](installation.md#optional-managed-capture). The recommended synchronization-only installation cannot enumerate cameras through `enumerate_arducam_cameras()` or run managed `Session` acquisition. Prepare a separate managed configuration:
+First install the separate C++ add-on using the [optional managed installation](installation.md#optional-managed-capture). The recommended synchronization-only installation cannot enumerate cameras through `enumerate_arducam_cameras()` or run managed `Session` acquisition. Prepare a separate managed configuration:
 
 ```sh
 cp examples/configs/one_node_two_boards_pi5.json managed-group.json
@@ -80,7 +80,7 @@ cp examples/configs/one_node_two_boards_pi5.json managed-group.json
 Replace both camera ID placeholders with the IDs from your Python libcamera enumeration. The template's `arducam_b0267_pi5` profiles select Pi 5 acquisition. Start from [`capture.py`](../examples/capture.py), which reads all configured local units and handles group shutdown. This smaller single-node loop shows where to place processing:
 
 ```python
-from bcamsync import Config, Session
+from bcamsync_managed import Config, Session
 
 config = Config.from_file("managed-group.json")
 local_units = [unit for unit in config.units if unit.node_id == "node-a"]
@@ -112,4 +112,4 @@ A single-node group uses its local clock without networking. Physical multi-node
 
 Default readiness targets are p95 ≤ 0.5 ms and max ≤ 1 ms across two settled windows. Continue observing status during acquisition; applications choose whether to stop recording, mark intervals, or continue when quality changes. The example applications illustrate different policies: the OpenCV run fails on sampled readiness loss, while browser recording writes immediately when requested and retains metadata for downstream selection.
 
-For C++, the equivalent public interfaces are [`session.hpp`](../include/bcamsync/session.hpp), [`sync.hpp`](../include/bcamsync/sync.hpp), [`sync_unit.hpp`](../include/bcamsync/sync_unit.hpp), and [`timing.hpp`](../include/bcamsync/timing.hpp). See the [installation guide](installation.md#c) and [CMake consumer](../examples/cmake_consumer) for linking. Public types, API comments, and executable examples define the implemented contract; [design notes](design.md) explain the internals.
+For C++, the equivalent public interfaces are [`session.hpp`](../addons/managed/include/bcamsync/session.hpp), [`sync.hpp`](../include/bcamsync/sync.hpp), [`sync_unit.hpp`](../include/bcamsync/sync_unit.hpp), and [`timing.hpp`](../include/bcamsync/timing.hpp). See the [installation guide](installation.md#c) and [CMake consumer](../examples/cmake_consumer) for linking. Public types, API comments, and executable examples define the implemented contract; [design notes](design.md) explain the internals.
