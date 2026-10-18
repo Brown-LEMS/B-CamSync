@@ -4,7 +4,8 @@
 #include <memory>
 
 namespace bcamsync {
-/// Adapt an already-running capture system; methods may run on the synchronization thread.
+/// Device adapter contract called by SyncSession, concurrently with capture callbacks.
+/// Applications pass an adapter to the session; the library requests corrections.
 class SyncUnit {
 public:
     virtual ~SyncUnit() = default;
@@ -12,7 +13,7 @@ public:
     virtual void bind(const std::string& session_id, std::uint64_t round_id) = 0;
     /// Preserve sensor_timestamp_ns; frame timestamp_ns and restoration boundaries use local boot time.
     virtual TimingSnapshot snapshot() const = 0;
-    /// Acceptance is separate from observed completion in snapshot().correction.
+    /// Accept a library-generated correction; execution is confirmed by snapshot().correction.
     virtual CorrectionStatus adjust(const Pulse& pulse) = 0;
     /// Request baseline restoration; snapshot() must report its observed completion.
     virtual void cancel() = 0;

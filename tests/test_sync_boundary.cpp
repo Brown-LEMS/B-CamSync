@@ -1,4 +1,6 @@
 #include "bcamsync/sync.hpp"
+#include "bcamsync/adapters.hpp"
+#include "bcamsync/phase_policy.hpp"
 #include <stdexcept>
 
 using namespace bcamsync;

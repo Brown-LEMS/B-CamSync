@@ -1,6 +1,6 @@
 #include "bcamsync/phase.hpp"
 #include "bcamsync/actuator.hpp"
-#include "bcamsync/rust_ffi.h"
+#include "bcamsync/detail/rust_ffi.h"
 #include <cmath>
 #include <nlohmann/json.hpp>
 #include <memory>

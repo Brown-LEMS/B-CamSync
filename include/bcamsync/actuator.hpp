@@ -3,6 +3,7 @@
 #include <string>
 
 namespace bcamsync {
+/// Adapter support for bounded corrections; the capture path applies each next() result.
 /// Request submission and observed completion are separate boundaries.
 class PhaseActuator {
   public:

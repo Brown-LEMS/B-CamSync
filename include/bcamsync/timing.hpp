@@ -24,6 +24,7 @@ struct TimingSnapshot {
     std::vector<FrameTiming> frames;
     CorrectionStatus correction;
 };
+/// Library-generated frame-period correction for a target SyncUnit, not an application schedule.
 struct Pulse {
     std::uint64_t correction_id = 0;
     int delta_us = 0, count = 0;
