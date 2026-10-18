@@ -4,9 +4,9 @@ import argparse
 from collections import deque
 import threading
 
-from bcamsync import (
-    FrameTiming, NodeConfig, PhaseActuator, SyncConfig, SyncSession, SyncUnit,
-    SyncUnitConfig, TimingSnapshot, boot_time_ns, monotonic_ns,
+from bcamsync import NodeConfig, SyncConfig, SyncSession, SyncUnitConfig
+from bcamsync.adapters import (
+    FrameTiming, PhaseActuator, SyncUnit, TimingSnapshot, boot_time_ns, monotonic_ns,
 )
 
 

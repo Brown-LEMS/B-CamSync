@@ -25,12 +25,17 @@ class NoCaptureDependencies(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, NoCaptureDependencies())
 import bcamsync
 from bcamsync import SyncConfig, SyncSession, SyncUnit, PhaseActuator
+from bcamsync import adapters
+from bcamsync.adapters.libcamera import CameraTiming
+assert adapters.SyncUnit is SyncUnit
+assert adapters.PhaseActuator is PhaseActuator
 assert not hasattr(bcamsync._native, "Session")
 assert not hasattr(bcamsync._native, "FramePacket")
 spec = importlib.util.spec_from_file_location("opencv_sync", sys.argv[1])
 example = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(example)
 assert issubclass(example.CameraTiming, SyncUnit)
+assert example.CameraTiming is CameraTiming
 from bcamsync.management import NodeService
 from bcamsync.http_management import HttpNodeService
 from bcamsync.node import run_node

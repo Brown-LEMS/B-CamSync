@@ -6,7 +6,6 @@ The default run measures synchronization only.
 """
 
 import argparse
-from collections import deque
 from contextlib import ExitStack
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -19,72 +18,8 @@ import threading
 import time
 from urllib.parse import unquote, urlsplit
 
-from bcamsync import FrameTiming, PhaseActuator, SyncConfig, SyncSession, SyncUnit, TimingSnapshot
-from bcamsync import boot_time_ns, monotonic_ns
-
-
-class CameraTiming(SyncUnit):
-    def __init__(self, unit_id, fps, minimum_us, maximum_us):
-        super().__init__()
-        self.unit_id = unit_id
-        self.baseline_us = 1_000_000 // fps
-        self.minimum_us, self.maximum_us = minimum_us, maximum_us
-        self.actuator = PhaseActuator()
-        self.frames = deque(maxlen=240)
-        self.lock = threading.Lock()
-        self.binding = None
-        self.error = ""
-        self.restoration = None
-        self.corrections = 0
-
-    def bind(self, session_id, round_id):
-        with self.lock:
-            self.actuator.bind(session_id, round_id)
-            self.binding = session_id, round_id
-
-    def next_submission(self):
-        with self.lock:
-            return self.actuator.next(self.baseline_us, monotonic_ns())
-
-    def observe(self, sequence, sensor_ns, reported_us, submitted):
-        with self.lock:
-            frame = FrameTiming()
-            frame.camera_sequence = sequence
-            frame.sensor_timestamp_ns = frame.timestamp_ns = sensor_ns
-            frame.requested_duration_us = submitted.duration_us
-            frame.reported_duration_us = reported_us
-            frame.correction_id = submitted.correction_id
-            self.frames.append(frame)
-            if submitted.restoration:
-                self.restoration = submitted
-            if self.restoration is not None and abs(reported_us - self.baseline_us) <= 50:
-                self.actuator.completed(self.restoration, sequence, sensor_ns)
-                self.restoration = None
-
-    def snapshot(self):
-        with self.lock:
-            result = TimingSnapshot()
-            result.unit_id = self.unit_id
-            result.snapshot_timestamp_ns = boot_time_ns()
-            result.frames = list(self.frames)
-            result.correction = self.actuator.snapshot()
-            return result
-
-    def adjust(self, pulse):
-        with self.lock:
-            result = self.actuator.adjust(*self.binding, pulse, boot_time_ns(), monotonic_ns(),
-                                          self.baseline_us, self.minimum_us, self.maximum_us)
-            self.corrections += 1
-            print(f"{self.unit_id}: correction {pulse.correction_id}, "
-                  f"delta={pulse.delta_us}us, frames={pulse.count}", flush=True)
-            return result
-
-    def cancel(self):
-        with self.lock:
-            self.actuator.cancel(*self.binding)
-
-    def fault(self):
-        return self.error
+from bcamsync import SyncConfig, SyncSession
+from bcamsync.adapters.libcamera import CameraTiming
 
 
 class BrowserPreview:

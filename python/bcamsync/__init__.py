@@ -1,10 +1,17 @@
-"""Camera-independent synchronization through application-owned SyncUnit adapters."""
+"""Application API: configure SyncSession, control its lifetime, and inspect quality.
+
+Device adapter interfaces live in bcamsync.adapters. Their original top-level
+imports remain available for compatibility. Algorithms and FFI are internal
+implementation details rather than application orchestration interfaces.
+"""
 
 from ._native import (
-    ClockMapping, CorrectionStatus, FrameTiming, GroupStatus, NetworkSession,
-    NodeConfig, PhaseActuator, PhasePolicy, Pulse, Submission, SyncConfig,
-    SyncSession, SyncUnit, SyncUnitConfig, TimingSnapshot, UnitStatus,
-    boot_time_ns, monotonic_ns,
+    ClockMapping, GroupStatus, NetworkSession, NodeConfig, PhasePolicy, SyncConfig,
+    SyncSession, SyncUnitConfig, UnitStatus,
+)
+from .adapters import (
+    CorrectionStatus, FrameTiming, PhaseActuator, Pulse, Submission, SyncUnit,
+    TimingSnapshot, boot_time_ns, monotonic_ns,
 )
 
 __all__ = [
