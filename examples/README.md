@@ -2,7 +2,7 @@
 
 [User guide](../README.md) · [Pi 5 first run](../docs/getting-started.md) · [Integration guide](../docs/integration.md)
 
-Start with `opencv_sync.py` to attach this library's `SyncSession` interface to application-owned capture. The script provides a complete libcamera acquisition and OpenCV recording pipeline; this library supplies synchronization through its timing/control adapters. You can copy that one script and its configuration, or adapt its `CameraTiming` class to your existing pipeline. The other examples offer separate applications and optional managed capture.
+Start with `opencv_sync.py` to attach this library's `SyncSession` interface to application-owned capture. The script provides a complete libcamera acquisition and OpenCV recording pipeline and imports the reusable `CameraTiming` class from `bcamsync.adapters.libcamera`. You can copy that one script and its configuration, or import the same adapter and connect it to request submission/completion in your existing pipeline. `external_capture.py` demonstrates implementing a new adapter through `bcamsync.adapters`. The other examples offer separate applications and optional managed capture.
 
 ## Choose an application
 

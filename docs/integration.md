@@ -2,7 +2,15 @@
 
 [User guide](../README.md) · [First run on Pi 5](getting-started.md) · [Example catalog](../examples/README.md)
 
-This library adds continuous synchronization to a camera application. Start with `SyncSession`: your existing pipeline supplies sensor timing and applies requested frame-period controls through `SyncUnit` adapters. This library estimates phase, decides bounded corrections, and reports quality. Your application keeps camera configuration, acquisition threads, buffers, frame delivery, processing, and recording. The separately installed C++ managed capture add-on provides `Session` for applications that want camera operations and frame delivery handled for them.
+This library adds continuous synchronization to a camera application. Application users configure and control `SyncSession`, supply existing device adapters, and inspect synchronization quality. Adapter implementers translate sensor metadata and library-generated corrections into SDK operations. This library's internal runtime owns phase estimation, correction decisions, node-to-node communication, clock mapping, and group state. Your application keeps camera configuration, acquisition threads, buffers, frame delivery, processing, and recording. The separately installed C++ managed capture add-on provides `Session` for applications that want camera operations and frame delivery handled for them.
+
+| Audience | Objects and entry points | Responsibility |
+| --- | --- | --- |
+| Application user | `bcamsync.SyncConfig`, `NodeConfig`, `SyncUnitConfig`, `PhasePolicy`, `SyncSession`, status and clock results | Supply membership and endpoints, attach adapters, control session lifetime, and decide how quality affects the application |
+| Device adapter implementer | `bcamsync.adapters.SyncUnit`, timing/control types, `PhaseActuator`, `Submission` | Report actual device timing and execute corrections requested by this library |
+| Library internals | Phase controllers, synchronization transport, runtime, platform helpers, FFI | Choose corrections, coordinate nodes, map clocks, and manage synchronization state and resources |
+
+Existing top-level adapter imports such as `from bcamsync import SyncUnit, Pulse, PhaseActuator` remain compatible and refer to the same native types. New adapter code can import them from `bcamsync.adapters`. Application code can continue using the existing `SyncSession` constructor and lifecycle methods. Automatic address configuration and node discovery remain existing startup helpers; this interface organization does not change their implementation or dependencies.
 
 | Responsibility | Recommended: `SyncSession` | Optional add-on: `Session` |
 | --- | --- | --- |
@@ -14,7 +22,7 @@ This library adds continuous synchronization to a camera application. Start with
 
 ## Attach to an existing pipeline: `SyncSession`
 
-Keep your existing capture pipeline and supply one `SyncUnit` adapter per local synchronization unit. For B0267, each board is one unit with four view positions. Your camera SDK must expose sensor timestamps, observed frame durations, and request controls for bounded frame-period changes. Reading image arrays through OpenCV alone does not supply this timing/control contract. The real-device implementation is `CameraTiming` in [`opencv_sync.py`](../examples/opencv_sync.py); the script's `Capture` class supplies those SDK operations and images separately.
+Keep your existing capture pipeline and supply one adapter per local synchronization unit. For B0267, each board is one unit with four view positions. Your camera SDK must expose sensor timestamps, observed frame durations, and request controls for bounded frame-period changes. Reading image arrays through OpenCV alone does not supply this timing/control contract. The reusable [`CameraTiming`](../python/bcamsync/adapters/libcamera.py) adapter is imported by [`opencv_sync.py`](../examples/opencv_sync.py); the script's `Capture` class supplies SDK operations and images separately.
 
 Start with the [Pi 5 walkthrough](getting-started.md) to run the real application. To learn the adapter without cameras, the synchronization-only installation also runs this complete synthetic example:
 
@@ -22,7 +30,7 @@ Start with the [Pi 5 walkthrough](getting-started.md) to run the real applicatio
 .venv/bin/python examples/external_capture.py
 ```
 
-In your pipeline, collect metadata in the existing capture completion callback, apply the adapter's next frame duration when queueing SDK requests, and pass the adapters to `SyncSession`. Your pixel path stays in the application. The example script's recording code can be replaced without changing this library's synchronization runtime.
+In your pipeline, connect request submission and completion callbacks to the existing adapter and pass the adapters to `SyncSession`. Your pixel path stays in the application. This library chooses the corrections; application code does not create pulses or call `adjust()` to schedule synchronization. The example script's recording code can be replaced without changing this library's synchronization runtime.
 
 The lifecycle below is illustrative: `capture` and `adapters` are objects supplied by your application, as in those executable examples.
 
@@ -45,7 +53,27 @@ The adapter map's keys must match the configured local unit IDs. `SyncConfig` de
 
 Keep acquisition and request completion running while `SyncSession.stop()` restores baseline controls and waits for feedback. Close the application capture only after synchronization stops. To restart synchronization on those same cameras, call `stop()` followed by `start()` on the same session, as the OpenCV example does. Adapter state must honor the new control round. After a fault, recovery requires an explicit stop/start.
 
-### Adapter methods
+### Reuse the libcamera timing adapter
+
+Import `CameraTiming` from `bcamsync.adapters.libcamera` and construct it with the unit ID, group frame rate, and actual minimum/maximum frame-duration limits in microseconds. Importing this adapter does not load libcamera, OpenCV, NumPy, or managed capture. It supplies metadata/control bookkeeping and owns no camera, pixels, producer thread, or acquisition lifecycle.
+
+```python
+from bcamsync.adapters.libcamera import CameraTiming
+
+timing = CameraTiming(unit_id, config.fps, minimum_us, maximum_us)
+adapters[unit_id] = timing
+```
+
+Connect two points in your existing Linux libcamera pipeline, as the executable OpenCV example does:
+
+1. Before queueing each request, call `submitted = timing.next_submission()`, apply `(submitted.duration_us, submitted.duration_us)` to `FrameDurationLimits`, and retain `submitted` alongside that request.
+2. On completion, call `timing.observe(sequence, sensor_timestamp_ns, reported_duration_us, submitted)` with the device's actual sequence, `SensorTimestamp`, `FrameDuration`, and the matching retained submission.
+
+`SyncSession` calls the adapter's binding, snapshot, adjustment, cancellation, and fault methods itself. The capture callbacks only apply the requested period and return metadata. The adapter preserves sensor timestamps in the local Linux boot-time domain and keeps at most 240 observations; select a measurement window that fits this history at your frame rate. It confirms baseline restoration when reported duration is within 50 microseconds of baseline, including completion metadata arriving after the restoration request. That device feedback tolerance is separate from phase-readiness thresholds. The `corrections` counter remains available to application status reporting; `error` supplies a capture fault to synchronization. The adapter does not print application logs.
+
+### Implement a device adapter
+
+Use this section when an existing adapter does not fit your SDK's clock or control semantics. Derive from `bcamsync.adapters.SyncUnit`; the reusable libcamera adapter above already implements this contract.
 
 Methods can run on the synchronization thread concurrently with your capture callbacks. Protect shared history and control state, and keep image processing out of these callbacks. Derive from `SyncUnit` and call `super().__init__()` in Python.
 
@@ -65,7 +93,7 @@ Supply monotonic camera sequences and ordered, fresh timing history. Record requ
 
 ### Frame-period corrections
 
-Use `PhaseActuator` to track bounded pulses, expiry, cancellation, and restoration. Bind it in `bind()`, call `adjust()` with the current binding and actual device duration limits, and use `next(baseline_us, monotonic_ns())` when submitting each request. Apply the returned `duration_us` through your SDK and retain the `Submission` alongside that request.
+Adapter implementers can import `PhaseActuator` from `bcamsync.adapters` to track bounded pulses, expiry, cancellation, and restoration. This library's controller generates a `Pulse` and its runtime calls `SyncUnit.adjust(pulse)` locally or through the synchronization protocol. The adapter registers that request with `PhaseActuator.adjust()`; it does not choose the correction. Bind the actuator in `bind()` and use actual device duration limits. Call `next(baseline_us, monotonic_ns())` when submitting each request, apply the returned `duration_us` through your SDK, and retain the `Submission` alongside that request.
 
 Call `completed()` for a restoration submission only when device completion metadata confirms that the baseline duration has taken effect. Queueing a request or accepting a pulse does not confirm restoration. The OpenCV adapter retains pending restoration feedback across requests until the reported duration returns to baseline; use that real-device example for this distinction. Export the actuator's current `snapshot()` as `TimingSnapshot.correction`.
 
@@ -112,4 +140,4 @@ A single-node group uses its local clock without networking. Physical multi-node
 
 Default readiness targets are p95 ≤ 0.5 ms and max ≤ 1 ms across two settled windows. Continue observing status during acquisition; applications choose whether to stop recording, mark intervals, or continue when quality changes. The example applications illustrate different policies: the OpenCV run fails on sampled readiness loss, while browser recording writes immediately when requested and retains metadata for downstream selection.
 
-For C++, the equivalent public interfaces are [`session.hpp`](../addons/managed/include/bcamsync/session.hpp), [`sync.hpp`](../include/bcamsync/sync.hpp), [`sync_unit.hpp`](../include/bcamsync/sync_unit.hpp), and [`timing.hpp`](../include/bcamsync/timing.hpp). See the [installation guide](installation.md#c) and [CMake consumer](../examples/cmake_consumer) for linking. Public types, API comments, and executable examples define the implemented contract; [design notes](design.md) explain the internals.
+For C++, application session control is in [`sync.hpp`](../include/bcamsync/sync.hpp), and device adapter support has the [`adapters.hpp`](../include/bcamsync/adapters.hpp) entry point. [`phase_policy.hpp`](../include/bcamsync/phase_policy.hpp) declares application control/quality settings separately from the advanced algorithm interfaces in `phase.hpp`; existing headers and type names remain compatible. The managed add-on provides [`session.hpp`](../addons/managed/include/bcamsync/session.hpp). The `detail` runtime/FFI headers support the core and add-on implementation. See the [installation guide](installation.md#c) and [CMake consumer](../examples/cmake_consumer) for linking. Public types, API comments, and executable examples define the implemented contract; [design notes](design.md) explain the internals.

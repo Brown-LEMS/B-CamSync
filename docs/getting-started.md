@@ -2,7 +2,7 @@
 
 [User guide](../README.md) · [Installation](installation.md) · [Integration guide](integration.md)
 
-This walkthrough installs this library, attaches `SyncSession` to the capture pipeline in [`opencv_sync.py`](../examples/opencv_sync.py), checks synchronization, and records two short videos. The application is one Python file. It owns the cameras and image buffers, passes timing observations to this library through `CameraTiming` adapters, and implements display and recording. This library decides frame-period corrections and reports synchronization status through `SyncSession`.
+This walkthrough installs this library, attaches `SyncSession` to the capture pipeline in [`opencv_sync.py`](../examples/opencv_sync.py), checks synchronization, and records two short videos. The application is one Python file. It owns the cameras and image buffers, imports reusable `CameraTiming` adapters from `bcamsync.adapters.libcamera`, and implements display and recording. This library decides frame-period corrections and reports synchronization status through `SyncSession`.
 
 The lab has exercised this application on one Raspberry Pi 5 with two Arducam B0267 boards, including stopping and restarting synchronization while capture continues. One board is one synchronization unit with four camera view positions; two boards expose eight view positions. This script requires exactly one node and two boards.
 

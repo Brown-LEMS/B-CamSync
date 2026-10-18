@@ -4,7 +4,7 @@ B-CamSync is a camera synchronization library with a Rust core and interfaces fo
 
 **Start with `SyncSession` to add synchronization to your existing capture pipeline.** Your application continues to configure cameras, acquire frames, own image buffers, and record video. This library consumes sensor timing and requests timing corrections through your `SyncUnit` adapters; it does not take over acquisition in this integration.
 
-[`examples/opencv_sync.py`](examples/opencv_sync.py) is a complete application showing this integration on one Pi 5 with two Arducam B0267 boards. The script operates libcamera, provides the adapters, and implements optional OpenCV display and MJPG recording. Installing this library and copying that script plus a configuration gives you a runnable application. Source, bindings, tests, and build tools in this repository are used to develop this library.
+[`examples/opencv_sync.py`](examples/opencv_sync.py) is a complete application showing this integration on one Pi 5 with two Arducam B0267 boards. The script operates libcamera, imports this library's reusable `CameraTiming` adapter, and implements optional OpenCV display and MJPG recording. Installing this library and copying that script plus a configuration gives you a runnable application. Source, bindings, tests, and build tools in this repository are used to develop this library.
 
 ## First use: Pi 5, two boards, `SyncSession`
 
@@ -44,10 +44,12 @@ For live browser preview without XQuartz, run the same script on the Pi with `--
 | Your application | API | Guide/example |
 | --- | --- | --- |
 | Add synchronization to your existing acquisition and recording pipeline; recommended starting point | `SyncConfig` + `SyncSession` + `SyncUnit` adapters | [Integration guide](docs/integration.md), [`opencv_sync.py`](examples/opencv_sync.py) |
-| Learn the adapter with synthetic acquisition | `SyncSession` | [`external_capture.py`](examples/external_capture.py) |
+| Implement an adapter for a new device | `bcamsync.adapters.SyncUnit` and timing/control types | [Adapter contract](docs/integration.md#implement-a-device-adapter), [`external_capture.py`](examples/external_capture.py) |
 | Have the optional C++ add-on configure cameras and deliver local frames | `bcamsync_managed.Config` + `Session` | [Managed capture](docs/integration.md#optional-managed-capture-session), [`capture.py`](examples/capture.py) |
 
 `SyncSession.stop()` restores baseline frame-period controls while your application keeps capture running. The separately installed `bcamsync-managed` add-on provides `Session`, which owns camera lifecycle and frame delivery and uses the same synchronization core. Existing explicit imports such as `from bcamsync import Config, Session` continue to work when that add-on is installed. Importing the core does not load the add-on or NumPy. See [the example catalog](examples/README.md) for complete applications and the files needed to copy each one.
+
+Application code manages configuration, session lifetime, and quality results. For Linux libcamera pipelines, import `CameraTiming` from `bcamsync.adapters.libcamera` and connect its request-submission and completion hooks as shown in the example. This library decides corrections automatically. The `bcamsync.adapters` module contains the device implementation contract; existing top-level imports of those types remain compatible. Phase estimation, synchronization transport, and cross-language resource management are library internals. See [the integration guide](docs/integration.md) for the three interface levels and reusable adapter hooks.
 
 ## Guides
 

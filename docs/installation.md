@@ -29,10 +29,10 @@ Install this library's synchronization interfaces and keep NumPy below 2 for Boo
 
 ```sh
 .venv/bin/python -m pip install . 'numpy<2'
-.venv/bin/python -c 'from bcamsync import SyncConfig, SyncSession, SyncUnit; import cv2, libcamera; print("SyncSession application imports OK")'
+.venv/bin/python -c 'from bcamsync import SyncConfig, SyncSession; from bcamsync.adapters.libcamera import CameraTiming; import cv2, libcamera; print("SyncSession and CameraTiming application imports OK")'
 ```
 
-The core package does not include managed camera acquisition and has no NumPy dependency. The OpenCV application uses your installed Python libcamera stack and NumPy; keep its NumPy pin when installing application dependencies. The core build needs no libcamera development headers. Linux builds still link libsystemd; the single-node `SyncSession` workflow does not need NetworkManager or chrony. Continue with [board identification and capture](getting-started.md#2-identify-the-boards).
+The core package includes the reusable `bcamsync.adapters.libcamera.CameraTiming` metadata/control adapter, which imports no camera SDK or image dependencies. The core package does not include managed camera acquisition and has no NumPy dependency. The OpenCV application uses your installed Python libcamera stack and NumPy; keep its NumPy pin when installing application dependencies. The core build needs no libcamera development headers. Linux builds still link libsystemd; the single-node `SyncSession` workflow does not need NetworkManager or chrony. Continue with [board identification and capture](getting-started.md#2-identify-the-boards).
 
 ## Optional managed capture
 
