@@ -23,6 +23,11 @@ class ManagedAddonTests(unittest.TestCase):
         self.assertIsInstance(sync, bcamsync.SyncConfig)
         self.assertIsInstance(sync.nodes[0], bcamsync.NodeConfig)
         self.assertEqual(sync.sync_json(), config.sync_json())
+        self.assertIsNone(config.join_timeout_seconds)
+        config.join_timeout_seconds = 120.5
+        self.assertEqual(config.sync_config().join_timeout_seconds, 120.5)
+        config.join_timeout_seconds = None
+        self.assertIsNone(config.sync_config().join_timeout_seconds)
 
 
 if __name__ == "__main__":

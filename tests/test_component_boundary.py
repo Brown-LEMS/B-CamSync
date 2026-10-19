@@ -40,9 +40,26 @@ from bcamsync.management import NodeService
 from bcamsync.http_management import HttpNodeService
 from bcamsync.node import run_node
 config = SyncConfig.from_file(Path(sys.argv[1]).parent / "configs" / "external_one_node_pi5.json")
+assert config.join_timeout_seconds is None
+config.join_timeout_seconds = 120.5
+config.validate()
+assert config.join_timeout_seconds == 120.5
+for invalid in (0, -1, float("nan"), float("inf")):
+    config.join_timeout_seconds = invalid
+    try:
+        config.validate()
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Invalid join timeout was accepted")
+config.join_timeout_seconds = None
 adapters = {unit.id: example.CameraTiming(unit.id, config.fps, 1000, 1000000)
             for unit in config.units}
 with_controller = SyncSession(config, "node-a", adapters)
+status = with_controller.status()
+assert status.waiting_nodes == []
+assert status.stop_node == ""
+assert status.stop_reason == ""
 controller = NodeService(config, "node-a", session=with_controller)
 assert controller.request("status")["state"] == "stopped"
 assert controller.request("configuration")["node_id"] == "node-a"

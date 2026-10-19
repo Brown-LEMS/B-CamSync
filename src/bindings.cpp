@@ -28,7 +28,10 @@ PYBIND11_MODULE(_native, module) {
         .def_readonly("state", &GroupStatus::state)
         .def_readonly("fault", &GroupStatus::fault)
         .def_readonly("ready", &GroupStatus::ready)
-        .def_readonly("units", &GroupStatus::units);
+        .def_readonly("units", &GroupStatus::units)
+        .def_readonly("waiting_nodes", &GroupStatus::waiting_nodes)
+        .def_readonly("stop_node", &GroupStatus::stop_node)
+        .def_readonly("stop_reason", &GroupStatus::stop_reason);
 
     bcamsync::python::bind_sync(module);
     bcamsync::python::bind_network(module);

@@ -1,6 +1,7 @@
 #pragma once
 #include "phase.hpp"
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -24,6 +25,8 @@ struct SyncConfig {
     PhasePolicy phase_policy;
     double clock_max_offset_ms = 0.1, clock_max_age_seconds = 10.0;
     double request_timeout_seconds = 2.0, startup_timeout_seconds = 60.0;
+    /// Optional group membership deadline; no value waits until peers join or stop is requested.
+    std::optional<double> join_timeout_seconds;
     void validate() const;
     const NodeConfig& node(const std::string& id) const;
     const SyncUnitConfig& unit(const std::string& id) const;
@@ -50,5 +53,7 @@ struct GroupStatus {
     std::string state = "stopped", fault;
     bool ready = false;
     std::vector<UnitStatus> units;
+    std::vector<std::string> waiting_nodes;
+    std::string stop_node, stop_reason;
 };
 } // namespace bcamsync

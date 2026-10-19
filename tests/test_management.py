@@ -73,7 +73,9 @@ class LocalServiceTests(unittest.TestCase):
                 self.assertEqual(report["sync_contract"], json.loads(config.sync_json()))
                 self.assertEqual(report["reference_node"], config.reference_node())
                 self.assertIsNone(service.session)
-                self.assertFalse(request_local(path, "status", timeout_seconds=5)["active"])
+                idle = request_local(path, "status", timeout_seconds=5)
+                self.assertFalse(idle["active"])
+                self.assertEqual((idle["waiting_nodes"], idle["stop_node"], idle["stop_reason"]), ([], "", ""))
                 owner = str(uuid4())
                 request_local(path, "start", timeout_seconds=5, operation_id=owner)
                 session = service.session
@@ -97,6 +99,9 @@ class LocalServiceTests(unittest.TestCase):
                 self.assertFalse(closed["active"])
                 self.assertEqual(closed["state"], "stopped")
                 self.assertEqual(closed["fault"], "")
+                native = session.status()
+                self.assertEqual((closed["waiting_nodes"], closed["stop_node"], closed["stop_reason"]),
+                                 (native.waiting_nodes, native.stop_node, native.stop_reason))
                 request_local(path, "start", timeout_seconds=5)
                 self.assertIs(service.session, session)
                 self.assertTrue(session.wait_ready(45))

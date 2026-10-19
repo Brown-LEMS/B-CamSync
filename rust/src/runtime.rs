@@ -64,6 +64,9 @@ pub struct GroupStatus {
     pub ready: bool,
     pub fault: String,
     pub units: Vec<UnitStatus>,
+    pub waiting_nodes: Vec<String>,
+    pub stop_node: String,
+    pub stop_reason: String,
 }
 impl Default for GroupStatus {
     fn default() -> Self {
@@ -72,6 +75,9 @@ impl Default for GroupStatus {
             ready: false,
             fault: String::new(),
             units: Vec::new(),
+            waiting_nodes: Vec::new(),
+            stop_node: String::new(),
+            stop_reason: String::new(),
         }
     }
 }

@@ -111,6 +111,7 @@ void bind_sync(py::module_& module) {
         .def_readwrite("clock_max_age_seconds", &SyncConfig::clock_max_age_seconds)
         .def_readwrite("request_timeout_seconds", &SyncConfig::request_timeout_seconds)
         .def_readwrite("startup_timeout_seconds", &SyncConfig::startup_timeout_seconds)
+        .def_readwrite("join_timeout_seconds", &SyncConfig::join_timeout_seconds)
         .def("validate", &SyncConfig::validate)
         .def("node", &SyncConfig::node, py::arg("node_id"), py::return_value_policy::copy)
         .def("unit", &SyncConfig::unit, py::arg("unit_id"), py::return_value_policy::copy)

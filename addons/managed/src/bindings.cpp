@@ -80,6 +80,7 @@ PYBIND11_MODULE(_native, module) {
         .def_readwrite("clock_max_age_seconds", &Config::clock_max_age_seconds)
         .def_readwrite("request_timeout_seconds", &Config::request_timeout_seconds)
         .def_readwrite("startup_timeout_seconds", &Config::startup_timeout_seconds)
+        .def_readwrite("join_timeout_seconds", &Config::join_timeout_seconds)
         .def("validate", &Config::validate)
         .def("node", &Config::node, py::arg("node_id"), py::return_value_policy::copy)
         .def("unit", &Config::unit, py::arg("unit_id"), py::return_value_policy::copy)

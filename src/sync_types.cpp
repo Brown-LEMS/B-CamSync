@@ -1,6 +1,7 @@
 #include "bcamsync/sync_types.hpp"
 #include "bcamsync/detail/phase_policy_json.hpp"
 #include "config_ffi.hpp"
+#include <cmath>
 #include <fstream>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -20,6 +21,8 @@ Json checked(char* value) {
     return response.at("ok");
 }
 Json document(const SyncConfig& config) {
+    if (config.join_timeout_seconds && !std::isfinite(*config.join_timeout_seconds))
+        throw std::invalid_argument("join timeout must be finite and positive");
     Json nodes = Json::array(), units = Json::array();
     for (const auto& n : config.nodes) nodes.push_back({{"id",n.id},{"address",n.address},{"interface",n.interface},{"port",n.port}});
     for (const auto& u : config.units) units.push_back({{"id",u.id},{"node_id",u.node_id}});
@@ -27,7 +30,8 @@ Json document(const SyncConfig& config) {
         {"clock_mode",config.clock_mode},{"network",{{"mode",config.network_mode},{"clock_port",config.clock_port}}},
         {"nodes",nodes},{"units",units},{"phase_policy",detail::phase_policy_json(config.phase_policy)},
         {"clock_max_offset_ms",config.clock_max_offset_ms},{"clock_max_age_seconds",config.clock_max_age_seconds},
-        {"request_timeout_seconds",config.request_timeout_seconds},{"startup_timeout_seconds",config.startup_timeout_seconds}};
+        {"request_timeout_seconds",config.request_timeout_seconds},{"startup_timeout_seconds",config.startup_timeout_seconds},
+        {"join_timeout_seconds",config.join_timeout_seconds ? Json(*config.join_timeout_seconds) : Json(nullptr)}};
 }
 std::int64_t clock(int kind) {
     std::int64_t value{};
@@ -90,6 +94,8 @@ SyncConfig SyncConfig::from_file(const std::string& path) {
     config.phase_policy = detail::phase_policy_from_json(value.at("phase_policy"));
     config.clock_max_offset_ms = value.at("clock_max_offset_ms"); config.clock_max_age_seconds = value.at("clock_max_age_seconds");
     config.request_timeout_seconds = value.at("request_timeout_seconds"); config.startup_timeout_seconds = value.at("startup_timeout_seconds");
+    if (!value.at("join_timeout_seconds").is_null())
+        config.join_timeout_seconds = value.at("join_timeout_seconds").get<double>();
     return config;
 }
 } // namespace bcamsync

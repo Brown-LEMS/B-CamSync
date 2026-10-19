@@ -38,10 +38,13 @@ def _operation_id(value: str | None) -> str | None:
 def _status(session, local_node: str, active: bool, operation_id: str | None) -> dict:
     if session is None:
         return {"node_id": local_node, "active": False, "operation_id": None,
-                "state": "stopped", "ready": False, "fault": "", "units": []}
+                "state": "stopped", "ready": False, "fault": "", "units": [],
+                "waiting_nodes": [], "stop_node": "", "stop_reason": ""}
     status = session.status()
     return {"node_id": local_node, "active": active, "operation_id": operation_id,
             "state": status.state, "ready": status.ready, "fault": status.fault,
+            "waiting_nodes": status.waiting_nodes, "stop_node": status.stop_node,
+            "stop_reason": status.stop_reason,
             "units": [{"unit_id": unit.unit_id, "state": unit.state, "ready": unit.ready,
                        "fault": unit.fault, "phase_ms": unit.phase_ms, "p95_ms": unit.p95_ms,
                        "max_ms": unit.max_ms, "measurement_end_ns": unit.measurement_end_ns}

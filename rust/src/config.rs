@@ -43,6 +43,7 @@ pub struct SyncConfig {
     pub clock_max_age_seconds: f64,
     pub request_timeout_seconds: f64,
     pub startup_timeout_seconds: f64,
+    pub join_timeout_seconds: Option<f64>,
 }
 impl Default for SyncConfig {
     fn default() -> Self {
@@ -60,6 +61,7 @@ impl Default for SyncConfig {
             clock_max_age_seconds: 10.0,
             request_timeout_seconds: 2.0,
             startup_timeout_seconds: 60.0,
+            join_timeout_seconds: None,
         }
     }
 }
@@ -92,6 +94,7 @@ struct ConfigDocument {
     clock_max_age_seconds: f64,
     request_timeout_seconds: f64,
     startup_timeout_seconds: f64,
+    join_timeout_seconds: Option<f64>,
 }
 impl Default for ConfigDocument {
     fn default() -> Self {
@@ -116,6 +119,7 @@ impl SyncConfig {
             clock_max_age_seconds: self.clock_max_age_seconds,
             request_timeout_seconds: self.request_timeout_seconds,
             startup_timeout_seconds: self.startup_timeout_seconds,
+            join_timeout_seconds: self.join_timeout_seconds,
         }
     }
     pub fn node(&self, id: &str) -> Result<&NodeConfig, String> {
@@ -199,7 +203,12 @@ impl SyncConfig {
                 return Err("timeout is invalid or exceeds timestamp range".into());
             }
         }
-        if (2.0 + self.request_timeout_seconds * (self.nodes.len() + 1) as f64) * 1e9 >= available {
+        if let Some(value) = self.join_timeout_seconds {
+            if !value.is_finite() || value <= 0.0 || value * 1e9 >= available {
+                return Err("join timeout is invalid or exceeds timestamp range".into());
+            }
+        }
+        if (2.0 + self.request_timeout_seconds * (self.nodes.len() + 3) as f64) * 1e9 >= available {
             return Err("group request budget exceeds timestamp range".into());
         }
         Ok(())
@@ -255,6 +264,7 @@ impl<'de> Deserialize<'de> for SyncConfig {
             clock_max_age_seconds: d.clock_max_age_seconds,
             request_timeout_seconds: d.request_timeout_seconds,
             startup_timeout_seconds: d.startup_timeout_seconds,
+            join_timeout_seconds: d.join_timeout_seconds,
         })
     }
 }
@@ -338,5 +348,25 @@ mod tests {
             malformed[field] = invalid;
             assert!(serde_json::from_value::<SyncConfig>(malformed).is_err());
         }
+    }
+    #[test]
+    fn join_timeout_is_optional_local_and_checked() {
+        let mut config = local();
+        assert_eq!(config.join_timeout_seconds, None);
+        assert!(serde_json::to_value(&config).unwrap()["join_timeout_seconds"].is_null());
+        let contract = config.sync_json();
+        config.join_timeout_seconds = Some(120.5);
+        config.validate().unwrap();
+        let restored: SyncConfig =
+            serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
+        assert_eq!(restored.join_timeout_seconds, Some(120.5));
+        assert_eq!(config.sync_json(), contract);
+        for value in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1e10] {
+            config.join_timeout_seconds = Some(value);
+            assert!(config.validate().is_err(), "invalid join timeout: {value}");
+        }
+        let mut malformed = serde_json::to_value(local()).unwrap();
+        malformed["join_timeout_seconds"] = json!("120");
+        assert!(serde_json::from_value::<SyncConfig>(malformed).is_err());
     }
 }

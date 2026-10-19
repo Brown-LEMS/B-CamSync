@@ -95,6 +95,9 @@ void topology() {
     invalid([](Config& x) { x.request_timeout_seconds = std::numeric_limits<double>::infinity(); });
     invalid([](Config& x) { x.startup_timeout_seconds = -1; });
     invalid([](Config& x) { x.startup_timeout_seconds = 1e10; });
+    for (const auto timeout : {0.0, -1.0, std::numeric_limits<double>::quiet_NaN(),
+                               std::numeric_limits<double>::infinity(), 1e10})
+        invalid([&](Config& x) { x.join_timeout_seconds = timeout; });
     invalid([](Config& x) { x.request_timeout_seconds = 4e9; });
 }
 void existing_address_network() {
@@ -130,6 +133,7 @@ void shared_contract() {
     local.clock_max_offset_ms = 0.5;
     local.request_timeout_seconds = 20;
     local.startup_timeout_seconds = 1200;
+    local.join_timeout_seconds = 3600;
     std::reverse(local.nodes.begin(), local.nodes.end());
     std::reverse(local.units.begin(), local.units.end());
     require(c.sync_json() == local.sync_json(), "shared contract ignores host, acquisition, and order differences");
@@ -247,6 +251,9 @@ struct TemporaryConfig {
 };
 void wire_membership() {
     GroupStatus status;
+    status.waiting_nodes = {"node-b", "node-c"};
+    status.stop_node = "node-a";
+    status.stop_reason = "requested";
     for (unsigned i = 0; i < 70; ++i) {
         UnitStatus unit;
         unit.unit_id = "board-" + std::to_string(i);
@@ -254,8 +261,14 @@ void wire_membership() {
     }
     require(detail::status_from_json(detail::status_json(status)).units.size() == 70,
             "wire status preserves configured groups beyond the old unit ceiling");
+    const auto restored = detail::status_from_json(detail::status_json(status));
+    require(restored.waiting_nodes == status.waiting_nodes && restored.stop_node == "node-a" &&
+                restored.stop_reason == "requested", "wire preserves lifecycle progress and stop origin");
     auto malformed = detail::status_json(status);
     malformed["units"] = 70;
+    rejects([&] { detail::status_from_json(malformed); });
+    malformed = detail::status_json(status);
+    malformed["waiting_nodes"] = "node-b";
     rejects([&] { detail::status_from_json(malformed); });
 }
 void synchronization_types() {
@@ -271,6 +284,10 @@ void synchronization_types() {
     sync.phase_policy.window_seconds = 1.5;
     sync.phase_policy.max_mapping_span_ns = 50000;
     sync.validate();
+    require(!sync.join_timeout_seconds, "membership wait has no default deadline");
+    const auto contract = sync.sync_json();
+    sync.join_timeout_seconds = 120.5;
+    require(sync.sync_json() == contract, "join timeout is local and absent from shared contract");
     require(sync.reference_node() == "node-a", "reference selection needs only synchronization membership");
     require(sync.to_json().find("backend") == std::string::npos &&
                 sync.to_json().find("camera_id") == std::string::npos,
@@ -279,6 +296,11 @@ void synchronization_types() {
     file.write(sync.to_json());
     const auto restored = SyncConfig::from_file(file.path);
     require(restored.to_json() == sync.to_json(), "standalone synchronization configuration round trips");
+    require(restored.join_timeout_seconds == sync.join_timeout_seconds, "join deadline round trips");
+    auto invalid_join = sync;
+    invalid_join.join_timeout_seconds = std::numeric_limits<double>::quiet_NaN();
+    rejects([&] { invalid_join.validate(); });
+    rejects([&] { invalid_join.to_json(); });
     auto host = sync;
     host.clock_mode = "host";
     require(host.sync_json() != sync.sync_json(), "explicit clock mode is part of the shared contract");
@@ -324,6 +346,8 @@ void configuration_files() {
     require(c.unit("board").profile == "arducam_b0267_pi4" && c.unit("board").auto_gain,
             "default board profile selects startup gain calibration");
     auto manual = c;
+    require(!c.join_timeout_seconds, "missing managed join timeout defaults to no deadline");
+    manual.join_timeout_seconds = 90.5;
     manual.units[0].auto_gain = false;
     manual.units[0].analogue_gain = 2.0F;
     file.write(manual.to_json());
@@ -331,6 +355,9 @@ void configuration_files() {
     require(!restored.units[0].auto_gain && restored.units[0].analogue_gain == 2.0F,
             "manual gain policy survives resolved configuration exchange");
     require(restored.to_json() == manual.to_json(), "resolved configuration round trip is complete");
+    require(restored.join_timeout_seconds == manual.join_timeout_seconds &&
+                restored.sync_config().join_timeout_seconds == manual.join_timeout_seconds,
+            "managed configuration preserves membership deadline through projection");
     auto fake = c;
     fake.backend = "fake";
     fake.clock_mode = "host";
