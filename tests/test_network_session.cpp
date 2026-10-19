@@ -16,6 +16,7 @@ public:
     static void start(NetworkSession& session, const std::atomic<bool>& stopping, std::int64_t deadline) {
         session.start(stopping, deadline);
     }
+    static SyncConfig available(const NetworkSession& session) { return session.resolve_available(); }
 };
 }
 using namespace bcamsync;
@@ -83,6 +84,11 @@ void discovery_lifetime() {
     NetworkSession first(config, "node-a");
     detail::NetworkSessionTestAccess::start_on_link(first, "127.0.0.1");
     require(first.address() == "127.0.0.1", "local network starts before its peers exist");
+    const auto partial = detail::NetworkSessionTestAccess::available(first);
+    require(partial.network_mode == "auto" && partial.node("node-a").address == "127.0.0.1" &&
+            partial.node("node-b").address.empty(),
+            "available resolution exposes the local endpoint without waiting for a missing peer");
+    partial.validate();
     rejected([&] { first.resolve(50ms); }, "missing peer resolution must respect its deadline");
     require(first.fault().empty() && first.address() == "127.0.0.1",
             "peer timeout leaves local discovery running without a background fault");
@@ -93,9 +99,14 @@ void discovery_lifetime() {
         require(resolved.network_mode == "existing" && resolved.node("node-b").address == "127.0.0.2",
                 "discovery returns the observed peer address for normal synchronization");
         require(second.resolve(2s).node("node-a").address == "127.0.0.1", "both nodes discover independently");
+        require(detail::NetworkSessionTestAccess::available(first).node("node-b").address == "127.0.0.2",
+                "nonblocking resolution includes fresh discovered endpoints");
         require(config.network_mode == "auto", "resolution must not mutate the caller's configuration");
     }
     std::this_thread::sleep_for(3200ms);
+    const auto departed = detail::NetworkSessionTestAccess::available(first);
+    require(departed.node("node-b").address.empty() && departed.node("node-a").address == "127.0.0.1",
+            "nonblocking resolution drops stale peers while retaining the local endpoint");
     rejected([&] { first.resolve(50ms); }, "persistent network must not resolve a departed peer from stale announcements");
     NetworkSession rejoined(config, "node-b");
     detail::NetworkSessionTestAccess::start_on_link(rejoined, "127.0.0.3");

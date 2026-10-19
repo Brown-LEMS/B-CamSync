@@ -514,6 +514,29 @@ SyncConfig NetworkSession::resolve(std::chrono::milliseconds timeout) {
     std::atomic<bool> cancelled{false};
     return resolve(cancelled, network_deadline(timeout));
 }
+SyncConfig NetworkSession::resolve_available() const {
+    std::lock_guard<std::mutex> lifecycle(impl_->lifecycle);
+    if (!impl_->started) throw std::runtime_error("network session is not started");
+    if (impl_->stopping) throw std::runtime_error("network session operation cancelled");
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (!impl_->discovery_fault.empty()) throw std::runtime_error(impl_->discovery_fault);
+    auto resolved = impl_->config;
+#ifdef __linux__
+    if (resolved.network_mode == "auto") {
+        const auto now = monotonic_ns();
+        for (auto& node : resolved.nodes) {
+            if (node.id == impl_->local) {
+                node.address = impl_->address;
+                continue;
+            }
+            const auto peer = impl_->addresses.find(node.id);
+            node.address = peer != impl_->addresses.end() && now - peer->second.second < 3000000000LL
+                ? peer->second.first : std::string{};
+        }
+    }
+#endif
+    return resolved;
+}
 SyncConfig NetworkSession::resolve(const std::atomic<bool>& cancelled, std::int64_t deadline) {
     std::lock_guard<std::mutex> lifecycle(impl_->lifecycle);
     if (!impl_->started) throw std::runtime_error("network session is not started");
@@ -570,7 +593,8 @@ class NodePlatform::Impl {
 public:
     SyncConfig config;
     std::string local, directory;
-    bool started = false;
+    bool started = false, clock_started = false;
+    std::string clock_fault;
     std::unique_ptr<NetworkSession> network;
 #ifdef __linux__
     pid_t child = -1;
@@ -634,38 +658,40 @@ void NodePlatform::start(SyncConfig& resolved, const std::atomic<bool>& stopping
     try {
         impl_->network = std::make_unique<NetworkSession>(resolved, impl_->local);
         impl_->network->start(stopping, deadline_ns);
-        resolved = impl_->network->resolve(stopping, deadline_ns);
+        resolved = impl_->network->resolve_available();
         impl_->config = resolved;
-        std::cerr << "Starting private clock estimator for " << impl_->local << '\n';
-        impl_->launch_clock();
         impl_->started = true;
-        std::string fault;
-        auto next_progress = std::int64_t{0};
-        while (true) {
-            startup_check(stopping, deadline_ns);
-            const auto estimate = sample();
-            if (estimate.valid)
-                break;
-            fault = estimate.fault;
-            int status{};
-            if (waitpid(impl_->child, &status, WNOHANG) == impl_->child) {
-                impl_->child = -1;
-                std::ifstream log(impl_->directory + "/chronyd.log");
-                const std::string output((std::istreambuf_iterator<char>(log)), {});
-                throw std::runtime_error("private chronyd exited: " + output);
-            }
-            if (monotonic_ns() >= next_progress) {
-                std::cerr << "Waiting for group clock: " << fault << '\n';
-                next_progress = monotonic_ns() + 1000000000LL;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
     } catch (...) {
         stop();
         throw;
     }
 #else
     throw std::runtime_error("physical multi-node platform requires Linux, NetworkManager and chrony");
+#endif
+}
+
+SyncConfig NodePlatform::resolve() {
+    if (!impl_->started) throw std::runtime_error("node platform is not started");
+    return impl_->network ? impl_->network->resolve_available() : impl_->config;
+}
+
+void NodePlatform::prepare_clock(const SyncConfig& resolved) {
+    if (!impl_->started) throw std::runtime_error("node platform is not started");
+    if (impl_->config.nodes.size() == 1 || impl_->config.clock_mode == "host" || impl_->clock_started)
+        return;
+    if (std::any_of(resolved.nodes.begin(), resolved.nodes.end(),
+                    [](const NodeConfig& node) { return node.address.empty(); }))
+        throw std::runtime_error("private clock requires resolved node addresses");
+    auto config = resolved;
+    config.network_mode = "existing";
+    config.validate();
+    impl_->config = std::move(config);
+#ifdef __linux__
+    std::cerr << "Starting private clock estimator for " << impl_->local << '\n';
+    impl_->launch_clock();
+    impl_->clock_started = true;
+#else
+    throw std::runtime_error("private clock estimation requires Linux and chrony");
 #endif
 }
 
@@ -680,6 +706,24 @@ ClockEstimate NodePlatform::sample() {
 #ifdef __linux__
             if (impl_->network && !impl_->network->fault().empty())
                 throw std::runtime_error(impl_->network->fault());
+            if (!impl_->clock_started)
+                return {false, 0, 0, "private clock is not prepared"};
+            if (!impl_->clock_fault.empty())
+                return {false, 0, 0, impl_->clock_fault};
+            int status{};
+            const auto exited = waitpid(impl_->child, &status, WNOHANG);
+            if (exited == impl_->child) {
+                impl_->child = -1;
+                std::ifstream log(impl_->directory + "/chronyd.log");
+                const std::string output((std::istreambuf_iterator<char>(log)), {});
+                impl_->clock_fault = "private chronyd exited: " + output;
+                return {false, 0, 0, impl_->clock_fault};
+            }
+            if (exited < 0 && errno != EINTR) {
+                if (errno == ECHILD) impl_->child = -1;
+                impl_->clock_fault = "cannot inspect private chronyd process";
+                return {false, 0, 0, impl_->clock_fault};
+            }
             report = run_program({"chronyc", "-c", "-h", impl_->directory + "/chronyd.sock", "tracking"},
                                  impl_->config.request_timeout_seconds);
 #endif
@@ -712,5 +756,7 @@ void NodePlatform::stop() {
         impl_->directory.clear();
     }
     impl_->started = false;
+    impl_->clock_started = false;
+    impl_->clock_fault.clear();
 }
 } // namespace bcamsync::detail

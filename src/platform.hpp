@@ -38,7 +38,12 @@ class NodePlatform {
     ~NodePlatform();
     NodePlatform(const NodePlatform&) = delete;
     NodePlatform& operator=(const NodePlatform&) = delete;
+    /// Prepare the local endpoint; peer discovery and clock readiness do not delay this call.
     void start(SyncConfig& resolved, const std::atomic<bool>& stopping, std::int64_t deadline_ns);
+    /// Return currently discovered endpoints without waiting for absent peers.
+    SyncConfig resolve();
+    /// Launch the private clock once the runtime has resolved every node.
+    void prepare_clock(const SyncConfig& resolved);
     ClockEstimate sample();
     void stop();
 

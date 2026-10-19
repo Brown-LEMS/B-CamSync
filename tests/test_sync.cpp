@@ -306,9 +306,15 @@ void remote_identity_and_disconnect() {
     require(channel->receive().at("ok").get<bool>(), "test peer establishes a session");
     const auto before = std::chrono::steady_clock::now();
     first->capture_fault = true;
-    rejects([&] { channel->receive(); });
+    await([&] { return !failed.status().fault.empty(); }, 2s, "periodic follower fault is detected");
+    channel->send({{"request_id", 2}, {"command", "snapshots"}, {"session", "test-peer"}});
+    const auto response = channel->receive();
+    require(response.at("stop_requested").get<bool>() && response.at("stop_reason") == "fault" &&
+                response.at("fault").get<std::string>().find("external capture fault") != std::string::npos,
+            "follower reports its fault before closing the control channel");
+    channel.reset();
     require(std::chrono::steady_clock::now() - before < 2s,
-            "periodic follower fault closes the channel before the request timeout");
+            "periodic follower fault reaches the coordinator before the request timeout");
     require(first->running, "transport fault preserves external capture");
     first->capture_fault = false;
     failed.stop();

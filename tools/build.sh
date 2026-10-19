@@ -167,17 +167,17 @@ PY
             export ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1:halt_on_error=1
             export UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
             ctest --test-dir "$build_dir" --output-on-failure --timeout 180 \
-                -E '^(managed_addon|component_boundary|python_adapters|rust_resources|python_ownership|fake_python|external_python|host_client|device_workflow|python_management|python_preview|python_recording|python_opencv_sync|python_network)$'
+                -E '^(managed_addon|component_boundary|python_adapters|rust_resources|python_ownership|fake_python|external_python|group_lifecycle|host_client|device_workflow|python_management|python_preview|python_recording|python_opencv_sync|python_network)$'
             progress 'Check Python arrays with the matching Clang ASan runtime'
             runtime=$("$compiler" -print-file-name="libclang_rt.asan-$(uname -m).so")
             [[ -f $runtime ]] || { printf 'Missing Clang ASan runtime: %s\n' "$runtime" >&2; exit 1; }
             ASAN_OPTIONS=detect_leaks=0:detect_stack_use_after_return=1:halt_on_error=1 \
                 LD_PRELOAD="$runtime" ctest --test-dir "$build_dir" --output-on-failure --timeout 180 \
-                -R '^(managed_addon|component_boundary|python_adapters|rust_resources|python_ownership|fake_python|external_python|python_management|python_preview|python_recording|python_opencv_sync|python_network)$'
+                -R '^(managed_addon|component_boundary|python_adapters|rust_resources|python_ownership|fake_python|external_python|group_lifecycle|python_management|python_preview|python_recording|python_opencv_sync|python_network)$'
         else
             progress 'Check native acquisition and shutdown under TSan'
             TSAN_OPTIONS=halt_on_error=1 ctest --test-dir "$build_dir" --output-on-failure --timeout 180 \
-                -E '^(managed_addon|component_boundary|python_adapters|rust_resources|python_ownership|fake_python|external_python|host_client|device_workflow|python_management|python_preview|python_recording|python_opencv_sync|python_network)$'
+                -E '^(managed_addon|component_boundary|python_adapters|rust_resources|python_ownership|fake_python|external_python|group_lifecycle|host_client|device_workflow|python_management|python_preview|python_recording|python_opencv_sync|python_network)$'
         fi
         ;;
     fuzz)

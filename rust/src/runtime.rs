@@ -103,6 +103,10 @@ struct RunState {
     stop_request_id: u64,
     units_cleaned: bool,
     startup_deadline: i64,
+    join_deadline: Option<i64>,
+    clock_prepared: bool,
+    membership_complete: bool,
+    active: bool,
     coordinator: bool,
 }
 pub struct Runtime {
@@ -112,6 +116,7 @@ pub struct Runtime {
     changed: Condvar,
     stopping: AtomicBool,
     common: bool,
+    local: String,
     clock_max_age_ns: i64,
 }
 fn shifted(value: i64, offset: i64) -> Result<i64> {
@@ -154,7 +159,7 @@ impl Runtime {
             run: Mutex::new(RunState {
                 resolved: config.clone(),
                 config,
-                local,
+                local: local.clone(),
                 control_session: identity,
                 session: String::new(),
                 round: 0,
@@ -168,6 +173,10 @@ impl Runtime {
                 stop_request_id: 0,
                 units_cleaned: false,
                 startup_deadline: 0,
+                join_deadline: None,
+                clock_prepared: false,
+                membership_complete: false,
+                active: false,
                 coordinator,
             }),
             published: Mutex::new(Published {
@@ -178,6 +187,7 @@ impl Runtime {
             changed: Condvar::new(),
             stopping: AtomicBool::new(true),
             common,
+            local,
             clock_max_age_ns,
         })
     }
@@ -189,6 +199,9 @@ impl Runtime {
             .ok_or("synchronization round exhausted")?;
         self.stopping.store(false, Ordering::Release);
         s.units_cleaned = false;
+        s.clock_prepared = false;
+        s.membership_complete = false;
+        s.active = false;
         s.resolved = s.config.clone();
         s.stop_request_id = 0;
         s.corrections.clear();
@@ -204,6 +217,13 @@ impl Runtime {
         s.startup_deadline = shifted(monotonic_ns(), ns(s.config.startup_timeout_seconds))?;
         self.publish(GroupStatus {
             state: "starting".into(),
+            waiting_nodes: s
+                .config
+                .nodes
+                .iter()
+                .filter(|n| n.id != s.local)
+                .map(|n| n.id.clone())
+                .collect(),
             ..GroupStatus::default()
         });
         s.session = if s.coordinator {
@@ -237,7 +257,15 @@ impl Runtime {
         Ok(())
     }
     fn publish(&self, group: GroupStatus) {
-        self.published.lock().unwrap().group = group;
+        let mut p = self.published.lock().unwrap();
+        if self.stopping()
+            && !p.group.stop_reason.is_empty()
+            && group.state != "stopped"
+            && group.state != "fault"
+        {
+            return;
+        }
+        p.group = group;
         self.changed.notify_all();
     }
     pub fn status(&self) -> GroupStatus {
@@ -247,6 +275,11 @@ impl Runtime {
         let mut p = self.published.lock().unwrap();
         p.group.state = "fault".into();
         p.group.ready = false;
+        if p.group.stop_reason.is_empty() {
+            p.group.stop_node = self.local.clone();
+            p.group.stop_reason = "fault".into();
+        }
+        self.stopping.store(true, Ordering::Release);
         if p.group.fault.is_empty() {
             p.group.fault = reason.into();
         } else {
@@ -262,6 +295,24 @@ impl Runtime {
         self.stopping.load(Ordering::Acquire)
     }
     pub fn request_stop(&self) {
+        self.stop_from(&self.local, "requested");
+    }
+    fn stop_from(&self, node: &str, reason: &str) {
+        let mut p = self.published.lock().unwrap();
+        if p.group.state == "stopped" && self.stopping() {
+            return;
+        }
+        if p.group.stop_reason.is_empty() {
+            p.group.stop_node = node.into();
+            p.group.stop_reason = reason.into();
+        }
+        p.group.ready = false;
+        if p.group.fault.is_empty() {
+            p.group.state = "stopping".into();
+        }
+        for unit in &mut p.group.units {
+            unit.ready = false;
+        }
         self.stopping.store(true, Ordering::Release);
         self.changed.notify_all();
     }
@@ -328,13 +379,17 @@ impl Runtime {
         }
         Ok(())
     }
-    fn health(&self, s: &RunState) -> Result<()> {
+    fn capture_health(&self, s: &RunState) -> Result<()> {
         for unit in &s.local_units {
             let fault: String = decode(self.host.call(json!({"op": "fault", "unit": unit}))?)?;
             if !fault.is_empty() {
                 return Err(format!("{unit}: {fault}"));
             }
         }
+        Ok(())
+    }
+    fn health(&self, s: &RunState) -> Result<()> {
+        self.capture_health(s)?;
         self.update_clock()
     }
     fn common_now(&self) -> Result<i64> {
@@ -452,28 +507,32 @@ impl Runtime {
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.run_inner(&mut s)))
                 .unwrap_or_else(|_| Err("unknown synchronization failure".into()));
         if let Err(error) = result {
-            if !self.stopping() {
+            let cancelled = self.stopping()
+                && matches!(
+                    error.as_str(),
+                    "peer requested group shutdown"
+                        | "group synchronization is stopping"
+                        | "node platform startup cancelled"
+                        | "network session operation cancelled"
+                );
+            if !cancelled && self.status().fault.is_empty() {
                 self.fail(&error);
             }
         }
-        if !self.stopping() {
-            if let Some(channel) = &s.follower {
-                channel.shutdown();
-            }
-            self.cancel_units(&mut s);
-            for peer in s.peers.values() {
-                peer.shutdown();
-            }
-            s.peers.clear();
-            while !self.stopping() {
-                let _ = self.update_clock();
-                self.pause(Duration::from_secs(1));
-            }
-        }
+        self.cancel_units(&mut s);
         if s.coordinator {
             let peers: Vec<_> = s.peers.keys().cloned().collect();
             for node in peers {
-                match self.rpc(&mut s, &node, json!({"command": "stop"})) {
+                let status = self.status();
+                // Each remote adapter may need a complete request budget to restore its baseline.
+                s.peers.get_mut(&node).unwrap().timeout =
+                    2.0 * s.config.request_timeout_seconds + 1.0;
+                match self.rpc(
+                    &mut s,
+                    &node,
+                    json!({"command": "stop", "stop_node": status.stop_node,
+                    "stop_reason": status.stop_reason, "fault": status.fault}),
+                ) {
                     Ok(reply) if reply["stopped"] == true => {}
                     Ok(reply) => self.fail(&format!(
                         "{node}: {}",
@@ -486,8 +545,12 @@ impl Runtime {
                     }
                 }
             }
+        } else if let Some(channel) = &s.follower {
+            // Faults close the channel; a requested stop is acknowledged by run_follower first.
+            if s.stop_request_id == 0 {
+                channel.shutdown();
+            }
         }
-        self.cancel_units(&mut s);
     }
     fn run_inner(&self, s: &mut RunState) -> Result<()> {
         for unit in &s.local_units {
@@ -500,9 +563,11 @@ impl Runtime {
         if !self.stopping() {
             s.resolved = decode(self.host.call(json!({"op": "platform_start", "config": s.resolved, "deadline": s.startup_deadline}))?)?;
         }
-        if !self.stopping() {
-            self.update_clock()?;
-        }
+        let _ = self.update_clock();
+        s.join_deadline = s
+            .config
+            .join_timeout_seconds
+            .map(|t| monotonic_ns().saturating_add(ns(t)));
         if !self.stopping() {
             if s.coordinator {
                 self.run_coordinator(s)?;
@@ -542,9 +607,24 @@ impl Runtime {
         if status.fault.is_empty() {
             status.state = "stopped".into();
         }
+        status.waiting_nodes.clear();
+        let warning = format!("WARNING: Synchronization stopped by {} ({}). Acquisition continues; subsequent frames are not guaranteed to be synchronized.{}",
+            status.stop_node, status.stop_reason,
+            if status.fault.is_empty() { String::new() } else { format!(" Fault: {}", status.fault) });
         self.publish(status);
+        eprintln!("{warning}");
+    }
+    fn peer_fault(&self, node: &str, error: String) -> String {
+        self.stop_from(node, "fault");
+        self.fail(&format!("{node}: {error}"));
+        error
     }
     fn rpc(&self, s: &mut RunState, node: &str, mut message: Value) -> Result<Value> {
+        let stopping_command = message["command"] == "stop";
+        let hello_command = message["command"] == "hello";
+        if self.stopping() && !stopping_command && !hello_command {
+            return Err("group synchronization is stopping".into());
+        }
         let id = s.requests.entry(node.into()).or_default();
         *id = id
             .checked_add(1)
@@ -553,28 +633,54 @@ impl Runtime {
         message["request_id"] = json!(request_id);
         message["session"] = json!(s.session);
         let channel = s.peers.get_mut(node).ok_or("missing control peer")?;
-        channel.send(&message)?;
-        let response = channel.receive()?;
+        let transport_error = |error| {
+            if hello_command && self.stopping() && self.status().fault.is_empty() {
+                "group synchronization is stopping".into()
+            } else {
+                self.peer_fault(node, error)
+            }
+        };
+        channel.send(&message).map_err(transport_error)?;
+        let response = channel.receive().map_err(transport_error)?;
         if response["request_id"].as_u64() != Some(request_id) {
-            return Err("out-of-order control response".into());
+            return Err(self.peer_fault(node, "out-of-order control response".into()));
+        }
+        if response["stop_requested"] == true && !stopping_command {
+            let reason = response["stop_reason"]
+                .as_str()
+                .ok_or("missing peer stop reason")?;
+            self.stop_from(node, reason);
+            let fault = response["fault"].as_str().ok_or("missing peer fault")?;
+            if !fault.is_empty() {
+                self.fail(&format!("{node}: {fault}"));
+            }
+            if !hello_command {
+                return Err("peer requested group shutdown".into());
+            }
         }
         if response["ok"].as_bool() != Some(true) {
-            return Err(response["error"]
-                .as_str()
-                .unwrap_or("invalid control response")
-                .into());
+            return Err(self.peer_fault(
+                node,
+                response["error"]
+                    .as_str()
+                    .unwrap_or("invalid control response")
+                    .into(),
+            ));
         }
         Ok(response["result"].clone())
     }
     fn run_follower(&self, s: &mut RunState) -> Result<()> {
         s.server = Some(listener(s.resolved.node(&s.local)?)?);
+        let mut waiting = self.status();
+        waiting.state = "waiting".into();
+        self.publish(waiting);
         let mut next_health = monotonic_ns();
         let client = loop {
             if self.stopping() {
                 return Ok(());
             }
             if monotonic_ns() >= next_health {
-                self.health(s)?;
+                self.capture_health(s)?;
                 next_health = monotonic_ns() + 1_000_000_000;
             }
             let listener = s.server.as_ref().unwrap();
@@ -585,19 +691,44 @@ impl Runtime {
                     Err(error) => return Err(error.to_string()),
                 }
             }
-            if monotonic_ns() > s.startup_deadline {
-                return Err("coordinator connection startup timeout".into());
-            }
+            self.check_join_deadline(s)?;
         };
         s.follower = Some(Connection::new(client, s.config.request_timeout_seconds)?);
         let mut expected = 1_u64;
         let mut last_command = monotonic_ns();
         let idle_limit =
             ns(2.0 + s.config.request_timeout_seconds * (s.config.nodes.len() as f64 + 1.0));
-        while !self.stopping() {
-            if monotonic_ns() >= next_health {
-                self.health(s)?;
+        let mut stop_deadline = None;
+        loop {
+            if self.stopping() {
+                let deadline = stop_deadline.get_or_insert_with(|| {
+                    monotonic_ns()
+                        + ns(2.0
+                            + (s.config.nodes.len() as f64 + 3.0)
+                                * s.config.request_timeout_seconds)
+                });
+                if monotonic_ns() > *deadline {
+                    return Err("group stop confirmation deadline exceeded".into());
+                }
+            } else if monotonic_ns() >= next_health {
+                let health = self.capture_health(s).and_then(|_| {
+                    if s.active {
+                        self.update_clock()
+                    } else {
+                        Ok(())
+                    }
+                });
+                if let Err(error) = health {
+                    self.fail(&error);
+                }
                 next_health = monotonic_ns() + 1_000_000_000;
+            }
+            if !self.stopping() {
+                if !s.membership_complete {
+                    self.check_join_deadline(s)?;
+                } else if !self.status().ready && monotonic_ns() > s.startup_deadline {
+                    return Err("group startup calibration deadline exceeded".into());
+                }
             }
             if !s.follower.as_ref().unwrap().readable(100)? {
                 if monotonic_ns() - last_command > idle_limit {
@@ -636,7 +767,31 @@ impl Runtime {
                 if incoming["session"].as_str() != Some(s.session.as_str()) {
                     return Err("session identity differs".into());
                 }
+                if self.stopping() && command != "stop" {
+                    return Ok(Value::Null);
+                }
                 match command {
+                    "prepare" => {
+                        let status: GroupStatus = decode(incoming["status"].clone())?;
+                        if status.waiting_nodes.is_empty() && !s.membership_complete {
+                            s.membership_complete = true;
+                            s.join_deadline = None;
+                            s.startup_deadline =
+                                monotonic_ns().saturating_add(ns(s.config.startup_timeout_seconds));
+                        }
+                        self.publish(status);
+                        let clock = if incoming["clock"] == true {
+                            self.prepare_clock(s)?;
+                            self.update_clock().is_ok()
+                        } else {
+                            false
+                        };
+                        Ok(json!({"clock_valid": clock}))
+                    }
+                    "activate" => {
+                        s.active = true;
+                        Ok(json!({"active": true}))
+                    }
                     "snapshots" => {
                         self.health(s)?;
                         let snapshots: Vec<_> = s
@@ -677,7 +832,18 @@ impl Runtime {
                         Ok(json!({"stored": true}))
                     }
                     "stop" => {
-                        self.request_stop();
+                        self.stop_from(
+                            incoming["stop_node"]
+                                .as_str()
+                                .ok_or("missing stop origin")?,
+                            incoming["stop_reason"]
+                                .as_str()
+                                .ok_or("missing stop reason")?,
+                        );
+                        let fault = incoming["fault"].as_str().ok_or("missing stop fault")?;
+                        if !fault.is_empty() {
+                            self.fail(fault);
+                        }
                         s.stop_request_id = id;
                         Ok(Value::Null)
                     }
@@ -688,7 +854,11 @@ impl Runtime {
                 return Ok(());
             }
             let response = match result {
-                Ok(result) => json!({"request_id": id, "ok": true, "result": result}),
+                Ok(result) => {
+                    let status = self.status();
+                    json!({"request_id": id, "ok": true, "result": result,
+                        "stop_requested": self.stopping(), "stop_reason": status.stop_reason, "fault": status.fault})
+                }
                 Err(error) => {
                     s.follower
                         .as_mut()
@@ -699,46 +869,132 @@ impl Runtime {
             };
             s.follower.as_mut().unwrap().send(&response)?;
         }
+    }
+    fn check_join_deadline(&self, s: &RunState) -> Result<()> {
+        if s.join_deadline
+            .is_some_and(|deadline| monotonic_ns() > deadline)
+        {
+            return Err("group node join timeout".into());
+        }
+        Ok(())
+    }
+    fn resolve(&self, s: &mut RunState) -> Result<()> {
+        s.resolved = decode(self.host.call(json!({"op": "platform_resolve"}))?)?;
+        Ok(())
+    }
+    fn prepare_clock(&self, s: &mut RunState) -> Result<()> {
+        if !s.clock_prepared {
+            self.resolve(s)?;
+            if s.resolved.nodes.iter().any(|n| n.address.is_empty()) && self.common {
+                return Ok(());
+            }
+            self.host
+                .call(json!({"op": "platform_clock", "config": s.resolved}))?;
+            s.clock_prepared = true;
+        }
         Ok(())
     }
     fn run_coordinator(&self, s: &mut RunState) -> Result<()> {
-        for node in s.resolved.nodes.clone() {
-            if node.id == s.local {
-                continue;
-            }
-            while !self.stopping() {
-                match Connection::connect(&node, s.config.request_timeout_seconds) {
-                    Ok(connection) => {
-                        s.peers.insert(node.id.clone(), connection);
-                        break;
-                    }
-                    Err(_) => {
-                        if monotonic_ns() > s.startup_deadline {
-                            return Err(format!("node connection startup timeout: {}", node.id));
-                        }
-                        eprintln!("Waiting for node {}", node.id);
-                        self.pause(Duration::from_millis(250));
-                    }
-                }
-            }
+        loop {
             if self.stopping() {
                 return Ok(());
             }
-            let remaining = (s.startup_deadline - monotonic_ns()) as f64 / 1e9;
-            if remaining <= 0.0 {
-                return Err(format!("node initialization startup timeout: {}", node.id));
+            self.capture_health(s)?;
+            self.resolve(s)?;
+            for node in s.resolved.nodes.clone() {
+                if self.stopping() {
+                    break;
+                }
+                if node.id == s.local || s.peers.contains_key(&node.id) || node.address.is_empty() {
+                    continue;
+                }
+                // Short connection attempts keep already joined peers responsive while others start.
+                if let Ok(connection) =
+                    Connection::connect(&node, s.config.request_timeout_seconds.min(0.1))
+                {
+                    s.peers.insert(node.id.clone(), connection);
+                    s.peers.get_mut(&node.id).unwrap().timeout = s.config.request_timeout_seconds;
+                    let hello = match self.rpc(
+                        s,
+                        &node.id,
+                        json!({"command": "hello", "topology": s.config.topology()}),
+                    ) {
+                        Ok(hello) => hello,
+                        Err(error) => {
+                            // An unacknowledged connection is not a member of this round.
+                            s.peers.remove(&node.id);
+                            return Err(error);
+                        }
+                    };
+                    if hello["node"] != node.id {
+                        return Err("peer node identity differs".into());
+                    }
+                }
             }
-            s.peers.get_mut(&node.id).unwrap().timeout =
-                remaining.min(s.config.request_timeout_seconds);
-            let hello = self.rpc(
-                s,
-                &node.id,
-                json!({"command": "hello", "topology": s.config.topology()}),
-            )?;
-            s.peers.get_mut(&node.id).unwrap().timeout = s.config.request_timeout_seconds;
-            if hello["node"] != node.id {
-                return Err("peer node identity differs".into());
+            let waiting_nodes: Vec<_> = s
+                .config
+                .nodes
+                .iter()
+                .filter(|n| n.id != s.local && !s.peers.contains_key(&n.id))
+                .map(|n| n.id.clone())
+                .collect();
+            let joined = waiting_nodes.is_empty();
+            let status = GroupStatus {
+                state: if joined { "clock" } else { "waiting" }.into(),
+                waiting_nodes,
+                ..GroupStatus::default()
+            };
+            self.publish(status.clone());
+            if joined {
+                s.membership_complete = true;
+                s.join_deadline = None;
+                s.startup_deadline =
+                    monotonic_ns().saturating_add(ns(s.config.startup_timeout_seconds));
             }
+            let nodes: Vec<_> = s.peers.keys().cloned().collect();
+            for node in nodes {
+                self.rpc(
+                    s,
+                    &node,
+                    json!({"command": "prepare", "clock": false, "status": status}),
+                )?;
+            }
+            if joined {
+                break;
+            }
+            self.check_join_deadline(s)?;
+            self.pause(Duration::from_millis(100));
+        }
+        // Control is already connected while each node acquires its clock mapping.
+        let status = self.status();
+        loop {
+            if self.stopping() {
+                return Ok(());
+            }
+            self.capture_health(s)?;
+            self.prepare_clock(s)?;
+            let mut valid = self.update_clock().is_ok();
+            let nodes: Vec<_> = s.peers.keys().cloned().collect();
+            for node in nodes {
+                valid &= self.rpc(
+                    s,
+                    &node,
+                    json!({"command": "prepare", "clock": true, "status": status}),
+                )?["clock_valid"]
+                    == true;
+            }
+            if valid {
+                break;
+            }
+            if monotonic_ns() > s.startup_deadline {
+                return Err("group clock startup deadline exceeded".into());
+            }
+            self.pause(Duration::from_millis(100));
+        }
+        s.active = true;
+        let nodes: Vec<_> = s.peers.keys().cloned().collect();
+        for node in nodes {
+            self.rpc(s, &node, json!({"command": "activate"}))?;
         }
         let mut policy = s.config.phase_policy.clone();
         policy.max_mapping_span_ns = policy
@@ -1058,6 +1314,8 @@ mod tests {
     struct CaptureHost {
         counters: Arc<Counters>,
         fail_bind: bool,
+        config: Mutex<Value>,
+        clock_valid: bool,
     }
     impl Host for CaptureHost {
         fn call(&self, request: Value) -> Result<Value> {
@@ -1077,7 +1335,7 @@ mod tests {
                 "snapshot" => {
                     let now = boot_time_ns();
                     Ok(json!(TimingSnapshot {
-                        unit_id: "reference".into(),
+                        unit_id: request["unit"].as_str().unwrap().into(),
                         snapshot_timestamp_ns: now,
                         frames: vec![FrameTiming {
                             camera_sequence: 1,
@@ -1088,9 +1346,14 @@ mod tests {
                         correction: CorrectionStatus::default()
                     }))
                 }
-                "platform_start" => Ok(request["config"].clone()),
+                "platform_start" => {
+                    *self.config.lock().unwrap() = request["config"].clone();
+                    Ok(request["config"].clone())
+                }
+                "platform_resolve" => Ok(self.config.lock().unwrap().clone()),
+                "platform_clock" => Ok(Value::Null),
                 "platform_sample" => Ok(json!(ClockEstimate {
-                    valid: true,
+                    valid: self.clock_valid,
                     ..ClockEstimate::default()
                 })),
                 "platform_stop" => {
@@ -1124,6 +1387,8 @@ mod tests {
                 Box::new(CaptureHost {
                     counters,
                     fail_bind,
+                    config: Mutex::new(Value::Null),
+                    clock_valid: true,
                 }),
             )
             .unwrap(),
@@ -1173,6 +1438,153 @@ mod tests {
         assert_eq!(counters.binds.load(Ordering::Relaxed), 0);
         assert_eq!(counters.cancels.load(Ordering::Relaxed), 0);
         assert_eq!(counters.stops.load(Ordering::Relaxed), 1);
+    }
+    fn pending_clock_group(
+        follower_startup: f64,
+    ) -> (Vec<Arc<Runtime>>, Vec<std::thread::JoinHandle<()>>) {
+        let endpoints: Vec<_> = (0..2)
+            .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+            .collect();
+        let config = SyncConfig {
+            group_id: "pending-clock".into(),
+            reference_unit: "reference".into(),
+            network_mode: "existing".into(),
+            clock_mode: "host".into(),
+            nodes: endpoints
+                .iter()
+                .enumerate()
+                .map(|(i, endpoint)| NodeConfig {
+                    id: format!("node-{i}"),
+                    address: "127.0.0.1".into(),
+                    port: endpoint.local_addr().unwrap().port(),
+                    ..NodeConfig::default()
+                })
+                .collect(),
+            units: vec![
+                SyncUnitConfig {
+                    id: "reference".into(),
+                    node_id: "node-0".into(),
+                },
+                SyncUnitConfig {
+                    id: "follower".into(),
+                    node_id: "node-1".into(),
+                },
+            ],
+            startup_timeout_seconds: 10.0,
+            join_timeout_seconds: Some(0.5),
+            request_timeout_seconds: 0.5,
+            ..SyncConfig::default()
+        };
+        drop(endpoints);
+        let runtimes: Vec<_> = config
+            .units
+            .iter()
+            .map(|unit| {
+                let mut local_config = config.clone();
+                if unit.node_id == "node-1" {
+                    local_config.startup_timeout_seconds = follower_startup;
+                }
+                Arc::new(
+                    Runtime::new(
+                        local_config,
+                        unit.node_id.clone(),
+                        unit.node_id.clone(),
+                        vec![unit.id.clone()],
+                        Box::new(CaptureHost {
+                            counters: Arc::new(Counters::default()),
+                            fail_bind: false,
+                            config: Mutex::new(Value::Null),
+                            clock_valid: false,
+                        }),
+                    )
+                    .unwrap(),
+                )
+            })
+            .collect();
+        for runtime in &runtimes {
+            runtime.begin().unwrap();
+        }
+        let workers: Vec<_> = runtimes
+            .iter()
+            .map(|runtime| {
+                let runtime = runtime.clone();
+                std::thread::spawn(move || {
+                    runtime.run();
+                    runtime.finish();
+                })
+            })
+            .collect();
+        let deadline = monotonic_ns() + ns(3.0);
+        while runtimes.iter().any(|r| r.status().state != "clock") && monotonic_ns() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        (runtimes, workers)
+    }
+    #[test]
+    fn follower_stop_during_clock_preparation_ends_group() {
+        let (runtimes, workers) = pending_clock_group(10.0);
+        // Joining has completed; its shorter budget must not limit clock convergence.
+        std::thread::sleep(Duration::from_millis(600));
+        let clock_pending = runtimes.iter().all(|r| {
+            r.status().state == "clock" && !r.clock().valid && r.status().fault.is_empty()
+        });
+        runtimes[1].request_stop();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert!(
+            clock_pending,
+            "both nodes must expose pending clock preparation"
+        );
+        for runtime in &runtimes {
+            let status = runtime.status();
+            assert_eq!(status.state, "stopped");
+            assert!(status.fault.is_empty(), "{}", status.fault);
+            assert_eq!(status.stop_node, "node-1");
+            assert_eq!(status.stop_reason, "requested");
+        }
+    }
+    #[test]
+    fn follower_enforces_its_clock_startup_budget() {
+        let (runtimes, workers) = pending_clock_group(0.25);
+        assert!(runtimes[1]
+            .wait_ready(Duration::from_secs(2))
+            .unwrap_err()
+            .contains("startup"));
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert!(!runtimes[0].status().fault.is_empty());
+        assert_eq!(runtimes[1].status().stop_reason, "fault");
+        assert_eq!(runtimes[1].status().stop_node, "node-1");
+    }
+    #[test]
+    fn stop_does_not_skip_hello_on_an_open_connection() {
+        let endpoint = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = endpoint.local_addr().unwrap();
+        let peer = std::thread::spawn(move || {
+            let (stream, _) = endpoint.accept().unwrap();
+            let mut connection = Connection::new(stream, 1.0).unwrap();
+            let hello = connection.receive().unwrap();
+            assert_eq!(hello["command"], "hello");
+            connection
+                .send(&json!({"request_id": hello["request_id"], "ok": true,
+                "result": {"node": "peer"}}))
+                .unwrap();
+        });
+        let runtime = runtime(Arc::new(Counters::default()), false);
+        runtime.begin().unwrap();
+        let stream = TcpStream::connect(address).unwrap();
+        let mut state = runtime.run.lock().unwrap();
+        state
+            .peers
+            .insert("peer".into(), Connection::new(stream, 1.0).unwrap());
+        runtime.request_stop();
+        let result = runtime
+            .rpc(&mut state, "peer", json!({"command": "hello"}))
+            .unwrap();
+        assert_eq!(result["node"], "peer");
+        peer.join().unwrap();
     }
     #[test]
     fn control_channel_rejects_unbounded_input() {

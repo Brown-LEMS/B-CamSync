@@ -77,6 +77,17 @@ public:
             platform.start(resolved, stopped, input.at("deadline").get<std::int64_t>());
             return Json::parse(resolved.to_json());
         }
+        if (op == "platform_resolve") return Json::parse(platform.resolve().to_json());
+        if (op == "platform_clock") {
+            auto resolved = config;
+            const auto& nodes = input.at("config").at("nodes");
+            for (auto& node : resolved.nodes) {
+                for (const auto& incoming : nodes)
+                    if (incoming.at("id") == node.id) node.address = incoming.at("address").get<std::string>();
+            }
+            platform.prepare_clock(resolved);
+            return nullptr;
+        }
         if (op == "platform_sample") {
             const auto sampled = platform.sample();
             return {{"valid", sampled.valid}, {"offset_ns", sampled.offset_ns},

@@ -31,6 +31,7 @@ private:
     friend class detail::NetworkSessionTestAccess;
     void start(const std::atomic<bool>& stopping, std::int64_t deadline_ns);
     SyncConfig resolve(const std::atomic<bool>& stopping, std::int64_t deadline_ns);
+    SyncConfig resolve_available() const;
     void start_discovery(std::string address);
     class Impl;
     std::unique_ptr<Impl> impl_;
