@@ -21,7 +21,7 @@ cp examples/configs/two_nodes_one_board.json group.json
 
 Replace both `camera_id` placeholders with the IDs returned on the respective nodes, and put the completed `group.json` on both. The example names the nodes `node-a` and `node-b`, uses `eth0`, and selects `board-a1` as the reference. Adjust the interface names if needed. Pi 4 is the default profile; automatic networking reuses a usable interface IPv4 address or creates a temporary link-local connection.
 
-One launch sequence is to start the follower first, then the reference in a terminal on the other Pi. Either node may start first; all configured peers must arrive within the startup deadline.
+One launch sequence is to start the follower first, then the reference in a terminal on the other Pi. Either node may start first. Each session waits for peers without a deadline by default; optional `join_timeout_seconds` bounds membership waiting. Once all nodes join, `startup_timeout_seconds` bounds clock acquisition and calibration.
 
 ```sh
 # On node-b:
@@ -30,7 +30,7 @@ One launch sequence is to start the follower first, then the reference in a term
 .venv/bin/python examples/capture.py group.json node-a --seconds 30
 ```
 
-Each node acquires its local board and prints frame sequences, four-view shapes, and synchronization status. The reference ends the group after 30 seconds. The default settings are 40 fps, 10000 µs exposure, and startup gain calibration. Other layouts are in [examples/configs](../examples/configs).
+Each node acquires its local board and prints frame sequences, four-view shapes, and synchronization status. Each application captures for its own requested 30 seconds. Whichever node finishes first ends group synchronization; the other application warns and continues local acquisition until its own duration ends. The default settings are 40 fps, 10000 µs exposure, and startup gain calibration. Other layouts are in [examples/configs](../examples/configs).
 
 ## Optional network infrastructure
 

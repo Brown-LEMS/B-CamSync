@@ -284,7 +284,9 @@ def status_record(status, captures):
         units.append({"unit_id": state.unit_id, "phase_ms": state.phase_ms,
                       "p95_ms": state.p95_ms, "max_ms": state.max_ms,
                       "fps": fps, "corrections": timing.corrections, "fault": state.fault})
-    return {"state": status.state, "ready": status.ready, "fault": status.fault, "units": units}
+    return {"state": status.state, "ready": status.ready, "fault": status.fault, "units": units,
+            "waiting_nodes": status.waiting_nodes, "stop_node": status.stop_node,
+            "stop_reason": status.stop_reason}
 
 
 def main():
@@ -331,18 +333,24 @@ def main():
                     startup = time.monotonic()
                     if run:
                         session.start()
-                    deadline = time.monotonic() + sync.startup_timeout_seconds
-                    while not session.wait_ready(1):
+                    while True:
+                        try:
+                            ready = session.wait_ready(1)
+                        except RuntimeError:
+                            if not session.status().fault:
+                                raise
+                            ready = False
                         sample = status_record(session.status(), capture.units)
                         if preview is not None:
                             preview.publish_status(sample)
                         print(json.dumps(sample), flush=True)
-                        if time.monotonic() >= deadline:
-                            raise RuntimeError("Synchronization readiness timed out")
+                        if ready or sample["stop_reason"]:
+                            break
                     began = time.monotonic()
                     if args.video_dir is not None:
                         capture.start_recording(args.video_dir)
-                    run_result = {"run": run + 1, "startup_seconds": began - startup}
+                    run_result = {"run": run + 1, "startup_seconds": began - startup,
+                                  "synchronized": ready}
                     result["runs"].append(run_result)
                     while args.continuous or time.monotonic() - began < args.seconds:
                         sample = status_record(session.status(), capture.units)
@@ -353,7 +361,7 @@ def main():
                             preview.publish_status(sample)
                         print(json.dumps(sample), flush=True)
                         if sample["fault"] or not sample["ready"]:
-                            raise RuntimeError(sample["fault"] or "Synchronization readiness lost")
+                            run_result["synchronized"] = False
                         if args.display:
                             with capture.image_lock:
                                 for unit, (_, image) in capture.images.items():
@@ -365,15 +373,17 @@ def main():
                               for unit, value in capture.units.items()}
                     session.stop()
                     stopped = session.status()
-                    if stopped.state != "stopped" or stopped.fault:
-                        raise RuntimeError(stopped.fault or "Synchronization did not stop cleanly")
+                    run_result.update(stop_node=stopped.stop_node, stop_reason=stopped.stop_reason,
+                                      fault=stopped.fault)
+                    if stopped.fault:
+                        run_result["synchronized"] = False
                     time.sleep(0.2)
                     for unit, value in capture.units.items():
                         if value.snapshot().frames[-1].camera_sequence <= before[unit]:
                             raise RuntimeError("External capture stopped with synchronization")
                     print(f"Run {run + 1}: sync stopped; external capture continues", flush=True)
                     run_result["capture_continued_after_sync_stop"] = True
-                result["passed"] = True
+                result["passed"] = all(run["synchronized"] for run in result["runs"])
         finally:
             try:
                 if preview is not None:

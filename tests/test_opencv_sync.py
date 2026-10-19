@@ -164,6 +164,38 @@ class BrowserPreviewTests(unittest.TestCase):
 
 
 class PreviewCleanupTests(unittest.TestCase):
+    def test_sync_stop_and_fault_leave_recording_running_until_application_end(self):
+        config = Path(__file__).resolve().parents[1] / "examples/configs/fake_one_node.json"
+        for fault in ("", "peer disconnected"):
+            with self.subTest(fault=fault):
+                capture = Mock(units={})
+                session = Mock()
+                session.wait_ready.return_value = True
+                session.status.return_value = SimpleNamespace(
+                    state="fault" if fault else "stopped", ready=False, fault=fault,
+                    units=[], waiting_nodes=[], stop_node="node-b",
+                    stop_reason="fault" if fault else "requested")
+                context = Mock()
+                context.__enter__ = Mock(return_value=session)
+                context.__exit__ = Mock(return_value=False)
+                elapsed = [0]
+
+                def sleep(seconds):
+                    if seconds == 1 and capture.start_recording.called:
+                        # The application runs another iteration after synchronization exits.
+                        self.assertFalse(capture.stop.called)
+                        elapsed[0] += 1
+
+                with patch("sys.argv", ["opencv_sync", str(config), "--seconds", "2", "--repeat", "1", "--video-dir", "/tmp/video"]), \
+                        patch("opencv_sync.Capture", return_value=capture), \
+                        patch("opencv_sync.SyncSession", return_value=context), \
+                        patch("opencv_sync.time.monotonic", side_effect=lambda: elapsed[0]), \
+                        patch("opencv_sync.time.sleep", side_effect=sleep):
+                    main()
+                self.assertEqual(elapsed[0], 2)
+                capture.start_recording.assert_called_once()
+                capture.stop.assert_called_once()
+
     def test_preview_cleanup_failure_still_stops_capture(self):
         config = Path(__file__).resolve().parents[1] / "examples/configs/fake_one_node.json"
         capture = Mock(units={})
@@ -172,7 +204,8 @@ class PreviewCleanupTests(unittest.TestCase):
         preview.close.side_effect = OSError("HTTP shutdown failed")
         session = Mock()
         session.wait_ready.return_value = True
-        session.status.return_value = SimpleNamespace(state="tracking", ready=True, fault="", units=[])
+        session.status.return_value = SimpleNamespace(state="tracking", ready=True, fault="", units=[],
+                                                       waiting_nodes=[], stop_node="", stop_reason="")
         context = Mock()
         context.__enter__ = Mock(return_value=session)
         context.__exit__ = Mock(return_value=False)

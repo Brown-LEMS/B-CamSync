@@ -41,8 +41,8 @@ config = SyncConfig.from_file("group.json")
 capture.start()
 try:
     with SyncSession(config, "node-a", adapters) as sync:
-        if not sync.wait_ready(config.startup_timeout_seconds):
-            raise RuntimeError(sync.status().fault or "Synchronization readiness timed out")
+        # Inspect sync.status().ready to label synchronized intervals.
+        # Group synchronization may stop while this application loop keeps running.
         capture.run_application_loop(sync)
     # Capture is still running here, with baseline frame-period controls restored.
 finally:
@@ -51,7 +51,13 @@ finally:
 
 The adapter map's keys must match the configured local unit IDs. `SyncConfig` describes synchronization membership, reference, frame rate, phase policy, and network/clock settings; it does not initialize cameras or apply image/exposure/gain settings. In [`external_one_node_pi5.json`](../examples/configs/external_one_node_pi5.json), `camera_id` belongs to the example application and is read by `Capture`; `SyncConfig` reads the synchronization fields. Set the same baseline frame rate in your capture system and synchronization configuration.
 
-Keep acquisition and request completion running while `SyncSession.stop()` restores baseline controls and waits for feedback. Close the application capture only after synchronization stops. To restart synchronization on those same cameras, call `stop()` followed by `start()` on the same session, as the OpenCV example does. Adapter state must honor the new control round. After a fault, recovery requires an explicit stop/start.
+Keep acquisition and request completion running while `SyncSession.stop()` restores baseline controls and waits for feedback. Close the application capture only after synchronization stops. Each node calls `start()` independently and waits for the configured peers, regardless of launch order. Peer waiting is unlimited by default; set optional `join_timeout_seconds` to bound it. `startup_timeout_seconds` bounds local preparation and, separately, group clock acquisition and calibration after all members join.
+
+Calling `stop()` on any participating node ends the current synchronization round on every connected node. Each node warns once on stderr, records `stop_node` and `stop_reason` (`requested` or `fault`), clears readiness, restores baseline controls, and leaves application capture running. Missing peers appear in `status().waiting_nodes`. A disconnected or crashed peer ends synchronization after communication failure detection; disconnected nodes cannot acknowledge a graceful group stop. Nodes that have not joined the current round cannot receive its stop request.
+
+`wait_ready(timeout_seconds)` returns `False` when its caller timeout expires or the group stops normally; caller timeout does not cancel startup. Synchronization faults still raise `RuntimeError`. Applications that continue processing through synchronization faults can inspect the nonthrowing `status()` instead of propagating the waiting exception. Keep recording independently and mark subsequent frames as unsynchronized when readiness is false. `clock().valid` becomes false when synchronization cleanup completes.
+
+Synchronization never automatically rejoins after a group exit. Once the core session has completed (`stopped` or `fault`), explicitly call `start()` on each node for a new round; an intervening `stop()` remains safe and joins cleanup. Adapter state must honor the new control round. Membership and reference selection stay fixed by configuration.
 
 ### Reuse the libcamera timing adapter
 
@@ -113,12 +119,9 @@ from bcamsync_managed import Config, Session
 config = Config.from_file("managed-group.json")
 local_units = [unit for unit in config.units if unit.node_id == "node-a"]
 with Session(config, "node-a") as cameras:
-    if not cameras.wait_ready(config.startup_timeout_seconds):
-        raise RuntimeError(cameras.status().fault or "Synchronization readiness timed out")
     for _ in range(100):
         status = cameras.status()
-        if status.fault or not status.ready:
-            raise RuntimeError(status.fault or "Synchronization readiness lost")
+        print("Synchronization:", status.state, status.ready, status.fault)
         for unit in local_units:
             packet = cameras.read(unit.id, timeout_seconds=1)
             if packet is not None:
@@ -126,7 +129,7 @@ with Session(config, "node-a") as cameras:
                 print(packet.unit_id, packet.sequence, camera0.shape)
 ```
 
-Entering the context starts acquisition and synchronization. `wait_ready()` waits for a quality condition; it does not start capture. Exiting stops synchronization and closes cameras. You can also call `start()` and `stop()` explicitly. Stopped sessions can be started again.
+Entering the context starts acquisition and synchronization. `wait_ready()` waits for a quality condition; it does not start capture. Exiting stops synchronization and closes cameras. You can also call `start()` and `stop()` explicitly. Remote synchronization stop or fault leaves managed cameras open and `read()` producing local frames. Explicit managed `stop()`, context exit, and destruction close the owned cameras; call managed `stop()` before restarting with `start()`.
 
 `read()` returns a local board packet or `None` on timeout. One B0267 packet contains four readonly NumPy views of the same board frame. The views retain their storage, including after the packet or session is released. Copy a view if you need writable pixels. Retaining many frames consumes the bounded image pool and can cause later delivery drops; timing observation and synchronization continue independently. `sequence` and cumulative `dropped_before` expose delivery discontinuities.
 
@@ -136,8 +139,8 @@ Reads continue while synchronization is starting or faulted. Inspect `status().r
 
 For the recommended Pi 5 `SyncSession` first run, use [`external_one_node_pi5.json`](../examples/configs/external_one_node_pi5.json). For a timing-only multi-node configuration, see [`external_two_nodes.json`](../examples/configs/external_two_nodes.json). All nodes in a group must agree on membership, reference unit, frame rate, clock mode, and phase policy. The reference is explicitly configured; node discovery resolves known members rather than electing a topology.
 
-A single-node group uses its local clock without networking. Physical multi-node sessions additionally use discovery/transport and private clock estimation, even for application-owned capture. See [deployment](deployment.md) for address policy and optional persistent services. `SyncSession` changes acquisition ownership; it uses the same multi-node runtime facilities as `Session`.
+A single-node group uses its local clock without networking. Physical multi-node sessions additionally use transport and private clock estimation, even for application-owned capture; automatic networking also prepares links and discovers the configured members. See [deployment](deployment.md) for address policy and optional persistent services. `SyncSession` changes acquisition ownership; it uses the same multi-node runtime facilities as `Session`.
 
-Default readiness targets are p95 ≤ 0.5 ms and max ≤ 1 ms across two settled windows. Continue observing status during acquisition; applications choose whether to stop recording, mark intervals, or continue when quality changes. The example applications illustrate different policies: the OpenCV run fails on sampled readiness loss, while browser recording writes immediately when requested and retains metadata for downstream selection.
+Default readiness targets are p95 ≤ 0.5 ms and max ≤ 1 ms across two settled windows. Continue observing status during acquisition; applications choose whether to stop recording, mark intervals, or continue when quality changes. The OpenCV example continues capture and recording after synchronization exits and marks its measurement report as failed if readiness is lost. Browser recording writes immediately when requested and retains metadata for downstream selection.
 
 For C++, application session control is in [`sync.hpp`](../include/bcamsync/sync.hpp), and device adapter support has the [`adapters.hpp`](../include/bcamsync/adapters.hpp) entry point. [`phase_policy.hpp`](../include/bcamsync/phase_policy.hpp) declares application control/quality settings separately from the advanced algorithm interfaces in `phase.hpp`; existing headers and type names remain compatible. The managed add-on provides [`session.hpp`](../addons/managed/include/bcamsync/session.hpp). The `detail` runtime/FFI headers support the core and add-on implementation. See the [installation guide](installation.md#c) and [CMake consumer](../examples/cmake_consumer) for linking. Public types, API comments, and executable examples define the implemented contract; [design notes](design.md) explain the internals.
