@@ -169,14 +169,15 @@ class RecordingExampleTests(unittest.TestCase):
             return original_encode(packet, width, quality)
 
         self.control("/start")
-        with patch.object(preview_record, "encode_packet", side_effect=paused_encode):
+        # A Mock call history would retain packets and exhaust the bounded image pool.
+        with patch.object(preview_record, "encode_packet", new=paused_encode):
             try:
                 self.control("/record/start")
                 self.assertTrue(entered.wait(5))
                 self.control("/record/stop")
                 self.control("/record/start")
                 release.set()
-                self.wait_frames()
+                self.wait_frames(count=max(unit.pool_capacity for unit in self.config.units) + 4)
                 recording = self.control("/record/stop")["recording"]
             finally:
                 release.set()
