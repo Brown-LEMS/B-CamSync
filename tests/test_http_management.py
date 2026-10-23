@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def configuration(name="fake_one_node.json"):
-    config = Config.from_file(ROOT / "examples/configs" / name)
+    config = Config.from_file(ROOT / "tests/fixtures/configs" / name)
     nodes = config.nodes
     with ExitStack() as stack:
         for node in nodes:

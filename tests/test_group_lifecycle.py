@@ -13,8 +13,8 @@ import unittest
 
 from bcamsync import NodeConfig, SyncConfig, SyncSession, SyncUnitConfig
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples"))
-from external_capture import SyntheticCapture
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
+from synthetic_capture import SyntheticCapture
 
 
 def await_condition(predicate, timeout=5):

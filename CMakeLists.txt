@@ -107,7 +107,7 @@ install(EXPORT BCamSyncTargets NAMESPACE BCamSync:: DESTINATION ${CMAKE_INSTALL_
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/BCamSyncConfig.cmake ${CMAKE_CURRENT_BINARY_DIR}/BCamSyncConfigVersion.cmake DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/BCamSync)
 if(BCAMSYNC_BUILD_MANAGED)
   add_subdirectory(addons/managed)
-  add_executable(bcamsync_capture examples/capture.cpp)
+  add_executable(bcamsync_capture tools/managed/capture.cpp)
   target_link_libraries(bcamsync_capture PRIVATE bcamsync_managed)
   target_compile_options(bcamsync_capture PRIVATE -Wall -Wextra -Wpedantic)
   install(TARGETS bcamsync_capture RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

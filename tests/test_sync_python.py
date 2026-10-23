@@ -13,9 +13,9 @@ import weakref
 from bcamsync import Config, PhasePolicy, SyncConfig, SyncSession, SyncUnit
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "examples"))
+sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT / "host"))
-from external_capture import SyntheticCapture, local_config
+from synthetic_capture import SyntheticCapture, local_config
 
 
 def await_condition(predicate, timeout=8):
@@ -125,7 +125,7 @@ class ExternalSyncTests(unittest.TestCase):
     def test_policy_bindings_roundtrip_projection_and_host_contract(self):
         from bcamsync_host import _sync_contract
 
-        config = Config.from_file(ROOT / "examples" / "configs" / "fake_two_nodes.json")
+        config = Config.from_file(ROOT / "tests" / "fixtures" / "configs" / "fake_two_nodes.json")
         default_document = json.loads(config.to_json())
         default_document.pop("phase_policy")
         self.assertEqual(json.loads(config.sync_json()), _sync_contract(default_document))
@@ -217,7 +217,7 @@ import gc
 import sys
 import time
 sys.path.insert(0, sys.argv[1])
-from external_capture import SyntheticCapture, local_config
+from synthetic_capture import SyntheticCapture, local_config
 from bcamsync import SyncSession
 captures = {"reference": SyntheticCapture("reference"),
             "follower": SyntheticCapture("follower", phase_ns=4_000_000)}
@@ -238,7 +238,7 @@ finally:
     for capture in captures.values():
         capture.stop_capture()
 '''
-        completed = subprocess.run([sys.executable, "-c", script, str(ROOT / "examples")],
+        completed = subprocess.run([sys.executable, "-c", script, str(ROOT / "tests")],
                                    capture_output=True, text=True, timeout=15, check=False)
         self.assertEqual(completed.returncode, 0, completed.stderr)
 

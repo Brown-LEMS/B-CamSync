@@ -19,15 +19,15 @@ from bcamsync.management import NodeService
 
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "examples"))
-spec = importlib.util.spec_from_file_location("preview_example", ROOT / "examples" / "preview.py")
+sys.path.insert(0, str(ROOT / "tools" / "managed"))
+spec = importlib.util.spec_from_file_location("preview_example", ROOT / "tools" / "managed" / "preview.py")
 preview = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(preview)
 
 
 class PreviewApplicationTests(unittest.TestCase):
     def setUp(self):
-        config = Config.from_file(ROOT / "examples" / "configs" / "fake_one_node.json")
+        config = Config.from_file(ROOT / "tests" / "fixtures" / "configs" / "fake_one_node.json")
         units = config.units
         for unit in units:
             fake = unit.fake

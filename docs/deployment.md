@@ -15,7 +15,7 @@ Use one B0267 board with four cameras on each Pi 4. Install B-CamSync on both no
 On each node, copy the configuration and enumerate its local board ID:
 
 ```sh
-cp examples/configs/two_nodes_one_board.json group.json
+cp docs/configs/two_nodes_one_board.json group.json
 .venv/bin/python -c 'from bcamsync import enumerate_arducam_cameras; print(enumerate_arducam_cameras())'
 ```
 
@@ -25,12 +25,12 @@ One launch sequence is to start the follower first, then the reference in a term
 
 ```sh
 # On node-b:
-.venv/bin/python examples/capture.py group.json node-b --seconds 30
+.venv/bin/python tools/managed/capture.py group.json node-b --seconds 30
 # On node-a:
-.venv/bin/python examples/capture.py group.json node-a --seconds 30
+.venv/bin/python tools/managed/capture.py group.json node-a --seconds 30
 ```
 
-Each node acquires its local board and prints frame sequences, four-view shapes, and synchronization status. Each application captures for its own requested 30 seconds. Whichever node finishes first ends group synchronization; the other application warns and continues local acquisition until its own duration ends. The default settings are 40 fps, 10000 µs exposure, and startup gain calibration. Other layouts are in [examples/configs](../examples/configs).
+Each node acquires its local board and prints frame sequences, four-view shapes, and synchronization status. Each application captures for its own requested 30 seconds. Whichever node finishes first ends group synchronization; the other application warns and continues local acquisition until its own duration ends. The default settings are 40 fps, 10000 µs exposure, and startup gain calibration. Other layouts are in [docs/configs](../docs/configs).
 
 ## Optional network infrastructure
 
@@ -60,7 +60,7 @@ Install the preview dependency and start the example on each Pi, using its own n
 
 ```sh
 .venv/bin/python -m pip install 'Pillow>=11' 'numpy<2'
-.venv/bin/python examples/preview.py group.json node-a
+.venv/bin/python tools/managed/preview.py group.json node-a
 # On the other Pi, use node-b instead.
 ```
 
@@ -69,33 +69,33 @@ On the workstation, run these commands from a checkout of this repository to ins
 ```sh
 python3 -m venv .venv
 .venv/bin/python -m pip install ./host
-.venv/bin/python examples/manage_group.py group.json discover
-.venv/bin/python examples/manage_group.py group.json start
+.venv/bin/python tools/manage_group.py group.json discover
+.venv/bin/python tools/manage_group.py group.json start
 ```
 
 Open the URLs returned by `discover` to see each node's four camera views. Discovery works before cameras start; the `start` command starts the whole group. To select a workstation adapter, add `--interface en7` to the host commands, replacing `en7` with your interface name. To end acquisition, run:
 
 ```sh
-.venv/bin/python examples/manage_group.py group.json stop
+.venv/bin/python tools/manage_group.py group.json stop
 ```
 
 Closing the browser leaves acquisition running. Preview is an independent example application that consumes frames; HTTP forwards control requests, while the node application owns capture and networking.
 
 ## One Pi 5, two boards: remote preview and MJPG recording
 
-The [preview_record.py](../examples/preview_record.py) application combines browser preview with Pi-local MJPEG recording. It imports [preview.py](../examples/preview.py); keep both files together if you copy this application into another project. Recording is downstream example code; this library provides frame access and synchronization. Each board writes one full-resolution 5120×800 grayscale JPEG stream containing its four views side by side, giving eight camera views across the two boards. Preview is resized and sampled independently; recording processes every packet read by the application.
+The [preview_record.py](../tools/managed/preview_record.py) application combines browser preview with Pi-local MJPEG recording. It imports [preview.py](../tools/managed/preview.py); keep both files together if you copy this application into another project. Recording is downstream example code; this library provides frame access and synchronization. Each board writes one full-resolution 5120×800 grayscale JPEG stream containing its four views side by side, giving eight camera views across the two boards. Preview is resized and sampled independently; recording processes every packet read by the application.
 
 After completing the managed add-on installation on the Pi, install its application preview dependency using `.venv/bin/python -m pip install 'Pillow>=11' 'numpy<2'`. Copy the Pi 5 template and enumerate the two board IDs:
 
 ```sh
-cp examples/configs/one_node_two_boards_pi5.json group.json
+cp docs/configs/one_node_two_boards_pi5.json group.json
 .venv/bin/python -c 'from bcamsync import enumerate_arducam_cameras; print(enumerate_arducam_cameras("arducam_b0267_pi5"))'
 ```
 
 Replace both `camera_id` placeholders in `group.json`; both units explicitly select `arducam_b0267_pi5`. Start the application with the Pi's existing IPv4 address and a writable recording directory on the Pi, replacing the example address and path:
 
 ```sh
-.venv/bin/python examples/preview_record.py group.json node-a \
+.venv/bin/python tools/managed/preview_record.py group.json node-a \
   --address 192.168.1.50 --output-dir /mnt/ssd/bcamsync
 ```
 

@@ -10,7 +10,7 @@ import unittest
 
 class ComponentBoundaryTests(unittest.TestCase):
     def test_core_and_opencv_adapter_do_not_import_capture_dependencies(self):
-        example = Path(__file__).resolve().parents[1] / "examples" / "opencv_sync.py"
+        example = Path(__file__).resolve().parents[1] / "tools" / "opencv_capture.py"
         code = '''
 import importlib.abc
 import importlib.util
@@ -39,7 +39,7 @@ assert example.CameraTiming is CameraTiming
 from bcamsync.management import NodeService
 from bcamsync.http_management import HttpNodeService
 from bcamsync.node import run_node
-config = SyncConfig.from_file(Path(sys.argv[1]).parent / "configs" / "external_one_node_pi5.json")
+config = SyncConfig.from_file(Path(sys.argv[1]).parents[1] / "docs" / "configs" / "external_one_node_pi5.json")
 assert config.join_timeout_seconds is None
 config.join_timeout_seconds = 120.5
 config.validate()

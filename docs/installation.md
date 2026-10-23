@@ -60,7 +60,7 @@ For browser preview and recording, install Pillow alongside this backend:
 
 New applications can import `Config`, `Session`, and `FramePacket` from `bcamsync_managed`. Existing explicit `from bcamsync import Config, Session` imports resolve to the installed add-on for compatibility. Importing `bcamsync` alone does not import camera or image bindings.
 
-Use [`one_node_two_boards_pi5.json`](../examples/configs/one_node_two_boards_pi5.json) for managed Pi 5 capture and fill in its camera IDs. The `arducam_b0267_pi5` profiles select the managed backend's Pi 5 behavior. Follow [managed integration](integration.md#optional-managed-capture-session) or [browser recording](deployment.md#one-pi-5-two-boards-remote-preview-and-mjpg-recording).
+Use [`one_node_two_boards_pi5.json`](configs/one_node_two_boards_pi5.json) for managed Pi 5 capture and fill in its camera IDs. The `arducam_b0267_pi5` profiles select the managed backend's Pi 5 behavior. Follow [managed integration](integration.md#optional-managed-capture-session) or [browser recording](deployment.md#one-pi-5-two-boards-remote-preview-and-mjpg-recording).
 
 ## Physical multi-node sessions
 
@@ -94,6 +94,6 @@ cmake --build build-managed --parallel
 cmake --install build-managed
 ```
 
-Managed applications use `find_package(BCamSyncManaged CONFIG REQUIRED)` and link `BCamSync::managed`, as shown by the [CMake consumer example](../examples/cmake_consumer). Public synchronization interfaces are in [`sync.hpp`](../include/bcamsync/sync.hpp) and [`sync_unit.hpp`](../include/bcamsync/sync_unit.hpp).
+Managed applications use `find_package(BCamSyncManaged CONFIG REQUIRED)` and link `BCamSync::managed`, as shown by the [CMake consumer example](../tests/installed_managed). Public synchronization interfaces are in [`sync.hpp`](../include/bcamsync/sync.hpp) and [`sync_unit.hpp`](../include/bcamsync/sync_unit.hpp).
 
-When updating an existing checkout, rebuild native applications against the new core and add-on libraries. Synchronization API calls and configuration remain compatible; managed C++ applications now link the separate `BCamSync::managed` target, and managed Python applications install both packages. The `opencv_sync.py` application continues to use only the core package without source changes.
+When updating an existing checkout, rebuild native applications against the new core and add-on libraries. Synchronization API calls and configuration remain compatible; managed C++ applications now link the separate `BCamSync::managed` target, and managed Python applications install both packages. The `opencv_capture.py` application continues to use only the core package without source changes.

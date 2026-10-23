@@ -13,21 +13,21 @@ mkdir -p "$3"
 install_prefix=$(cd "$3" && pwd)
 python_executable=$4
 managed=${5:-ON}
-consumer_build="$build_directory/installed-consumer"
 
 echo "[1/4] Install B-CamSync into $install_prefix"
 cmake --install "$build_directory" --prefix "$install_prefix"
 echo "[2/4] Build an independent CMake consumer"
 consumer_source="$source_root/tests/installed_core"
-if [[ $managed == ON ]]; then consumer_source="$source_root/examples/cmake_consumer"; fi
+if [[ $managed == ON ]]; then consumer_source="$source_root/tests/installed_managed"; fi
+consumer_build="$build_directory/${consumer_source##*/}"
 cmake -S "$consumer_source" -B "$consumer_build" \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$install_prefix"
 cmake --build "$consumer_build" --parallel 2
 echo "[3/4] Run installed C++ component checks"
-"$consumer_build/consumer" "$source_root/examples/configs/fake_one_node.json"
+"$consumer_build/consumer" "$source_root/tests/fixtures/configs/fake_one_node.json"
 echo "[4/4] Import the CMake-installed Python package"
 PYTHONPATH="$install_prefix" "$python_executable" - "$install_prefix" \
-  "$source_root/examples/configs/external_one_node_pi5.json" "$managed" <<'PY'
+  "$source_root/docs/configs/external_one_node_pi5.json" "$managed" <<'PY'
 from pathlib import Path
 import sys
 

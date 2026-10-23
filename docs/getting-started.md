@@ -2,7 +2,7 @@
 
 [User guide](../README.md) · [Installation](installation.md) · [Integration guide](integration.md)
 
-This walkthrough installs this library, attaches `SyncSession` to the capture pipeline in [`opencv_sync.py`](../examples/opencv_sync.py), checks synchronization, and records two short videos. The application is one Python file. It owns the cameras and image buffers, imports reusable `CameraTiming` adapters from `bcamsync.adapters.libcamera`, and implements display and recording. This library decides frame-period corrections and reports synchronization status through `SyncSession`.
+This walkthrough installs this library, attaches `SyncSession` to the capture pipeline in [`opencv_capture.py`](../tools/opencv_capture.py), checks synchronization, and records two short videos. The application is one Python file. It owns the cameras and image buffers, imports reusable `CameraTiming` adapters from `bcamsync.adapters.libcamera`, and implements display and recording. This library decides frame-period corrections and reports synchronization status through `SyncSession`.
 
 The lab has exercised this application on one Raspberry Pi 5 with two Arducam B0267 boards, including stopping and restarting synchronization while capture continues. One board is one synchronization unit with four camera view positions; two boards expose eight view positions. This script requires exactly one node and two boards.
 
@@ -18,7 +18,7 @@ Close other applications using the cameras. Enumerate camera IDs using the same 
 
 ```sh
 .venv/bin/python -c 'import libcamera; manager = libcamera.CameraManager.singleton(); print([camera.id for camera in manager.cameras])'
-cp examples/configs/external_one_node_pi5.json group.json
+cp docs/configs/external_one_node_pi5.json group.json
 ```
 
 This uses the Python `CameraManager.cameras` interface, also used by the [upstream Python capture application](https://github.com/raspberrypi/libcamera/blob/main/src/py/cam/cam.py). Expect two distinct board IDs. Replace `REPLACE_WITH_FIRST_CAMERA_ID` and `REPLACE_WITH_SECOND_CAMERA_ID` in `group.json` with those exact IDs, preserving JSON quotes and commas. Each board needs its own ID.
@@ -31,7 +31,7 @@ The configuration selects 40 fps. The script configures a 5120×800 sensor mode,
 
 ```sh
 mkdir -p results
-.venv/bin/python examples/opencv_sync.py group.json \
+.venv/bin/python tools/opencv_capture.py group.json \
   --seconds 60 --repeat 2 --output results/sync.json
 ```
 
@@ -59,7 +59,7 @@ A failed assertion means the expected check did not pass. A readiness timeout, c
 Choose a new video directory for every run; this example's fixed filenames can overwrite an earlier recording. Keep `--repeat 1` when recording:
 
 ```sh
-.venv/bin/python examples/opencv_sync.py group.json \
+.venv/bin/python tools/opencv_capture.py group.json \
   --seconds 5 --repeat 1 --video-dir results/mjpg-01 --output results/recording-sync.json
 ```
 
@@ -93,7 +93,7 @@ This checks that the synchronization run passed and that both files contain read
 The same external-capture example can serve both boards to your workstation's browser. It uses Python's standard-library HTTP server and OpenCV JPEG encoding, with no local X11 server or additional Python dependency. Run on the Pi:
 
 ```sh
-.venv/bin/python examples/opencv_sync.py group.json \
+.venv/bin/python tools/opencv_capture.py group.json \
   --http-preview --continuous --repeat 1
 ```
 
@@ -116,6 +116,6 @@ The AVI files use the nominal frame rate and contain no per-frame sensor timesta
 
 ## Reuse this integration in your project
 
-Copy `opencv_sync.py` and the completed `group.json` into your project. Activate the environment containing this library, Python libcamera, and OpenCV, then run `python opencv_sync.py group.json` with the same options. Other example files, node services, and a workstation client are unnecessary for this application.
+Copy `opencv_capture.py` and the completed `group.json` into your project. Activate the environment containing this library, Python libcamera, and OpenCV, then run `python opencv_capture.py group.json` with the same options. Other example files, node services, and a workstation client are unnecessary for this application.
 
 If you already have a capture pipeline, retain it and adapt the `CameraTiming` class to its sensor metadata and per-request frame-period controls. Keep your image processing and recording path. Follow [the SyncSession integration guide](integration.md#attach-to-an-existing-pipeline-syncsession) for the adapter contract and shutdown order. The optional [managed integration](integration.md#optional-managed-capture-session) is available when you want this library to own acquisition instead.

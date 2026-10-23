@@ -22,12 +22,12 @@ Existing top-level adapter imports such as `from bcamsync import SyncUnit, Pulse
 
 ## Attach to an existing pipeline: `SyncSession`
 
-Keep your existing capture pipeline and supply one adapter per local synchronization unit. For B0267, each board is one unit with four view positions. Your camera SDK must expose sensor timestamps, observed frame durations, and request controls for bounded frame-period changes. Reading image arrays through OpenCV alone does not supply this timing/control contract. The reusable [`CameraTiming`](../python/bcamsync/adapters/libcamera.py) adapter is imported by [`opencv_sync.py`](../examples/opencv_sync.py); the script's `Capture` class supplies SDK operations and images separately.
+Keep your existing capture pipeline and supply one adapter per local synchronization unit. For B0267, each board is one unit with four view positions. Your camera SDK must expose sensor timestamps, observed frame durations, and request controls for bounded frame-period changes. Reading image arrays through OpenCV alone does not supply this timing/control contract. The reusable [`CameraTiming`](../python/bcamsync/adapters/libcamera.py) adapter is imported by [`opencv_capture.py`](../tools/opencv_capture.py); the script's `Capture` class supplies SDK operations and images separately.
 
 Start with the [Pi 5 walkthrough](getting-started.md) to run the real application. To learn the adapter without cameras, the synchronization-only installation also runs this complete synthetic example:
 
 ```sh
-.venv/bin/python examples/external_capture.py
+.venv/bin/python tests/synthetic_capture.py
 ```
 
 In your pipeline, connect request submission and completion callbacks to the existing adapter and pass the adapters to `SyncSession`. Your pixel path stays in the application. This library chooses the corrections; application code does not create pulses or call `adjust()` to schedule synchronization. The example script's recording code can be replaced without changing this library's synchronization runtime.
@@ -49,7 +49,7 @@ finally:
     capture.stop()
 ```
 
-The adapter map's keys must match the configured local unit IDs. `SyncConfig` describes synchronization membership, reference, frame rate, phase policy, and network/clock settings; it does not initialize cameras or apply image/exposure/gain settings. In [`external_one_node_pi5.json`](../examples/configs/external_one_node_pi5.json), `camera_id` belongs to the example application and is read by `Capture`; `SyncConfig` reads the synchronization fields. Set the same baseline frame rate in your capture system and synchronization configuration.
+The adapter map's keys must match the configured local unit IDs. `SyncConfig` describes synchronization membership, reference, frame rate, phase policy, and network/clock settings; it does not initialize cameras or apply image/exposure/gain settings. In [`external_one_node_pi5.json`](configs/external_one_node_pi5.json), `camera_id` belongs to the example application and is read by `Capture`; `SyncConfig` reads the synchronization fields. Set the same baseline frame rate in your capture system and synchronization configuration.
 
 Keep acquisition and request completion running while `SyncSession.stop()` restores baseline controls and waits for feedback. Close the application capture only after synchronization stops. Each node calls `start()` independently and waits for the configured peers, regardless of launch order. Peer waiting is unlimited by default; set optional `join_timeout_seconds` to bound it. `startup_timeout_seconds` bounds local preparation and, separately, group clock acquisition and calibration after all members join.
 
@@ -108,10 +108,10 @@ Call `completed()` for a restoration submission only when device completion meta
 First install the separate C++ add-on using the [optional managed installation](installation.md#optional-managed-capture). The recommended synchronization-only installation cannot enumerate cameras through `enumerate_arducam_cameras()` or run managed `Session` acquisition. Prepare a separate managed configuration:
 
 ```sh
-cp examples/configs/one_node_two_boards_pi5.json managed-group.json
+cp docs/configs/one_node_two_boards_pi5.json managed-group.json
 ```
 
-Replace both camera ID placeholders with the IDs from your Python libcamera enumeration. The template's `arducam_b0267_pi5` profiles select Pi 5 acquisition. Start from [`capture.py`](../examples/capture.py), which reads all configured local units and handles group shutdown. This smaller single-node loop shows where to place processing:
+Replace both camera ID placeholders with the IDs from your Python libcamera enumeration. The template's `arducam_b0267_pi5` profiles select Pi 5 acquisition. Start from [`capture.py`](../tools/managed/capture.py), which reads all configured local units and handles group shutdown. This smaller single-node loop shows where to place processing:
 
 ```python
 from bcamsync_managed import Config, Session
@@ -137,10 +137,10 @@ Reads continue while synchronization is starting or faulted. Inspect `status().r
 
 ## Select configuration and quality policy
 
-For the recommended Pi 5 `SyncSession` first run, use [`external_one_node_pi5.json`](../examples/configs/external_one_node_pi5.json). For a timing-only multi-node configuration, see [`external_two_nodes.json`](../examples/configs/external_two_nodes.json). All nodes in a group must agree on membership, reference unit, frame rate, clock mode, and phase policy. The reference is explicitly configured; node discovery resolves known members rather than electing a topology.
+For the recommended Pi 5 `SyncSession` first run, use [`external_one_node_pi5.json`](configs/external_one_node_pi5.json). For a timing-only multi-node configuration, see [`external_two_nodes.json`](configs/external_two_nodes.json). All nodes in a group must agree on membership, reference unit, frame rate, clock mode, and phase policy. The reference is explicitly configured; node discovery resolves known members rather than electing a topology.
 
 A single-node group uses its local clock without networking. Physical multi-node sessions additionally use transport and private clock estimation, even for application-owned capture; automatic networking also prepares links and discovers the configured members. See [deployment](deployment.md) for address policy and optional persistent services. `SyncSession` changes acquisition ownership; it uses the same multi-node runtime facilities as `Session`.
 
 Default readiness targets are p95 ≤ 0.5 ms and max ≤ 1 ms across two settled windows. Continue observing status during acquisition; applications choose whether to stop recording, mark intervals, or continue when quality changes. The OpenCV example continues capture and recording after synchronization exits and marks its measurement report as failed if readiness is lost. Browser recording writes immediately when requested and retains metadata for downstream selection.
 
-For C++, application session control is in [`sync.hpp`](../include/bcamsync/sync.hpp), and device adapter support has the [`adapters.hpp`](../include/bcamsync/adapters.hpp) entry point. [`phase_policy.hpp`](../include/bcamsync/phase_policy.hpp) declares application control/quality settings separately from the advanced algorithm interfaces in `phase.hpp`; existing headers and type names remain compatible. The managed add-on provides [`session.hpp`](../addons/managed/include/bcamsync/session.hpp). The `detail` runtime/FFI headers support the core and add-on implementation. See the [installation guide](installation.md#c) and [CMake consumer](../examples/cmake_consumer) for linking. Public types, API comments, and executable examples define the implemented contract; [design notes](design.md) explain the internals.
+For C++, application session control is in [`sync.hpp`](../include/bcamsync/sync.hpp), and device adapter support has the [`adapters.hpp`](../include/bcamsync/adapters.hpp) entry point. [`phase_policy.hpp`](../include/bcamsync/phase_policy.hpp) declares application control/quality settings separately from the advanced algorithm interfaces in `phase.hpp`; existing headers and type names remain compatible. The managed add-on provides [`session.hpp`](../addons/managed/include/bcamsync/session.hpp). The `detail` runtime/FFI headers support the core and add-on implementation. See the [installation guide](installation.md#c) and [CMake consumer](../tests/installed_managed) for linking. Public types, API comments, and executable examples define the implemented contract; [design notes](design.md) explain the internals.

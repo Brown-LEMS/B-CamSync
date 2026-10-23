@@ -18,7 +18,7 @@ class ManagedAddonTests(unittest.TestCase):
     def test_managed_config_projects_the_core_contract(self):
         from pathlib import Path
         config = bcamsync_managed.Config.from_file(
-            Path(__file__).resolve().parents[1] / "examples" / "configs" / "fake_one_node.json")
+            Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "configs" / "fake_one_node.json")
         sync = config.sync_config()
         self.assertIsInstance(sync, bcamsync.SyncConfig)
         self.assertIsInstance(sync.nodes[0], bcamsync.NodeConfig)

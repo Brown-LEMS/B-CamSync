@@ -11,7 +11,7 @@ Start the existing external-capture application remotely and open one local wind
   --remote-dir /home/bapd8/B-CamSync --config group.json
 ```
 
-Replace `pi5` with your SSH alias or `user@host`, and use the absolute checkout path on the Pi. `--config` is a remote path, relative to that checkout by default. `--remote-python` defaults to the checkout's `.venv/bin/python`. The tool runs `examples/opencv_sync.py --http-preview --continuous --repeat 1`, forwards the Pi's loopback HTTP port through SSH, and feeds JPEG images to local ffplay windows. Each board image contains its four camera views. It starts no recording and installs or copies no remote files.
+Replace `pi5` with your SSH alias or `user@host`, and use the absolute checkout path on the Pi. `--config` is a remote path, relative to that checkout by default. `--remote-python` defaults to the checkout's `.venv/bin/python`. The tool runs `tools/opencv_capture.py --http-preview --continuous --repeat 1`, forwards the Pi's loopback HTTP port through SSH, and feeds JPEG images to local ffplay windows. Each board image contains its four camera views. It starts no recording and installs or copies no remote files.
 
 To view a preview application that is already running:
 

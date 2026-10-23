@@ -16,8 +16,8 @@ from PIL import Image
 
 from bcamsync import Pulse, boot_time_ns
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples"))
-from opencv_sync import BrowserPreview, CameraTiming, main
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+from opencv_capture import BrowserPreview, CameraTiming, main
 
 
 class CameraTimingTests(unittest.TestCase):
@@ -165,7 +165,7 @@ class BrowserPreviewTests(unittest.TestCase):
 
 class PreviewCleanupTests(unittest.TestCase):
     def test_sync_stop_and_fault_leave_recording_running_until_application_end(self):
-        config = Path(__file__).resolve().parents[1] / "examples/configs/fake_one_node.json"
+        config = Path(__file__).resolve().parents[1] / "tests/fixtures/configs/fake_one_node.json"
         for fault in ("", "peer disconnected"):
             with self.subTest(fault=fault):
                 capture = Mock(units={})
@@ -187,17 +187,17 @@ class PreviewCleanupTests(unittest.TestCase):
                         elapsed[0] += 1
 
                 with patch("sys.argv", ["opencv_sync", str(config), "--seconds", "2", "--repeat", "1", "--video-dir", "/tmp/video"]), \
-                        patch("opencv_sync.Capture", return_value=capture), \
-                        patch("opencv_sync.SyncSession", return_value=context), \
-                        patch("opencv_sync.time.monotonic", side_effect=lambda: elapsed[0]), \
-                        patch("opencv_sync.time.sleep", side_effect=sleep):
+                        patch("opencv_capture.Capture", return_value=capture), \
+                        patch("opencv_capture.SyncSession", return_value=context), \
+                        patch("opencv_capture.time.monotonic", side_effect=lambda: elapsed[0]), \
+                        patch("opencv_capture.time.sleep", side_effect=sleep):
                     main()
                 self.assertEqual(elapsed[0], 2)
                 capture.start_recording.assert_called_once()
                 capture.stop.assert_called_once()
 
     def test_preview_cleanup_failure_still_stops_capture(self):
-        config = Path(__file__).resolve().parents[1] / "examples/configs/fake_one_node.json"
+        config = Path(__file__).resolve().parents[1] / "tests/fixtures/configs/fake_one_node.json"
         capture = Mock(units={})
         preview = Mock()
         preview.publish_status.side_effect = RuntimeError("encoder failed")
@@ -210,10 +210,10 @@ class PreviewCleanupTests(unittest.TestCase):
         context.__enter__ = Mock(return_value=session)
         context.__exit__ = Mock(return_value=False)
         with patch("sys.argv", ["opencv_sync", str(config), "--http-preview", "--continuous", "--repeat", "1"]), \
-                patch("opencv_sync.Capture", return_value=capture), \
-                patch("opencv_sync.BrowserPreview", return_value=preview), \
-                patch("opencv_sync.SyncSession", return_value=context), \
-                patch("opencv_sync.time.sleep"):
+                patch("opencv_capture.Capture", return_value=capture), \
+                patch("opencv_capture.BrowserPreview", return_value=preview), \
+                patch("opencv_capture.SyncSession", return_value=context), \
+                patch("opencv_capture.time.sleep"):
             with self.assertRaisesRegex(OSError, "HTTP shutdown failed"):
                 main()
         capture.stop.assert_called_once()

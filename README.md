@@ -4,7 +4,7 @@ B-CamSync is a camera synchronization library with a Rust core and interfaces fo
 
 **Start with `SyncSession` to add synchronization to your existing capture pipeline.** Your application continues to configure cameras, acquire frames, own image buffers, and record video. This library consumes sensor timing and requests timing corrections through your `SyncUnit` adapters; it does not take over acquisition in this integration.
 
-[`examples/opencv_sync.py`](examples/opencv_sync.py) is a complete application showing this integration on one Pi 5 with two Arducam B0267 boards. The script operates libcamera, imports this library's reusable `CameraTiming` adapter, and implements optional OpenCV display and MJPG recording. Installing this library and copying that script plus a configuration gives you a runnable application. Source, bindings, tests, and build tools in this repository are used to develop this library.
+[`tools/opencv_capture.py`](tools/opencv_capture.py) is a complete application showing this integration on one Pi 5 with two Arducam B0267 boards. The script operates libcamera, imports this library's reusable `CameraTiming` adapter, and implements optional OpenCV display and MJPG recording. Installing this library and copying that script plus a configuration gives you a runnable application. Source, bindings, tests, and build tools in this repository are used to develop this library.
 
 ## First use: Pi 5, two boards, `SyncSession`
 
@@ -15,27 +15,27 @@ Use Raspberry Pi OS Bookworm arm64 with a working B0267 camera stack and compati
 
 ```sh
 .venv/bin/python -c 'import libcamera; manager = libcamera.CameraManager.singleton(); print([camera.id for camera in manager.cameras])'
-cp examples/configs/external_one_node_pi5.json group.json
+cp docs/configs/external_one_node_pi5.json group.json
 ```
 
 3. Replace the two `camera_id` placeholders in `group.json` with the distinct board IDs. Run synchronization without recording first:
 
 ```sh
 mkdir -p results
-.venv/bin/python examples/opencv_sync.py group.json \
+.venv/bin/python tools/opencv_capture.py group.json \
   --seconds 60 --repeat 2 --output results/sync.json
 ```
 
 4. Save a short recording into a new directory:
 
 ```sh
-.venv/bin/python examples/opencv_sync.py group.json \
+.venv/bin/python tools/opencv_capture.py group.json \
   --seconds 5 --repeat 1 --video-dir results/mjpg-01 --output results/recording-sync.json
 ```
 
 The script waits for readiness or synchronization failure before recording. If synchronization exits, capture and recording continue until the application ends; the report records readiness loss as `passed: false`. It writes `board-a1.avi` and `board-a2.avi`, each a 1280×200 MJPG strip containing the board's four view positions, plus a JSON synchronization report. Check `passed: true` in the report and that both videos contain frames. The script implements recording; this library supplies the synchronization attached to its running capture.
 
-The example requires exactly one node and two boards. It uses their shared local clock and runs as one process. To reuse it in another project, copy `opencv_sync.py` and your completed `group.json`, and run it with the environment containing `bcamsync`, Python libcamera, and OpenCV.
+The example requires exactly one node and two boards. It uses their shared local clock and runs as one process. To reuse it in another project, copy `opencv_capture.py` and your completed `group.json`, and run it with the environment containing `bcamsync`, Python libcamera, and OpenCV.
 
 For live browser preview without XQuartz, run the same script on the Pi with `--http-preview --continuous --repeat 1`, then forward its loopback HTTP port with SSH. The page shows both boards and synchronization status; JPEG encoding runs in a separate thread at 10 fps by default. See [browser preview over SSH](docs/getting-started.md#browser-preview-over-ssh) for commands.
 
@@ -43,9 +43,9 @@ For live browser preview without XQuartz, run the same script on the Pi with `--
 
 | Your application | API | Guide/example |
 | --- | --- | --- |
-| Add synchronization to your existing acquisition and recording pipeline; recommended starting point | `SyncConfig` + `SyncSession` + `SyncUnit` adapters | [Integration guide](docs/integration.md), [`opencv_sync.py`](examples/opencv_sync.py) |
-| Implement an adapter for a new device | `bcamsync.adapters.SyncUnit` and timing/control types | [Adapter contract](docs/integration.md#implement-a-device-adapter), [`external_capture.py`](examples/external_capture.py) |
-| Have the optional C++ add-on configure cameras and deliver local frames | `bcamsync_managed.Config` + `Session` | [Managed capture](docs/integration.md#optional-managed-capture-session), [`capture.py`](examples/capture.py) |
+| Add synchronization to your existing acquisition and recording pipeline; recommended starting point | `SyncConfig` + `SyncSession` + `SyncUnit` adapters | [Integration guide](docs/integration.md), [`opencv_capture.py`](tools/opencv_capture.py) |
+| Implement an adapter for a new device | `bcamsync.adapters.SyncUnit` and timing/control types | [Adapter contract](docs/integration.md#implement-a-device-adapter), [`synthetic_capture.py`](tests/synthetic_capture.py) |
+| Have the optional C++ add-on configure cameras and deliver local frames | `bcamsync_managed.Config` + `Session` | [Managed capture](docs/integration.md#optional-managed-capture-session), [`capture.py`](tools/managed/capture.py) |
 
 `SyncSession` nodes may start in any order and wait for peers. Calling `stop()` on any participating node ends group synchronization, restores baseline frame-period controls, and warns while your application keeps capture running. Status retains the initiating node and reason; a new synchronization round requires explicit startup. The separately installed `bcamsync-managed` add-on provides `Session`, which owns camera lifecycle and frame delivery and uses the same synchronization core. Existing explicit imports such as `from bcamsync import Config, Session` continue to work when that add-on is installed. Importing the core does not load the add-on or NumPy. See [the example catalog](examples/README.md) for complete applications and the files needed to copy each one.
 

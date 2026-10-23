@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class NodeApplicationTests(unittest.TestCase):
     def setUp(self):
-        self.config = Config.from_file(ROOT / "examples/configs/fake_one_node.json")
+        self.config = Config.from_file(ROOT / "tests/fixtures/configs/fake_one_node.json")
         self.config.units = [self.config.units[0]]
         self.events = []
         events = self.events

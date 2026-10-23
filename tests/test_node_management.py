@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class NodeStartupTests(unittest.TestCase):
     def setUp(self):
-        self.config = Config.from_file(ROOT / "examples/configs/fake_one_node.json")
+        self.config = Config.from_file(ROOT / "tests/fixtures/configs/fake_one_node.json")
         self.config.units = [self.config.units[0]]
         self.handlers = {}
 
@@ -174,7 +174,7 @@ class NodeStartupTests(unittest.TestCase):
             node_app.run_node(self.config, "node-a", network_startup="invalid")
 
     def test_packaged_cli_defaults_to_explicit_and_accepts_automatic_opt_in(self):
-        path = str(ROOT / "examples/configs/fake_one_node.json")
+        path = str(ROOT / "tests/fixtures/configs/fake_one_node.json")
         with patch.object(node_app, "run_node") as run:
             self.assertEqual(node_app.main([path, "node-a"]), 0)
             self.assertEqual(run.call_args.kwargs["network_startup"], "explicit")

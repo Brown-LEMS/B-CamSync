@@ -39,7 +39,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertIn("ControlPath=none", command)
         self.assertEqual(command[-2], "pi-test")
         self.assertEqual(command[-1],
-                         "cd '/srv/camera checkout' && exec .venv/bin/python -u examples/opencv_sync.py "
+                         "cd '/srv/camera checkout' && exec .venv/bin/python -u tools/opencv_capture.py "
                          "--http-preview --continuous --repeat 1 --http-port 8765 --preview-fps 30 "
                          "-- 'group '\"'\"'name'\"'\"' $(touch wrong).json'")
         attach = remote_preview.ssh_command(options(attach=True), 23456)

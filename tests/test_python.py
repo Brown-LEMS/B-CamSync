@@ -19,7 +19,7 @@ class ConfigTests(unittest.TestCase):
         expected = {"one_node_two_boards": (1, 2), "two_nodes_one_board": (2, 2), "two_nodes_two_boards": (2, 4)}
         for filename, counts in expected.items():
             with self.subTest(filename=filename):
-                config = Config.from_file(ROOT / "examples" / "configs" / f"{filename}.json")
+                config = Config.from_file(ROOT / "docs" / "configs" / f"{filename}.json")
                 self.assertEqual((len(config.nodes), len(config.units)), counts)
                 self.assertEqual(config.reference_node(), "node-a")
                 self.assertEqual(config.fps, 40)
@@ -28,7 +28,7 @@ class ConfigTests(unittest.TestCase):
                     self.assertFalse(hasattr(unit, field))
 
     def test_reference_selection_and_invalid_configuration(self):
-        config = Config.from_file(ROOT / "examples" / "configs" / "two_nodes_one_board.json")
+        config = Config.from_file(ROOT / "docs" / "configs" / "two_nodes_one_board.json")
         config.reference_unit = "board-b1"
         config.validate()
         self.assertEqual(config.reference_node(), "node-b")
@@ -37,7 +37,7 @@ class ConfigTests(unittest.TestCase):
             config.validate()
 
     def test_nested_synthetic_options_are_writable(self):
-        config = Config.from_file(ROOT / "examples" / "configs" / "fake_one_node.json")
+        config = Config.from_file(ROOT / "tests" / "fixtures" / "configs" / "fake_one_node.json")
         unit = config.unit("board-a2")
         unit.fake = FakeOptions()
         unit.fake.width = 32

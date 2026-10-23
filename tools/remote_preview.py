@@ -2,7 +2,7 @@
 """Open remote board previews in local ffplay windows through an owned SSH tunnel.
 
 Uses only Python's standard library, OpenSSH, and ffplay on the workstation.
-The remote checkout must already run examples/opencv_sync.py with its camera SDK.
+The remote checkout must already run tools/opencv_capture.py with its camera SDK.
 """
 
 import argparse
@@ -53,7 +53,7 @@ def ssh_command(args, local_port):
                f"127.0.0.1:{local_port}:127.0.0.1:{args.remote_port}"]
     if args.attach:
         return command + ["-N", "-T", "--", args.host]
-    remote = [args.remote_python, "-u", "examples/opencv_sync.py", "--http-preview",
+    remote = [args.remote_python, "-u", "tools/opencv_capture.py", "--http-preview",
               "--continuous", "--repeat", "1", "--http-port", str(args.remote_port),
               "--preview-fps", str(args.fps), "--", args.config]
     return command + ["-tt", "--", args.host,
@@ -218,7 +218,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("host", help="SSH host alias or user@host; uses your normal SSH configuration")
     mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--remote-dir", help="absolute remote checkout path; starts its opencv_sync.py")
+    mode.add_argument("--remote-dir", help="absolute remote checkout path; starts its opencv_capture.py")
     mode.add_argument("--attach", action="store_true", help="view an already running preview; leave it running on exit")
     parser.add_argument("--config", default="group.json", help="configuration path on the remote device")
     parser.add_argument("--remote-python", default=".venv/bin/python")

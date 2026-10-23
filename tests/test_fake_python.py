@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def config_from_example(name: str):
-    config = Config.from_file(ROOT / "examples" / "configs" / name)
+    config = Config.from_file(ROOT / "tests" / "fixtures" / "configs" / name)
     # Reserve distinct endpoints together so concurrent CI jobs do not share
     # the fixed example ports. Runtime still uses ordinary localhost TCP.
     reservations = []
