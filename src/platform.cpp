@@ -133,8 +133,11 @@ ClockEstimate tracking_estimate(const SyncConfig& config, const std::string& loc
                                              std::abs(numeric(fields[6])), delay / 2 + dispersion});
             result.uncertainty_ns = nanoseconds(residual + static_cast<double>(mapping_uncertainty) / 1e9);
         }
-        if (result.uncertainty_ns > nanoseconds(config.clock_max_offset_ms / 1000))
-            throw std::runtime_error("private clock uncertainty exceeds configured threshold");
+        const auto limit = nanoseconds(config.clock_max_offset_ms / 1000);
+        if (result.uncertainty_ns > limit)
+            throw std::runtime_error("private clock uncertainty exceeds configured threshold: " +
+                std::to_string(result.uncertainty_ns) + " ns > " + std::to_string(limit) +
+                " ns (local mapping " + std::to_string(mapping_uncertainty) + " ns)");
         result.valid = true;
     } catch (const std::exception& error) {
         result.fault = error.what();

@@ -77,6 +77,13 @@ void mapping() {
         "7F7F0101,,8,0,0,0,0,0,0,0,0,0,0,Normal\n", 1000000000000LL, 10000000000LL, 100);
     require(local.valid && local.offset_ns == 990000000000LL && local.uncertainty_ns == 100,
             "local reference mapping uses its local realtime clock");
+    const auto reference_report = "7F7F0101,,8,0,0,0,0,0,0,0,0,0,0,Normal\n";
+    require(tracking_estimate(config, "node-a", reference_report, 0, 0, 100000).valid,
+            "mapping uncertainty at the configured threshold is accepted");
+    const auto over_limit = tracking_estimate(config, "node-a", reference_report, 0, 0, 100001);
+    require(!over_limit.valid && over_limit.uncertainty_ns == 100001 &&
+            over_limit.fault.find("100001 ns > 100000 ns (local mapping 100001 ns)") != std::string::npos,
+            "threshold rejection reports measured, configured, and local mapping uncertainty");
     auto relaxed = config;
     relaxed.clock_max_offset_ms = 2;
     require(tracking_estimate(relaxed, "node-b", report("5", "1005", "0.001"),
