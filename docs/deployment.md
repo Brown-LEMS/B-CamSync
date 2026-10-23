@@ -2,9 +2,9 @@
 
 [Back to the user guide](../README.md) · [Single-node first run](getting-started.md) · [Example catalog](../examples/README.md)
 
-These applications compose synchronization with network setup, remote controls, preview, and recording. Choose the workflow your application needs. The single-node OpenCV example runs with an installed package, one script, and one configuration; its [first-run guide](getting-started.md) is the recommended starting point for the Pi 5 lab setup.
+These applications compose synchronization with network setup, remote controls, preview, and recording. Choose the workflow your application needs. For the Pi 5 lab setup, start with the two minimal Python scripts in the [first-run guide](getting-started.md); they need no configuration file. The extended recording application and SSH preview are documented under [developer tools](../tools/README.md).
 
-All commands below run from the repository root. Example scripts and the separate host package are source files in this repository.
+All commands below run from the repository root. The applications live under `tools/`; deployment configuration templates live under `docs/configs/`.
 
 The capture, node, and browser applications below use the separately installed `bcamsync-managed` add-on and its `Session` interface. The add-on also installs the `bcamsync-node` and `bcamsync-manage` commands. Complete the [managed installation](installation.md#optional-managed-capture) first; the recommended synchronization-only installation does not include that backend. Physical multi-node deployments also need the [network dependencies](installation.md#physical-multi-node-sessions).
 

@@ -2,7 +2,7 @@
 
 [User guide](../README.md) · [Pi 5 first run](getting-started.md) · [Integration guide](integration.md)
 
-This library includes a Rust synchronization core and Python bindings. The recommended installation exposes `SyncSession` for application-owned capture. Managed C++ acquisition is a separate optional package, `bcamsync-managed`. Your application supplies its camera SDK and image pipeline. The Pi 5 example uses Python libcamera for capture and OpenCV for optional display and recording.
+This library includes a Rust synchronization core and Python bindings. The recommended installation exposes `SyncSession` for application-owned capture. Managed C++ acquisition is a separate optional package, `bcamsync-managed`. Your application supplies its camera SDK and image pipeline. The Pi 5 examples use Python libcamera for capture and OpenCV for local preview; recording and remote-preview applications are separate tools.
 
 Run commands from the root of the shared repository checkout. Use the same revision of this library and its examples. Installation from source builds the Rust core and native bindings on the Pi; allow the wheel build to finish before continuing. Examples remain source files you can copy into your own project.
 
@@ -94,6 +94,6 @@ cmake --build build-managed --parallel
 cmake --install build-managed
 ```
 
-Managed applications use `find_package(BCamSyncManaged CONFIG REQUIRED)` and link `BCamSync::managed`, as shown by the [CMake consumer example](../tests/installed_managed). Public synchronization interfaces are in [`sync.hpp`](../include/bcamsync/sync.hpp) and [`sync_unit.hpp`](../include/bcamsync/sync_unit.hpp).
+Managed applications use `find_package(BCamSyncManaged CONFIG REQUIRED)` and link `BCamSync::managed`. Public synchronization interfaces are in [`sync.hpp`](../include/bcamsync/sync.hpp) and [`sync_unit.hpp`](../include/bcamsync/sync_unit.hpp). Independent CMake consumers under `tests/` check installation; the user-facing examples currently cover Python.
 
-When updating an existing checkout, rebuild native applications against the new core and add-on libraries. Synchronization API calls and configuration remain compatible; managed C++ applications now link the separate `BCamSync::managed` target, and managed Python applications install both packages. The `opencv_capture.py` application continues to use only the core package without source changes.
+When updating an existing checkout, rebuild native applications against the current core and add-on libraries. Managed C++ applications link the separate `BCamSync::managed` target, and managed Python applications install both packages. The dual-board Python preview example uses only the core package. Prototype APIs may change; keep the library, tools, and examples on the same revision.
