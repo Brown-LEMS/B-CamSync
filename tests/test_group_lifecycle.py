@@ -63,6 +63,12 @@ class Group:
         self.config.clock_mode = clock_mode
         if clock_mode == "network":
             self.config.startup_timeout_seconds = 15
+            # Exercise real chronyd lifecycle, not sub-millisecond VM clock accuracy.
+            # Match the native clock tolerance and allow it through phase validation.
+            self.config.clock_max_offset_ms = 10
+            policy = self.config.phase_policy
+            policy.max_mapping_span_ns = 10_000_000
+            self.config.phase_policy = policy
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as endpoint:
                 endpoint.bind(("127.0.0.1", 0))
                 self.config.clock_port = endpoint.getsockname()[1]
