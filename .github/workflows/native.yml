@@ -17,6 +17,48 @@ defaults:
     shell: bash
 
 jobs:
+  wheels:
+    name: Core wheel (Python ${{ matrix.python }}, ${{ matrix.target.arch }})
+    runs-on: ${{ matrix.target.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        python: ["3.11", "3.12", "3.13", "3.14", "3.15"]
+        target:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Build Bookworm wheel environment
+        run: |
+          docker build --progress plain -f tools/wheels.Dockerfile \
+            --build-arg PYTHON_VERSION=${{ matrix.python }} -t bcamsync-wheel .
+      - name: Build and test the installed core wheel
+        run: |
+          mkdir -p build-linux/wheels
+          docker run --rm \
+            --mount "type=bind,source=$PWD,target=/src,readonly" \
+            --mount "type=bind,source=$PWD/build-linux/wheels,target=/wheels" \
+            bcamsync-wheel 2>&1 | tee build-linux/wheel.log
+      - name: Upload tested wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-cpython${{ matrix.python }}-linux_${{ matrix.target.arch }}
+          path: build-linux/wheels/*.whl
+          if-no-files-found: error
+      - name: Preserve wheel validation log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-log-${{ matrix.python }}-${{ matrix.target.arch }}
+          path: build-linux/wheel.log
+
   gcc:
     name: Debian 12 GCC validation (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
