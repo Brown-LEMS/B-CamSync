@@ -14,20 +14,28 @@ The Pi 5 workflow requires Raspberry Pi OS Bookworm arm64 and Python 3.11 or lat
 
 The manually triggered `wheels.yml` GitHub Actions workflow builds core wheels for standard CPython 3.11–3.15 on Linux arm64, using Debian 12 / Bookworm. They require glibc 2.36 or later and the `libsystemd0` runtime; no Rust compiler, C++ compiler, or development headers are required on the target. Python minor versions have separate wheels. Free-threaded and debug interpreters are not included. Camera bindings must match your chosen Python interpreter independently; on Bookworm, use the system Python 3.11 for the OS camera and OpenCV packages.
 
-With the working vendor stack installed, prepare the application environment and authenticate GitHub CLI using an account with read access to this repository and its Actions artifacts:
+With the working vendor stack installed, prepare the application environment. Public Release downloads need no GitHub account, token, or GitHub CLI:
 
 ```sh
 sudo apt update
-sudo apt install python3-venv python3-opencv libsystemd0 gh
+sudo apt install git python3-venv python3-opencv libsystemd0
 python3 -m venv --system-site-packages .venv
-gh auth login
 .venv/bin/python tools/install_ci_wheel.py
 .venv/bin/python -c 'from bcamsync import SyncConfig, SyncSession; from bcamsync.adapters.libcamera import CameraTiming; import cv2, libcamera; print("SyncSession and camera pipeline imports OK")'
 ```
 
-The tool selects the latest successful manual `wheels.yml` build on `main`, prints its URL and commit, downloads the wheel matching the running interpreter and architecture, and installs only the synchronization core into that venv. It replaces an existing build even when the package version is unchanged. It reports a missing or expired artifact directly; it does not switch to an older build or compile from source. A maintainer must trigger the wheel workflow and wait for all five Python builds to succeed before this installation path is available. Daily push/PR checks do not publish wheels, so the latest installable wheel can be older than the latest source commit. Keep the examples checkout at the printed commit when reproducing a build.
+The tool anonymously downloads the matching core wheel from the public `rolling` Release, prints its URL and commit, checks the download size and SHA-256 digest, and installs into the running venv. It replaces an existing build even when its package version is unchanged. A maintainer must first run `wheels.yml` successfully to publish the complete wheel set. Daily push/PR checks do not publish wheels, so the installable build can be older than the latest source commit. Keep the examples checkout at the printed commit when reproducing a build.
 
-Use `--branch BRANCH` for another branch or `--download-only DIRECTORY` to save the matching wheel without installing it. The default repository is `Brown-LEMS/B-CamSync`; `--repo OWNER/REPO` selects a fork with the same workflow. To download manually, open a successful [ARM64 core wheels run](https://github.com/Brown-LEMS/B-CamSync/actions/workflows/wheels.yml), choose `wheels-cpython3.11-linux_aarch64` for a Bookworm Pi, unzip it, and install its `bcamsync-*.whl` using `.venv/bin/python -m pip install /path/to/wheel.whl`. Actions artifacts are temporary build outputs, not a PyPI package index.
+Use a persistent version or save a wheel without installing it:
+
+```sh
+.venv/bin/python tools/install_ci_wheel.py --release v0.2.0
+.venv/bin/python tools/install_ci_wheel.py --download-only dist/ci
+```
+
+`--release` takes an exact Release tag and defaults to `rolling`. `--repo OWNER/REPO` selects another public repository using the same release layout. There is no branch selector: an unversioned build from any selected workflow ref updates the same rolling Release. A missing release, missing wheel, or failed integrity check ends installation; the script does not choose another release or compile from source. The rolling Release is briefly unavailable while its complete wheel set and commit information are updated. An interrupted upload leaves a draft for inspection rather than exposing an incomplete set.
+
+For manual downloads, open [Releases](https://github.com/Brown-LEMS/B-CamSync/releases), select `rolling` or a persistent version, and download the `bcamsync-*-cp311-cp311-linux_aarch64.whl` file for a Bookworm Pi. Install it using `.venv/bin/python -m pip install /path/to/wheel.whl`. Release assets remain available until a maintainer replaces or deletes them; CI artifact expiry does not affect these downloads. Maintainer commands and rolling/versioned behavior are described in [developer tools](../tools/README.md#ci-workflows).
 
 ### Build from source
 

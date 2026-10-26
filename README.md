@@ -8,7 +8,7 @@ B-CamSync is a camera synchronization library with a Rust core and interfaces fo
 
 The [`examples/`](examples/README.md) directory contains four independent Python applications for Arducam B0267 boards, covering one or two boards with OpenCV windows or HTTP web preview. They use libcamera for capture. Complete the [Python installation](docs/installation.md#python); the scripts enumerate cameras automatically when run without camera arguments.
 
-For a fresh Pi, use the [prebuilt core wheel](docs/installation.md#install-a-prebuilt-core-wheel-recommended) to avoid installing Rust and C++ build tools. Once the application venv and authenticated GitHub CLI are ready, run `.venv/bin/python tools/install_ci_wheel.py`. The tool selects the latest successful manual wheel build on main for your Python version on ARM64; the camera stack and OpenCV remain application dependencies.
+For a fresh Pi, use the [prebuilt core wheel](docs/installation.md#install-a-prebuilt-core-wheel-recommended) to avoid installing Rust and C++ build tools. Once the application venv is ready, run `.venv/bin/python tools/install_ci_wheel.py`. The tool anonymously downloads the rolling Release wheel for your Python version on ARM64. Use `--release vX.Y.Z` for a persistent version. The camera stack and OpenCV remain application dependencies.
 
 One Pi 5 and one board need no inter-board synchronization. Start with the plain capture preview:
 

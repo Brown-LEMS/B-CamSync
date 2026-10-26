@@ -6,31 +6,39 @@ Minimal Pi 5 preview examples live in [`examples/`](../examples/README.md). This
 
 | Workflow | Trigger | Jobs | Scope |
 | --- | --- | --- | --- |
-| `native.yml` | Push and pull request | 1 ARM64 job | GCC software checks for the core, managed fake capture, Python interfaces, and CI installer |
+| `native.yml` | Push and pull request | 1 ARM64 job | GCC software checks for the core, managed fake capture, Python interfaces, and Release tools |
 | `full-validation.yml` | Manual | 2 ARM64 jobs | Full GCC core/Release/SDK/package checks and Clang sanitizer/fuzz/static-analysis checks |
-| `wheels.yml` | Manual | 5 ARM64 jobs | Build and install-test CPython 3.11–3.15 core wheels |
+| `wheels.yml` | Manual | 5 ARM64 builds + 1 publication job | Build and install-test CPython 3.11–3.15 core wheels, then publish a public Release |
 
-Run full validation or publish a fresh set of CI wheels explicitly using an account with permission to dispatch workflows:
+Maintainers can run full validation or publish wheels using an account with permission to dispatch workflows:
 
 ```sh
 gh workflow run full-validation.yml --repo Brown-LEMS/B-CamSync --ref main
+# Replace the fixed rolling prerelease with the selected commit's wheels.
 gh workflow run wheels.yml --repo Brown-LEMS/B-CamSync --ref main
+# Publish a persistent version and give the wheel metadata the same version.
+gh workflow run wheels.yml --repo Brown-LEMS/B-CamSync --ref main -f version=0.2.0
 ```
 
-The workflows are independent. Publishing wheels does not trigger full validation. The installer selects only successful manual wheel builds; daily checks do not advance the installable build. Run the wheel workflow for a branch before using the installer with that branch.
+The optional version accepts `X.Y.Z` or `vX.Y.Z`. Empty input updates the same `rolling` Release and moves its tag to the selected workflow commit; it is marked as a prerelease. A supplied version creates a separate `vX.Y.Z` Release, with matching Python package metadata, and leaves rolling unchanged. Existing versioned Releases are rejected rather than overwritten, and an existing version tag must already point to the selected commit. Versioned Releases persist independently of later rolling builds. Rolling retains the source package version, so its installer always reinstalls even when that version is unchanged.
 
-## Install a CI wheel
+The five build jobs must all succeed before [`publish_wheels.py`](publish_wheels.py) runs. It verifies the complete wheel set and metadata, uploads through a draft, and makes the Release public only after its assets, tag, and commit information agree. Rolling updates reuse the Release ID and temporarily hide it while replacing assets. Publication is serialized across workflow runs. An interrupted upload leaves a draft; inspect it before retrying. An existing rolling draft can be replaced by a later build; remove a failed versioned draft before retrying that version. GitHub Release immutability must be disabled for rolling updates; the publisher rejects an immutable rolling Release.
 
-[`install_ci_wheel.py`](install_ci_wheel.py) installs the core from the latest successful manual `wheels.yml` build on `main`. Run it with your application venv after installing and authenticating GitHub CLI (`gh auth login`):
+The workflows are independent. Publishing wheels does not trigger full validation. Daily checks do not advance the installable build. Authentication for publication uses the workflow's automatic `GITHUB_TOKEN` with write permission only in the publication job; Pi users download anonymously.
+
+## Install a Release wheel
+
+[`install_ci_wheel.py`](install_ci_wheel.py) uses only the Python standard library and pip to install from the public `rolling` Release. It requires no GitHub CLI, account, or token:
 
 ```sh
 .venv/bin/python tools/install_ci_wheel.py
-.venv/bin/python tools/install_ci_wheel.py --branch dev/my-branch --download-only dist/ci
+.venv/bin/python tools/install_ci_wheel.py --release v0.2.0
+.venv/bin/python tools/install_ci_wheel.py --download-only dist/ci
 ```
 
-It matches standard CPython 3.11–3.15 on Linux aarch64, requires glibc 2.36 or later, prints the selected build commit, and reinstalls that core wheel into the running venv even if its version is unchanged. It installs no camera SDK, OpenCV, or managed capture add-on. Missing, expired, or incompatible artifacts end the command. See [installation](../docs/installation.md#install-a-prebuilt-core-wheel-recommended) for Pi setup and runtime dependencies.
+It matches standard CPython 3.11–3.15 on Linux aarch64, requires glibc 2.36 or later, prints the selected Release and commit, checks asset size and SHA-256, and reinstalls only that core wheel into the running venv. It installs no camera SDK, OpenCV, or managed capture add-on. Missing, incompatible, or corrupt assets end the command. The default repository is `Brown-LEMS/B-CamSync`; `--repo OWNER/REPO` selects another public repository. See [installation](../docs/installation.md#install-a-prebuilt-core-wheel-recommended) for Pi setup and runtime dependencies.
 
-The manual Actions wheel matrix uses [`wheels.Dockerfile`](wheels.Dockerfile) and [`build_wheel.sh`](build_wheel.sh), separately from the full GCC/Clang validation image. Each wheel is installed into a clean environment and exercises the core boundary, adapter behavior, and installer tests before upload. Reproduce an ARM64 build locally with:
+The manual Actions wheel matrix uses [`wheels.Dockerfile`](wheels.Dockerfile) and [`build_wheel.sh`](build_wheel.sh), separately from the full GCC/Clang validation image. Each wheel is installed into a clean environment and exercises the core boundary, adapter behavior, and Release-tool tests before upload. Reproduce an ARM64 build locally with:
 
 ```sh
 docker build --platform linux/arm64 -f tools/wheels.Dockerfile --build-arg PYTHON_VERSION=3.11 -t bcamsync-wheel .
@@ -38,7 +46,7 @@ mkdir -p build-linux/wheels
 docker run --rm --platform linux/arm64 \
   --mount "type=bind,source=$PWD,target=/src,readonly" \
   --mount "type=bind,source=$PWD/build-linux/wheels,target=/wheels" bcamsync-wheel
-.venv/bin/python -m unittest discover -s tools -p test_install_ci_wheel.py -v
+.venv/bin/python -m unittest discover -s tools -p 'test_*wheel*.py' -v
 ```
 
 ## Capture and recording
