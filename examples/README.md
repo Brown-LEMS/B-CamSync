@@ -7,25 +7,29 @@ These two standalone files use application-owned libcamera capture and local Ope
 | One Pi 5, one B0267 board | [`single_board.py`](single_board.py) | None: one board is already one synchronization unit; this script does not import this library |
 | One Pi 5, two B0267 boards | [`opencv_sync.py`](opencv_sync.py) | `SyncSession` with one reusable `CameraTiming` adapter per board |
 
-Complete [installation](../docs/installation.md#python) with the compatible vendor camera stack. Run these applications in a graphical session on the Pi; OpenCV needs a working display. Enumerate camera IDs:
+Complete [installation](../docs/installation.md#python) with the compatible vendor camera stack. Run these applications in a graphical session on the Pi; OpenCV needs a working display. Start the single-board preview without arguments:
 
 ```sh
-.venv/bin/python -c 'import libcamera; manager = libcamera.CameraManager.singleton(); print([camera.id for camera in manager.cameras])'
+.venv/bin/python examples/single_board.py
 ```
 
-Pass one board ID for the single-board preview:
+Start synchronized preview with two boards:
 
 ```sh
-.venv/bin/python examples/single_board.py 'FIRST_CAMERA_ID'
+.venv/bin/python examples/opencv_sync.py
 ```
 
-Pass two distinct board IDs for synchronized preview:
+The scripts enumerate libcamera devices, sort their IDs, and select the first one or two. They print the selected IDs and, for dual-board capture, the reference board. Enumeration does not identify board models; these examples expect the selected devices to be B0267 boards. Missing devices produce an error. No JSON configuration or additional example files are needed. Press q or Esc in an OpenCV window, or Ctrl+C in the terminal, to exit.
+
+To inspect IDs or choose specific boards, use:
 
 ```sh
-.venv/bin/python examples/opencv_sync.py 'FIRST_CAMERA_ID' 'SECOND_CAMERA_ID'
+.venv/bin/python examples/single_board.py --list
+.venv/bin/python examples/single_board.py 'CAMERA_ID'
+.venv/bin/python examples/opencv_sync.py 'REFERENCE_CAMERA_ID' 'SECOND_CAMERA_ID'
 ```
 
-Replace the quoted placeholders with the IDs printed by libcamera. No JSON configuration or additional example files are needed. Press q or Esc in an OpenCV window, or Ctrl+C in the terminal, to exit.
+Both scripts support `--list`, which requires only the camera SDK and does not open cameras or import OpenCV/NumPy. It can run in a plain SSH terminal. Explicit IDs preserve their supplied order; use them when additional cameras are attached or the physical reference board must stay fixed.
 
 The dual-board example constructs its single-node configuration in `sync_config()` and uses the first board as the phase reference. The application submits requests and reports sensor metadata through `CameraTiming`; this library chooses frame-period corrections automatically. The capture thread continues during synchronization shutdown so the adapter can confirm baseline restoration before cameras close.
 

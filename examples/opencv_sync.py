@@ -147,10 +147,25 @@ class Capture:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("camera_ids", nargs=2, metavar="CAMERA_ID", help="two distinct libcamera board IDs")
+    parser.add_argument("camera_ids", nargs="*", metavar="CAMERA_ID",
+                        help="two board IDs; defaults to the first two IDs in sorted order")
+    parser.add_argument("--list", action="store_true", help="list camera IDs without starting capture")
     args = parser.parse_args()
-    if args.camera_ids[0] == args.camera_ids[1]:
+    if len(args.camera_ids) not in (0, 2):
+        parser.error("provide either no camera IDs or two distinct camera IDs")
+    if len(args.camera_ids) == 2 and args.camera_ids[0] == args.camera_ids[1]:
         parser.error("the two boards must have distinct camera IDs")
+    if args.list or not args.camera_ids:
+        import libcamera
+        camera_ids = sorted(camera.id for camera in libcamera.CameraManager.singleton().cameras)
+        if args.list:
+            for camera_id in camera_ids:
+                print(camera_id)
+            return
+        if len(camera_ids) < 2:
+            parser.error(f"two cameras are required; found {len(camera_ids)}")
+        args.camera_ids = camera_ids[:2]
+    print(f"board-1 (reference): {args.camera_ids[0]}\nboard-2: {args.camera_ids[1]}", flush=True)
     import cv2
 
     config = sync_config()

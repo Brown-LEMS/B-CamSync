@@ -14,18 +14,18 @@ Commands below run from the repository root. Each B0267 board is one synchroniza
 
 ## 2. Identify the boards
 
-Enumerate IDs using the same Python camera stack as the application:
+The scripts enumerate cameras automatically, sort IDs, and select the first one or two devices. To inspect the available IDs before capture, run:
 
 ```sh
-.venv/bin/python -c 'import libcamera; manager = libcamera.CameraManager.singleton(); print([camera.id for camera in manager.cameras])'
+.venv/bin/python examples/single_board.py --list
 ```
 
-Copy each complete board ID, including any leading slash, into the quoted arguments below. Two boards must have distinct IDs. Identify their physical positions before choosing which should be the reference.
+Both scripts support `--list`; it opens no cameras and needs no graphical display or OpenCV/NumPy import. Enumeration lists all libcamera devices, so verify that the selected IDs belong to the B0267 boards when other cameras are attached. To select specific devices, pass one ID to the single-board script or two distinct IDs to the dual-board script; the first explicit ID is the reference.
 
 ## 3. Preview one board
 
 ```sh
-.venv/bin/python examples/single_board.py 'FIRST_CAMERA_ID'
+.venv/bin/python examples/single_board.py
 ```
 
 One window shows all four views as a grayscale strip. This script does not import this library: there is no second synchronization unit to align. It checks the application's SDK capture and pixel path. Press q or Esc in the window, or Ctrl+C in the terminal, to close the camera.
@@ -33,10 +33,10 @@ One window shows all four views as a grayscale strip. This script does not impor
 ## 4. Preview and synchronize two boards
 
 ```sh
-.venv/bin/python examples/opencv_sync.py 'FIRST_CAMERA_ID' 'SECOND_CAMERA_ID'
+.venv/bin/python examples/opencv_sync.py
 ```
 
-The first argument becomes `board-1`, the reference; the second becomes `board-2`. The script constructs one node named `pi5` and its two units directly in `sync_config()`. No configuration file, network setup, managed capture add-on, or other example file is required.
+The first selected device becomes `board-1`, the reference; the second becomes `board-2`. The script prints both IDs and their roles at startup. To fix the reference explicitly, run `examples/opencv_sync.py 'REFERENCE_CAMERA_ID' 'SECOND_CAMERA_ID'` with the project Python interpreter. The script constructs one node named `pi5` and its two units directly in `sync_config()`. No configuration file, network setup, managed capture add-on, or other example file is required.
 
 Two OpenCV windows display live acquisition throughout startup. The terminal prints the synchronization state and `ready` flag once per second, followed by each unit's phase, p95, and maximum error in milliseconds. Wait for `ready=True`; early zero metrics are not a successful measurement. This library continues tracking and correcting phase while the preview runs.
 

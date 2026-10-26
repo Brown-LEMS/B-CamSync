@@ -58,6 +58,69 @@ class PreviewTests(unittest.TestCase):
                                    controls=SimpleNamespace(FrameDurationLimits="limits", SensorTimestamp="sensor",
                                                             FrameDuration="duration"))
 
+    def test_list_enumerates_without_importing_image_dependencies_or_opening_cameras(self):
+        cameras = [Mock(id="camera-2"), Mock(id="camera-1")]
+        manager = SimpleNamespace(cameras=cameras)
+        sdk = SimpleNamespace(CameraManager=SimpleNamespace(singleton=lambda: manager))
+        for example in (single, dual):
+            with self.subTest(example=example.__name__):
+                output = io.StringIO()
+                with patch.dict(sys.modules, {"libcamera": sdk, "cv2": None, "numpy": None}), \
+                        patch.object(sys, "argv", [example.__name__, "--list"]), \
+                        redirect_stdout(output):
+                    example.main()
+                self.assertEqual(output.getvalue().splitlines(), ["camera-1", "camera-2"])
+        for camera in cameras:
+            camera.acquire.assert_not_called()
+
+    def test_single_board_uses_first_sorted_camera_or_explicit_id(self):
+        cameras = [Mock(id="camera-2"), Mock(id="camera-1")]
+        manager = Mock(cameras=cameras)
+        manager.get.return_value = cameras[0]
+        sdk = SimpleNamespace(CameraManager=SimpleNamespace(singleton=lambda: manager))
+        for arguments, selected in (([], cameras[1]), (["camera-2"], cameras[0])):
+            with self.subTest(arguments=arguments):
+                for camera in cameras:
+                    camera.reset_mock()
+                    camera.acquire.side_effect = RuntimeError("selected camera")
+                with patch.dict(sys.modules, {"libcamera": sdk, "cv2": Mock()}), \
+                        patch.object(sys, "argv", ["single_board.py", *arguments]), \
+                        redirect_stdout(io.StringIO()), self.assertRaisesRegex(RuntimeError, "selected camera"):
+                    single.main()
+                selected.acquire.assert_called_once()
+                for camera in cameras:
+                    if camera is not selected:
+                        camera.acquire.assert_not_called()
+
+    def test_dual_board_selection_preserves_explicit_reference_order(self):
+        manager = SimpleNamespace(cameras=[SimpleNamespace(id=f"camera-{i}") for i in (3, 2, 1)])
+        sdk = SimpleNamespace(CameraManager=SimpleNamespace(singleton=lambda: manager))
+        for arguments, selected in (([], ["camera-1", "camera-2"]),
+                                    (["camera-3", "camera-1"], ["camera-3", "camera-1"])):
+            with self.subTest(arguments=arguments):
+                output = io.StringIO()
+                with patch.dict(sys.modules, {"libcamera": sdk, "cv2": Mock()}), \
+                        patch.object(sys, "argv", ["opencv_sync.py", *arguments]), \
+                        patch.object(dual, "Capture", side_effect=RuntimeError("selected cameras")) as capture, \
+                        redirect_stdout(output), self.assertRaisesRegex(RuntimeError, "selected cameras"):
+                    dual.main()
+                self.assertEqual(capture.call_args.args[0], selected)
+                self.assertIn(f"board-1 (reference): {selected[0]}", output.getvalue())
+
+    def test_missing_cameras_fail_before_importing_opencv_or_starting_capture(self):
+        for example, camera_ids in ((single, []), (dual, []), (dual, ["camera-1"])):
+            with self.subTest(example=example.__name__, camera_ids=camera_ids):
+                cameras = [Mock(id=camera_id) for camera_id in camera_ids]
+                sdk = SimpleNamespace(CameraManager=SimpleNamespace(
+                    singleton=lambda: SimpleNamespace(cameras=cameras)))
+                with patch.dict(sys.modules, {"libcamera": sdk, "cv2": None}), \
+                        patch.object(sys, "argv", [example.__name__]), \
+                        patch("sys.stderr", new_callable=io.StringIO), self.assertRaises(SystemExit) as error:
+                    example.main()
+                self.assertEqual(error.exception.code, 2)
+                for camera in cameras:
+                    camera.acquire.assert_not_called()
+
     def test_dual_preview_preserves_sensor_timing_applies_pulse_and_copies_pixels(self):
         timing = CameraTiming("board-1", 40, 20000, 30000)
         timing.bind("preview-test", 1)
@@ -163,11 +226,14 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual([node.id for node in config.nodes], ["pi5"])
         self.assertEqual([unit.node_id for unit in config.units], ["pi5", "pi5"])
         self.assertEqual(config.reference_unit, "board-1")
-        with patch.object(sys, "argv", ["opencv_sync.py", "same", "same"]), \
-                patch.object(dual, "Capture") as capture, \
-                patch("sys.stderr", new_callable=io.StringIO), self.assertRaises(SystemExit):
-            dual.main()
-        capture.assert_not_called()
+        for arguments in (["same", "same"], ["camera-1"], ["camera-1", "camera-2", "camera-3"]):
+            with self.subTest(arguments=arguments), \
+                    patch.object(sys, "argv", ["opencv_sync.py", *arguments]), \
+                    patch.object(dual, "Capture") as capture, \
+                    patch.dict(sys.modules, {"libcamera": None}), \
+                    patch("sys.stderr", new_callable=io.StringIO), self.assertRaises(SystemExit):
+                dual.main()
+            capture.assert_not_called()
 
 
 if __name__ == "__main__":

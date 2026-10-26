@@ -8,17 +8,30 @@ import selectors
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("camera_id", help="board ID reported by libcamera")
+    parser.add_argument("camera_id", nargs="?", help="board ID; defaults to the first ID in sorted order")
+    parser.add_argument("--list", action="store_true", help="list camera IDs without starting capture")
     args = parser.parse_args()
 
-    import cv2
     import libcamera
-    import numpy as np
 
     manager = libcamera.CameraManager.singleton()
-    camera = manager.get(args.camera_id)
+    if args.list or args.camera_id is None:
+        cameras = sorted(manager.cameras, key=lambda camera: camera.id)
+        if args.list:
+            for camera in cameras:
+                print(camera.id)
+            return
+        if not cameras:
+            parser.error("no libcamera cameras found")
+        camera = cameras[0]
+    else:
+        camera = manager.get(args.camera_id)
     if camera is None:
         parser.error(f"Camera not found: {args.camera_id}")
+    print(f"Board: {camera.id}", flush=True)
+
+    import cv2
+    import numpy as np
 
     with ExitStack() as stack:
         if camera.acquire():

@@ -6,25 +6,21 @@ B-CamSync is a camera synchronization library with a Rust core and interfaces fo
 
 ## Start on a Pi 5
 
-The [`examples/`](examples/README.md) directory contains two independent Python applications for Arducam B0267 boards. They use libcamera for capture and OpenCV for local preview. Complete the [Python installation](docs/installation.md#python), then enumerate board IDs:
-
-```sh
-.venv/bin/python -c 'import libcamera; manager = libcamera.CameraManager.singleton(); print([camera.id for camera in manager.cameras])'
-```
+The [`examples/`](examples/README.md) directory contains two independent Python applications for Arducam B0267 boards. They use libcamera for capture and OpenCV for local preview. Complete the [Python installation](docs/installation.md#python); the scripts enumerate cameras automatically when run without camera arguments.
 
 One Pi 5 and one board need no inter-board synchronization. Start with the plain capture preview:
 
 ```sh
-.venv/bin/python examples/single_board.py 'FIRST_CAMERA_ID'
+.venv/bin/python examples/single_board.py
 ```
 
 With two boards, run the `SyncSession` integration:
 
 ```sh
-.venv/bin/python examples/opencv_sync.py 'FIRST_CAMERA_ID' 'SECOND_CAMERA_ID'
+.venv/bin/python examples/opencv_sync.py
 ```
 
-Replace the placeholders with your board IDs. Each window shows the board's four views as a grayscale strip. The dual-board application reports synchronization quality in the terminal. Both scripts run until q, Esc, or Ctrl+C; neither needs a configuration file. Copy the chosen script into your own project to adapt its pipeline. See [the first-run guide](docs/getting-started.md) for hardware requirements and status interpretation.
+The scripts select the first one or two camera IDs in sorted order and print their selection; the first board is the synchronization reference. Use `--list` to inspect IDs without starting capture, or pass IDs explicitly to choose devices and reference order. Each window shows the board's four views as a grayscale strip. The dual-board application reports synchronization quality in the terminal. Both scripts run until q, Esc, or Ctrl+C; neither needs a configuration file. Copy the chosen script into your own project to adapt its pipeline. See [the first-run guide](docs/getting-started.md) for hardware requirements and status interpretation.
 
 For workstation preview through SSH or the existing recording pipeline, use the separate [developer tools](tools/README.md). The previously tested capture/recording application is retained as [`tools/opencv_capture.py`](tools/opencv_capture.py).
 
