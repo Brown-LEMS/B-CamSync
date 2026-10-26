@@ -4,11 +4,32 @@
 
 This library includes a Rust synchronization core and Python bindings. The recommended installation exposes `SyncSession` for application-owned capture. Managed C++ acquisition is a separate optional package, `bcamsync-managed`. Your application supplies its camera SDK and image pipeline. The Pi 5 examples use Python libcamera for capture and OpenCV for local preview or HTTP JPEG encoding; the HTTP examples require no Pi display. Recording and SSH desktop preview applications are separate tools.
 
-Run commands from the root of the shared repository checkout. Use the same revision of this library and its examples. Installation from source builds the Rust core and native bindings on the Pi; allow the wheel build to finish before continuing. Examples remain source files you can copy into your own project.
+Run commands from the root of the shared repository checkout. Use the same revision of this library and its examples. Prebuilt core wheels avoid compiling Rust and C++ on the Pi. Examples remain source files you can copy into your own project.
 
 ## Python
 
 The Pi 5 workflow requires Raspberry Pi OS Bookworm arm64 and Python 3.11 or later. First install and verify the B0267 vendor camera stack, including its compatible system Python libcamera bindings. This library's installer builds synchronization software; board drivers, firmware, and libcamera runtime/bindings are supplied by that camera stack. The example uses `SensorConfiguration`, `ExposureTimeMode`, and `AnalogueGainMode`; a stack with older Python bindings that lack these APIs cannot run it.
+
+### Install a prebuilt core wheel (recommended)
+
+GitHub Actions builds core wheels for standard CPython 3.11–3.15 on Linux arm64 and x86_64, using Debian 12 / Bookworm. They require glibc 2.36 or later and the `libsystemd0` runtime; no Rust compiler, C++ compiler, or development headers are required on the target. Python minor versions have separate wheels. Free-threaded and debug interpreters are not included. Camera bindings must match your chosen Python interpreter independently; on Bookworm, use the system Python 3.11 for the OS camera and OpenCV packages.
+
+With the working vendor stack installed, prepare the application environment and authenticate GitHub CLI using an account with read access to this repository and its Actions artifacts:
+
+```sh
+sudo apt update
+sudo apt install python3-venv python3-opencv libsystemd0 gh
+python3 -m venv --system-site-packages .venv
+gh auth login
+.venv/bin/python tools/install_ci_wheel.py
+.venv/bin/python -c 'from bcamsync import SyncConfig, SyncSession; from bcamsync.adapters.libcamera import CameraTiming; import cv2, libcamera; print("SyncSession and camera pipeline imports OK")'
+```
+
+The tool selects the latest successful `native.yml` push build on `main`, prints its URL and commit, downloads the wheel matching the running interpreter and architecture, and installs only the synchronization core into that venv. It replaces an existing build even when the package version is unchanged. It reports a missing or expired artifact directly; it does not switch to an older build or compile from source. The new wheel matrix must have completed successfully before this installation path is available. Keep the examples checkout at the printed commit when reproducing a build.
+
+Use `--branch BRANCH` for another branch or `--download-only DIRECTORY` to save the matching wheel without installing it. The default repository is `Brown-LEMS/B-CamSync`; `--repo OWNER/REPO` selects a fork with the same workflow. To download manually, open a successful [Linux native validation run](https://github.com/Brown-LEMS/B-CamSync/actions/workflows/native.yml), choose `wheels-cpython3.11-linux_aarch64` for a Bookworm Pi, unzip it, and install its `bcamsync-*.whl` using `.venv/bin/python -m pip install /path/to/wheel.whl`. Actions artifacts are temporary build outputs, not a PyPI package index.
+
+### Build from source
 
 Install [rustup](https://rustup.rs/), then select Rust 1.99.0, the toolchain used for validation. A minimum supported Rust version has not been established. Rust is needed to build this library from source; applications using an installed wheel do not need the compiler. With the working camera stack already installed, install the C++ build tools and OpenCV:
 

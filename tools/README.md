@@ -2,6 +2,28 @@
 
 Minimal Pi 5 preview examples live in [`examples/`](../examples/README.md). This directory retains the larger capture, recording, remote-preview, and management applications for development.
 
+## Install a CI wheel
+
+[`install_ci_wheel.py`](install_ci_wheel.py) installs the core from the latest successful `native.yml` push build on `main`. Run it with your application venv after installing and authenticating GitHub CLI (`gh auth login`):
+
+```sh
+.venv/bin/python tools/install_ci_wheel.py
+.venv/bin/python tools/install_ci_wheel.py --branch dev/my-branch --download-only dist/ci
+```
+
+It matches standard CPython 3.11–3.15 and Linux aarch64/x86_64, requires glibc 2.36 or later, prints the selected build commit, and reinstalls that core wheel into the running venv even if its version is unchanged. It installs no camera SDK, OpenCV, or managed capture add-on. Missing, expired, or incompatible artifacts end the command. See [installation](../docs/installation.md#install-a-prebuilt-core-wheel-recommended) for Pi setup and runtime dependencies.
+
+The Actions wheel matrix uses [`wheels.Dockerfile`](wheels.Dockerfile) and [`build_wheel.sh`](build_wheel.sh), separately from the full GCC/Clang validation image. Each wheel is installed into a clean environment and exercises the core boundary, adapter behavior, and installer tests before upload. Reproduce an ARM64 build locally with:
+
+```sh
+docker build --platform linux/arm64 -f tools/wheels.Dockerfile --build-arg PYTHON_VERSION=3.11 -t bcamsync-wheel .
+mkdir -p build-linux/wheels
+docker run --rm --platform linux/arm64 \
+  --mount "type=bind,source=$PWD,target=/src,readonly" \
+  --mount "type=bind,source=$PWD/build-linux/wheels,target=/wheels" bcamsync-wheel
+.venv/bin/python -m unittest discover -s tools -p test_install_ci_wheel.py -v
+```
+
 ## Capture and recording
 
 [`opencv_capture.py`](opencv_capture.py) is the previous application-owned libcamera pipeline with synchronization reports, restart checks, browser preview, and optional MJPG AVI recording. It uses the installed synchronization core, Python libcamera, OpenCV, and NumPy. Copy its configuration template and replace both `camera_id` placeholders with the IDs reported by libcamera:
