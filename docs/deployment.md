@@ -2,7 +2,7 @@
 
 [Back to the user guide](../README.md) · [Single-node first run](getting-started.md) · [Example catalog](../examples/README.md)
 
-These applications compose synchronization with network setup, remote controls, preview, and recording. Choose the workflow your application needs. For the Pi 5 lab setup, start with the two minimal Python scripts in the [first-run guide](getting-started.md); they need no configuration file. The extended recording application and SSH preview are documented under [developer tools](../tools/README.md).
+These applications compose synchronization with network setup, remote controls, preview, and recording. Choose the workflow your application needs. For the Pi 5 lab setup, start with the minimal OpenCV or HTTP Python examples in the [first-run guide](getting-started.md); they need no configuration file. The extended recording application and SSH preview are documented under [developer tools](../tools/README.md).
 
 All commands below run from the repository root. The applications live under `tools/`; deployment configuration templates live under `docs/configs/`.
 

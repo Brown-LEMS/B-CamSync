@@ -2,7 +2,7 @@
 
 [User guide](../README.md) · [Pi 5 first run](getting-started.md) · [Integration guide](integration.md)
 
-This library includes a Rust synchronization core and Python bindings. The recommended installation exposes `SyncSession` for application-owned capture. Managed C++ acquisition is a separate optional package, `bcamsync-managed`. Your application supplies its camera SDK and image pipeline. The Pi 5 examples use Python libcamera for capture and OpenCV for local preview; recording and remote-preview applications are separate tools.
+This library includes a Rust synchronization core and Python bindings. The recommended installation exposes `SyncSession` for application-owned capture. Managed C++ acquisition is a separate optional package, `bcamsync-managed`. Your application supplies its camera SDK and image pipeline. The Pi 5 examples use Python libcamera for capture and OpenCV for local preview or HTTP JPEG encoding; the HTTP examples require no Pi display. Recording and SSH desktop preview applications are separate tools.
 
 Run commands from the root of the shared repository checkout. Use the same revision of this library and its examples. Installation from source builds the Rust core and native bindings on the Pi; allow the wheel build to finish before continuing. Examples remain source files you can copy into your own project.
 

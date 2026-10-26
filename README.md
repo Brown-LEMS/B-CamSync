@@ -6,7 +6,7 @@ B-CamSync is a camera synchronization library with a Rust core and interfaces fo
 
 ## Start on a Pi 5
 
-The [`examples/`](examples/README.md) directory contains two independent Python applications for Arducam B0267 boards. They use libcamera for capture and OpenCV for local preview. Complete the [Python installation](docs/installation.md#python); the scripts enumerate cameras automatically when run without camera arguments.
+The [`examples/`](examples/README.md) directory contains four independent Python applications for Arducam B0267 boards, covering one or two boards with OpenCV windows or HTTP web preview. They use libcamera for capture. Complete the [Python installation](docs/installation.md#python); the scripts enumerate cameras automatically when run without camera arguments.
 
 One Pi 5 and one board need no inter-board synchronization. Start with the plain capture preview:
 
@@ -20,7 +20,15 @@ With two boards, run the `SyncSession` integration:
 .venv/bin/python examples/opencv_sync.py
 ```
 
-The scripts select the first one or two camera IDs in sorted order and print their selection; the first board is the synchronization reference. Use `--list` to inspect IDs without starting capture, or pass IDs explicitly to choose devices and reference order. Each window shows the board's four views as a grayscale strip. The dual-board application reports synchronization quality in the terminal. Both scripts run until q, Esc, or Ctrl+C; neither needs a configuration file. Copy the chosen script into your own project to adapt its pipeline. See [the first-run guide](docs/getting-started.md) for hardware requirements and status interpretation.
+For HTTP preview without a Pi display, use either corresponding script and open `http://PI_IP:8000/` in your browser:
+
+```sh
+.venv/bin/python examples/single_board_http.py
+# Or, with two boards:
+.venv/bin/python examples/opencv_sync_http.py
+```
+
+The scripts select the first one or two camera IDs in sorted order and print their selection; the first board is the synchronization reference. Use `--list` to inspect IDs without starting capture, or pass IDs explicitly to choose devices and reference order. Each board appears as a grayscale strip containing its four views. The dual-board applications report synchronization quality. Use q/Esc or Ctrl+C for OpenCV preview; use Ctrl+C in the Pi terminal for HTTP preview. Closing a browser tab leaves capture running. None of the scripts needs a configuration file. Copy the chosen script into your own project to adapt its pipeline. See [the first-run guide](docs/getting-started.md) for hardware requirements and status interpretation.
 
 For workstation preview through SSH or the existing recording pipeline, use the separate [developer tools](tools/README.md). The previously tested capture/recording application is retained as [`tools/opencv_capture.py`](tools/opencv_capture.py).
 

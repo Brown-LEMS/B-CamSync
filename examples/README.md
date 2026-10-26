@@ -1,13 +1,13 @@
 # Pi 5 Python examples
 
-These two standalone files use application-owned libcamera capture and local OpenCV windows. Each B0267 board supplies four views in one grayscale strip. Both examples use a 5120×800, 8-bit sensor mode, a 1280×200 preview, 40 fps, 10 ms exposure, and analogue gain 1.0. Change those constants in the script when adapting the application.
+These four standalone files use application-owned libcamera capture with either local OpenCV windows or an HTTP web page. Each B0267 board supplies four views in one grayscale strip. All examples use a 5120×800, 8-bit sensor mode, a 1280×200 preview, 40 fps, 10 ms exposure, and analogue gain 1.0. Change those constants in the script when adapting the application.
 
-| Hardware | File | Synchronization |
-| --- | --- | --- |
-| One Pi 5, one B0267 board | [`single_board.py`](single_board.py) | None: one board is already one synchronization unit; this script does not import this library |
-| One Pi 5, two B0267 boards | [`opencv_sync.py`](opencv_sync.py) | `SyncSession` with one reusable `CameraTiming` adapter per board |
+| Hardware | OpenCV windows | HTTP web preview | Synchronization |
+| --- | --- | --- | --- |
+| One Pi 5, one B0267 board | [`single_board.py`](single_board.py) | [`single_board_http.py`](single_board_http.py) | None: these scripts do not import this library |
+| One Pi 5, two B0267 boards | [`opencv_sync.py`](opencv_sync.py) | [`opencv_sync_http.py`](opencv_sync_http.py) | `SyncSession` with one reusable `CameraTiming` adapter per board |
 
-Complete [installation](../docs/installation.md#python) with the compatible vendor camera stack. Run these applications in a graphical session on the Pi; OpenCV needs a working display. Start the single-board preview without arguments:
+Complete [installation](../docs/installation.md#python) with the compatible vendor camera stack. The OpenCV-window scripts below need a graphical session on the Pi; the HTTP alternatives later in this guide need no Pi display. Start the single-board window preview without arguments:
 
 ```sh
 .venv/bin/python examples/single_board.py
@@ -29,10 +29,24 @@ To inspect IDs or choose specific boards, use:
 .venv/bin/python examples/opencv_sync.py 'REFERENCE_CAMERA_ID' 'SECOND_CAMERA_ID'
 ```
 
-Both scripts support `--list`, which requires only the camera SDK and does not open cameras or import OpenCV/NumPy. It can run in a plain SSH terminal. Explicit IDs preserve their supplied order; use them when additional cameras are attached or the physical reference board must stay fixed.
+All four scripts support `--list`, which uses the camera SDK without opening cameras or importing OpenCV/NumPy. It can run in a plain SSH terminal. The dual-board scripts also require the installed synchronization core. Explicit IDs preserve their supplied order; use them when additional cameras are attached or the physical reference board must stay fixed.
 
 The dual-board example constructs its single-node configuration in `sync_config()` and uses the first board as the phase reference. The application submits requests and reports sensor metadata through `CameraTiming`; this library chooses frame-period corrections automatically. The capture thread continues during synchronization shutdown so the adapter can confirm baseline restoration before cameras close.
 
 The terminal reports synchronization state, readiness, phase, p95, and maximum error once per second. Preview is available during startup and continues if synchronization stops or faults; a visible image alone does not establish synchronization. Readiness uses sensor timestamps and does not replace optical validation. See [the first-run guide](../docs/getting-started.md) for interpretation.
 
-Recording, browser preview, SSH preview, and managed capture applications live in [`tools/`](../tools/README.md). Configuration templates for those tools and multi-node deployments live in [`docs/configs/`](../docs/configs). Synthetic acquisition fixtures and CMake installation checks live in `tests/`.
+## HTTP web preview
+
+Choose either command below on the Pi, including in a plain SSH session; no Pi graphical desktop is needed:
+
+```sh
+.venv/bin/python examples/single_board_http.py
+# Or, with two boards:
+.venv/bin/python examples/opencv_sync_http.py
+```
+
+Open `http://PI_IP:8000/` in a browser on a computer that can reach the Pi, replacing `PI_IP` with its existing address. The scripts listen on `0.0.0.0:8000` by default; `--bind` and `--port` change the listening address and port. Camera ID arguments and `--list` work as in the OpenCV examples. Each HTTP example is independent and needs no other example file.
+
+The page refreshes latest JPEG snapshots at approximately 10 fps while acquisition remains configured at 40 fps. The dual-board page also shows synchronization state and phase metrics. HTTP requests read encoded snapshots and never access camera requests or control synchronization. Closing a tab leaves capture running; use Ctrl+C in the Pi terminal to stop the application. OpenCV is used only to encode JPEGs, with no `imshow` or `waitKey` calls; no Web framework or extra Python dependency is required.
+
+Recording, SSH desktop preview, and managed capture applications live in [`tools/`](../tools/README.md). Configuration templates for those tools and multi-node deployments live in [`docs/configs/`](../docs/configs). Synthetic acquisition fixtures and CMake installation checks live in `tests/`.
