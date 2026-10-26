@@ -2,18 +2,35 @@
 
 Minimal Pi 5 preview examples live in [`examples/`](../examples/README.md). This directory retains the larger capture, recording, remote-preview, and management applications for development.
 
+## CI workflows
+
+| Workflow | Trigger | Jobs | Scope |
+| --- | --- | --- | --- |
+| `native.yml` | Push and pull request | 1 ARM64 job | GCC software checks for the core, managed fake capture, Python interfaces, and CI installer |
+| `full-validation.yml` | Manual | 2 ARM64 jobs | Full GCC core/Release/SDK/package checks and Clang sanitizer/fuzz/static-analysis checks |
+| `wheels.yml` | Manual | 5 ARM64 jobs | Build and install-test CPython 3.11–3.15 core wheels |
+
+Run full validation or publish a fresh set of CI wheels explicitly using an account with permission to dispatch workflows:
+
+```sh
+gh workflow run full-validation.yml --repo Brown-LEMS/B-CamSync --ref main
+gh workflow run wheels.yml --repo Brown-LEMS/B-CamSync --ref main
+```
+
+The workflows are independent. Publishing wheels does not trigger full validation. The installer selects only successful manual wheel builds; daily checks do not advance the installable build. Run the wheel workflow for a branch before using the installer with that branch.
+
 ## Install a CI wheel
 
-[`install_ci_wheel.py`](install_ci_wheel.py) installs the core from the latest successful `native.yml` push build on `main`. Run it with your application venv after installing and authenticating GitHub CLI (`gh auth login`):
+[`install_ci_wheel.py`](install_ci_wheel.py) installs the core from the latest successful manual `wheels.yml` build on `main`. Run it with your application venv after installing and authenticating GitHub CLI (`gh auth login`):
 
 ```sh
 .venv/bin/python tools/install_ci_wheel.py
 .venv/bin/python tools/install_ci_wheel.py --branch dev/my-branch --download-only dist/ci
 ```
 
-It matches standard CPython 3.11–3.15 and Linux aarch64/x86_64, requires glibc 2.36 or later, prints the selected build commit, and reinstalls that core wheel into the running venv even if its version is unchanged. It installs no camera SDK, OpenCV, or managed capture add-on. Missing, expired, or incompatible artifacts end the command. See [installation](../docs/installation.md#install-a-prebuilt-core-wheel-recommended) for Pi setup and runtime dependencies.
+It matches standard CPython 3.11–3.15 on Linux aarch64, requires glibc 2.36 or later, prints the selected build commit, and reinstalls that core wheel into the running venv even if its version is unchanged. It installs no camera SDK, OpenCV, or managed capture add-on. Missing, expired, or incompatible artifacts end the command. See [installation](../docs/installation.md#install-a-prebuilt-core-wheel-recommended) for Pi setup and runtime dependencies.
 
-The Actions wheel matrix uses [`wheels.Dockerfile`](wheels.Dockerfile) and [`build_wheel.sh`](build_wheel.sh), separately from the full GCC/Clang validation image. Each wheel is installed into a clean environment and exercises the core boundary, adapter behavior, and installer tests before upload. Reproduce an ARM64 build locally with:
+The manual Actions wheel matrix uses [`wheels.Dockerfile`](wheels.Dockerfile) and [`build_wheel.sh`](build_wheel.sh), separately from the full GCC/Clang validation image. Each wheel is installed into a clean environment and exercises the core boundary, adapter behavior, and installer tests before upload. Reproduce an ARM64 build locally with:
 
 ```sh
 docker build --platform linux/arm64 -f tools/wheels.Dockerfile --build-arg PYTHON_VERSION=3.11 -t bcamsync-wheel .
