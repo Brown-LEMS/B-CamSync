@@ -34,12 +34,12 @@ jobs:
       - name: Check core, managed fake capture, and Python interfaces
         run: |
           bash tools/container.sh software 2>&1 | tee "$RUNNER_TEMP/bcamsync-software.log"
-      - name: Check CI wheel installer
+      - name: Check wheel publication and installation tools
         run: |
           docker run --rm \
             --mount "type=bind,source=$PWD,target=/src,readonly" \
             bcamsync-dev:bookworm \
-            /opt/bcamsync/venv/bin/python -m unittest discover -s tools -p test_install_ci_wheel.py -v
+            /opt/bcamsync/venv/bin/python -m unittest discover -s tools -p 'test_*wheel*.py' -v
       - name: Preserve software validation logs
         if: always()
         uses: actions/upload-artifact@v4

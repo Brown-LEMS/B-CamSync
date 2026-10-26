@@ -2,9 +2,20 @@ name: ARM64 core wheels
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version X.Y.Z (optional v prefix); leave empty to update rolling"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
+
+# Serialize publication, including rolling tag and asset replacement.
+concurrency:
+  group: wheel-releases
+  cancel-in-progress: false
 
 defaults:
   run:
@@ -24,6 +35,19 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
+      - name: Select versioned wheel metadata
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ -n $RELEASE_VERSION ]]; then
+            version=${RELEASE_VERSION#v}
+            if [[ ! $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              printf 'Version must be X.Y.Z or vX.Y.Z.\n' >&2
+              exit 2
+            fi
+            sed -i -E "s/^version = \"[^\"]+\"$/version = \"$version\"/" pyproject.toml
+            git diff -- pyproject.toml
+          fi
       - name: Build Bookworm wheel environment
         run: |
           docker build --progress plain -f tools/wheels.Dockerfile \
@@ -47,3 +71,37 @@ jobs:
         with:
           name: wheel-log-${{ matrix.python }}-aarch64
           path: build-linux/wheel.log
+
+  publish:
+    name: Publish public Release
+    needs: wheels
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Prepare publication environment
+        run: '"$pythonLocation/bin/python" -m venv .venv'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist/wheels
+          merge-multiple: true
+      - name: Publish tested wheel set
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_REPO: ${{ github.repository }}
+          RELEASE_COMMIT: ${{ github.sha }}
+          RELEASE_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          .venv/bin/python tools/publish_wheels.py \
+            --repo "$RELEASE_REPO" --commit "$RELEASE_COMMIT" \
+            --version "$RELEASE_VERSION" --wheels dist/wheels --run-url "$RELEASE_RUN_URL"

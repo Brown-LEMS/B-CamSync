@@ -22,5 +22,5 @@ unset PYTHONPATH
 printf 'Checking installed interfaces and SDK-free adapter behavior\n'
 "$wheel_python" -m unittest discover -s "$source_root/tests" -p test_component_boundary.py -v
 "$wheel_python" -m unittest discover -s "$source_root/tests" -p test_adapters.py -v
-"$wheel_python" -m unittest discover -s "$source_root/tools" -p test_install_ci_wheel.py -v
+"$wheel_python" -m unittest discover -s "$source_root/tools" -p 'test_*wheel*.py' -v
 printf 'Wheel build and installation checks completed\n'
