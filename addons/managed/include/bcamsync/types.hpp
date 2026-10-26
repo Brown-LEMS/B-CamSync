@@ -1,5 +1,5 @@
 #pragma once
-#include "sync_types.hpp"
+#include "bcamsync/sync_types.hpp"
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -34,6 +34,7 @@ struct Config {
     PhasePolicy phase_policy;
     double clock_max_offset_ms = 0.1, clock_max_age_seconds = 10.0;
     double request_timeout_seconds = 2.0, startup_timeout_seconds = 60.0;
+    std::optional<double> join_timeout_seconds;
     void validate() const;
     const NodeConfig& node(const std::string& id) const;
     const UnitConfig& unit(const std::string& id) const;

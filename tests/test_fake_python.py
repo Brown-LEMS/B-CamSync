@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def config_from_example(name: str):
-    config = Config.from_file(ROOT / "examples" / "configs" / name)
+    config = Config.from_file(ROOT / "tests" / "fixtures" / "configs" / name)
     # Reserve distinct endpoints together so concurrent CI jobs do not share
     # the fixed example ports. Runtime still uses ordinary localhost TCP.
     reservations = []
@@ -161,6 +161,24 @@ class FakePublicApiTests(unittest.TestCase):
                     self.fail("Follower did not honor coordinator shutdown")
                 time.sleep(0.05)
             self.assert_cleanly_stopped(follower)
+            self.assertEqual(follower.status().stop_node, "node-a")
+            self.assertEqual(follower.status().stop_reason, "requested")
+            previous = follower_packet.sequence
+            # Read more than the queue capacity to prove capture is producing
+            # new frames after synchronization, rather than draining old packets.
+            for _ in range(config.unit("board-b1").queue_capacity + 4):
+                packet = follower.read("board-b1", 1)
+                self.assertIsNotNone(packet)
+                self.assertGreater(packet.sequence, previous)
+                self.assertGreater(packet.sensor_timestamp_ns, 0)
+                self.assertFalse(packet.clock_valid)
+                self.assertEqual(packet.timestamp_ns, 0)
+                previous = packet.sequence
+            with self.assertRaises(RuntimeError):
+                follower.start()
+            follower.stop()
+            self.assertIsNone(follower.read("board-b1", 0))
+            self.assertEqual(follower.status().stop_node, "node-a")
         finally:
             coordinator.stop()
             follower.stop()

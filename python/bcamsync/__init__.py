@@ -1,15 +1,37 @@
-"""Synchronized local camera acquisition backed by the B-CamSync C++ library."""
+"""Application API: configure SyncSession, control its lifetime, and inspect quality.
+
+Device adapter interfaces live in bcamsync.adapters. Their original top-level
+imports remain available for compatibility. Algorithms and FFI are internal
+implementation details rather than application orchestration interfaces.
+"""
 
 from ._native import (
-    ClockMapping, Config, CorrectionStatus, FakeOptions, FramePacket, FrameTiming,
-    GroupStatus, NetworkSession, NodeConfig, PhaseActuator, PhasePolicy, Pulse, Session, Submission, SyncConfig,
-    SyncSession, SyncUnit, SyncUnitConfig, TimingSnapshot, UnitConfig, UnitStatus,
-    boot_time_ns, enumerate_arducam_cameras, monotonic_ns,
+    ClockMapping, GroupStatus, NetworkSession, NodeConfig, PhasePolicy, SyncConfig,
+    SyncSession, SyncUnitConfig, UnitStatus,
+)
+from .adapters import (
+    CorrectionStatus, FrameTiming, PhaseActuator, Pulse, Submission, SyncUnit,
+    TimingSnapshot, boot_time_ns, monotonic_ns,
 )
 
 __all__ = [
-    "ClockMapping", "Config", "CorrectionStatus", "FakeOptions", "FramePacket", "FrameTiming",
-    "GroupStatus", "NetworkSession", "NodeConfig", "PhaseActuator", "PhasePolicy", "Pulse", "Session", "Submission", "SyncConfig",
-    "SyncSession", "SyncUnit", "SyncUnitConfig", "TimingSnapshot", "UnitConfig", "UnitStatus",
-    "boot_time_ns", "enumerate_arducam_cameras", "monotonic_ns",
+    "ClockMapping", "CorrectionStatus", "FrameTiming", "GroupStatus", "NetworkSession",
+    "NodeConfig", "PhaseActuator", "PhasePolicy", "Pulse", "Submission", "SyncConfig",
+    "SyncSession", "SyncUnit", "SyncUnitConfig", "TimingSnapshot", "UnitStatus",
+    "boot_time_ns", "monotonic_ns",
 ]
+
+_MANAGED_EXPORTS = {
+    "Config", "FakeOptions", "FramePacket", "Session", "UnitConfig",
+    "enumerate_arducam_cameras",
+}
+
+
+def __getattr__(name):
+    """Keep explicit legacy managed imports compatible when the add-on is installed."""
+    if name in _MANAGED_EXPORTS:
+        import bcamsync_managed
+        value = getattr(bcamsync_managed, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

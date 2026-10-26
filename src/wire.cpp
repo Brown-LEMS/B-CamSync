@@ -188,13 +188,17 @@ Json status_json(const GroupStatus& s) {
                       {"p95", u.p95_ms},
                       {"max", u.max_ms},
                       {"measured_at", u.measurement_end_ns}});
-    return {{"state", s.state}, {"ready", s.ready}, {"fault", s.fault}, {"units", us}};
+    return {{"state", s.state}, {"ready", s.ready}, {"fault", s.fault}, {"units", us},
+            {"waiting_nodes", s.waiting_nodes}, {"stop_node", s.stop_node}, {"stop_reason", s.stop_reason}};
 }
 GroupStatus status_from_json(const Json& j) {
     GroupStatus s;
     s.state = j.at("state");
     s.ready = j.at("ready");
     s.fault = j.at("fault");
+    s.waiting_nodes = j.at("waiting_nodes").get<std::vector<std::string>>();
+    s.stop_node = j.at("stop_node");
+    s.stop_reason = j.at("stop_reason");
     const auto& units = j.at("units");
     if (!units.is_array())
         throw std::runtime_error("group status units must be an array");

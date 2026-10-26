@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class NodeStartupTests(unittest.TestCase):
     def setUp(self):
-        self.config = Config.from_file(ROOT / "examples/configs/fake_one_node.json")
+        self.config = Config.from_file(ROOT / "tests/fixtures/configs/fake_one_node.json")
         self.config.units = [self.config.units[0]]
         self.handlers = {}
 
@@ -57,7 +57,7 @@ class NodeStartupTests(unittest.TestCase):
                 pass
 
         with patch.object(node_app, "NetworkSession", return_value=observed), \
-                patch("bcamsync.management.Session", side_effect=AssertionError("camera initialized")):
+                patch("bcamsync_managed.Session", side_effect=AssertionError("camera initialized")):
             node_app.run_node(self.config, "node-a", network_startup="automatic", server_class=Server)
         self.assertEqual(native.address, "")
         observed.start.assert_called_once()
@@ -79,7 +79,7 @@ class NodeStartupTests(unittest.TestCase):
                 pass
 
         with patch.object(node_app, "NetworkSession", side_effect=AssertionError("network initialized")), \
-                patch("bcamsync.management.Session", side_effect=AssertionError("camera initialized")):
+                patch("bcamsync_managed.Session", side_effect=AssertionError("camera initialized")):
             node_app.run_node(self.config, "node-a", server_class=Server)
 
     def test_signal_during_local_network_startup_releases_network_without_opening_http(self):
@@ -111,7 +111,7 @@ class NodeStartupTests(unittest.TestCase):
         observed.resolve.side_effect = RuntimeError("network session deadline exceeded")
         controller = NodeService(self.config, "node-a", network=observed)
         self.addCleanup(controller.close)
-        with patch("bcamsync.management.Session", side_effect=AssertionError("camera initialized")):
+        with patch("bcamsync_managed.Session", side_effect=AssertionError("camera initialized")):
             with self.assertRaisesRegex(RuntimeError, "deadline exceeded"):
                 controller.request("start")
         self.assertIsNone(controller.session)
@@ -148,7 +148,7 @@ class NodeStartupTests(unittest.TestCase):
         with patch.object(network_app, "NetworkSession", return_value=observed), \
                 patch.object(network_app.threading, "Event", return_value=waits), \
                 patch("sys.stdout", new=StringIO()), \
-                patch("bcamsync.management.Session", side_effect=AssertionError("camera initialized")):
+                patch("bcamsync_managed.Session", side_effect=AssertionError("camera initialized")):
             network_app.run_network(self.config.sync_config(), "node-a")
         self.assertEqual(native.address, "")
         observed.request_stop.assert_called_once()
@@ -174,7 +174,7 @@ class NodeStartupTests(unittest.TestCase):
             node_app.run_node(self.config, "node-a", network_startup="invalid")
 
     def test_packaged_cli_defaults_to_explicit_and_accepts_automatic_opt_in(self):
-        path = str(ROOT / "examples/configs/fake_one_node.json")
+        path = str(ROOT / "tests/fixtures/configs/fake_one_node.json")
         with patch.object(node_app, "run_node") as run:
             self.assertEqual(node_app.main([path, "node-a"]), 0)
             self.assertEqual(run.call_args.kwargs["network_startup"], "explicit")

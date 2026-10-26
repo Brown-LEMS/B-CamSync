@@ -18,7 +18,7 @@ from bcamsync import Config
 from bcamsync.management import NodeService
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "examples"))
+sys.path.insert(0, str(ROOT / "tools" / "managed"))
 from preview_record import RecordingService
 import preview_record
 
@@ -26,7 +26,7 @@ import preview_record
 class RecordingExampleTests(unittest.TestCase):
     def setUp(self):
         self.output = TemporaryDirectory()
-        self.config = Config.from_file(ROOT / "examples/configs/fake_one_node.json")
+        self.config = Config.from_file(ROOT / "tests/fixtures/configs/fake_one_node.json")
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as channel:
             channel.bind(("127.0.0.1", 0))
             port = channel.getsockname()[1]
@@ -77,7 +77,7 @@ class RecordingExampleTests(unittest.TestCase):
             time.sleep(0.02)
         self.fail(f"Recording did not receive both boards: {stats}, {self.failures}")
 
-    def validate_files(self, recording):
+    def validate_files(self, recording, *, allow_unmapped=False):
         directory = Path(recording["directory"])
         manifest = json.loads((directory / "manifest.json").read_text())
         self.assertEqual(set(manifest["units"]), {"board-a1", "board-a2"})
@@ -93,7 +93,11 @@ class RecordingExampleTests(unittest.TestCase):
             for index, frame in enumerate(metadata):
                 self.assertEqual(frame["offset"], offset)
                 self.assertGreater(frame["sensor_timestamp_ns"], 0)
-                self.assertTrue(frame["clock_valid"])
+                if frame["clock_valid"]:
+                    self.assertGreater(frame["timestamp_ns"], 0)
+                else:
+                    self.assertTrue(allow_unmapped)
+                    self.assertEqual(frame["timestamp_ns"], 0)
                 self.assertEqual(frame["view_shape"], [16, 16])
                 self.assertEqual(frame["views"], 4)
                 with Image.open(BytesIO(video[offset:offset + frame["length"]])) as image:
@@ -128,7 +132,8 @@ class RecordingExampleTests(unittest.TestCase):
         self.wait_frames()
         stopped_again = self.control("/stop")["recording"]
         self.assertNotEqual(stopped_again["directory"], stopped["directory"])
-        self.validate_files(stopped_again)
+        # Capture can deliver unmapped frames while group shutdown finishes recording.
+        self.validate_files(stopped_again, allow_unmapped=True)
         self.control("/start")
         self.control("/record/start")
         self.wait_frames()
@@ -169,14 +174,15 @@ class RecordingExampleTests(unittest.TestCase):
             return original_encode(packet, width, quality)
 
         self.control("/start")
-        with patch.object(preview_record, "encode_packet", side_effect=paused_encode):
+        # A Mock call history would retain packets and exhaust the bounded image pool.
+        with patch.object(preview_record, "encode_packet", new=paused_encode):
             try:
                 self.control("/record/start")
                 self.assertTrue(entered.wait(5))
                 self.control("/record/stop")
                 self.control("/record/start")
                 release.set()
-                self.wait_frames()
+                self.wait_frames(count=max(unit.pool_capacity for unit in self.config.units) + 4)
                 recording = self.control("/record/stop")["recording"]
             finally:
                 release.set()
@@ -202,7 +208,7 @@ class RecordingExampleTests(unittest.TestCase):
         self.assertEqual(self.failures, [])
 
     def test_pi5_template_selects_two_pi5_boards(self):
-        config = Config.from_file(ROOT / "examples/configs/one_node_two_boards_pi5.json")
+        config = Config.from_file(ROOT / "docs/configs/one_node_two_boards_pi5.json")
         self.assertEqual(len(config.nodes), 1)
         self.assertEqual(len(config.units), 2)
         self.assertTrue(all(unit.profile == "arducam_b0267_pi5" for unit in config.units))

@@ -1,5 +1,5 @@
 #include "process.hpp"
-#include "bcamsync/types.hpp"
+#include "bcamsync/sync_types.hpp"
 #include <cerrno>
 #include <fcntl.h>
 #include <poll.h>

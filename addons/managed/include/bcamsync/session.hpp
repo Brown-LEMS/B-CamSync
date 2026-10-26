@@ -1,6 +1,6 @@
 #pragma once
 #include "backend.hpp"
-#include "sync_types.hpp"
+#include "bcamsync/sync_types.hpp"
 #include <chrono>
 #include <memory>
 #include <map>
@@ -23,6 +23,7 @@ class Session {
     std::shared_ptr<const FramePacket> read(const std::string& unit_id,
                                             std::chrono::milliseconds timeout);
     GroupStatus status() const;
+    /// Explicitly stop group synchronization and close owned cameras. Remote sync exit keeps read() running.
     void stop();
 
   private:

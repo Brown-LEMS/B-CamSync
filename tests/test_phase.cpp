@@ -56,6 +56,17 @@ void estimator() {
     const auto unwrapped = estimate_phase(snapshot(epoch), snapshot(epoch, -12400000),
                                           epoch + 1000000, {}, 0, 12600000);
     require(unwrapped.phase_ns == 12600000, "phase unwrap maintains physical correspondence");
+    for (const auto previous : {std::numeric_limits<double>::quiet_NaN(),
+                               std::numeric_limits<double>::infinity(),
+                               -std::numeric_limits<double>::infinity()}) {
+        bool invalid = false;
+        try {
+            estimate_phase(snapshot(epoch), snapshot(epoch), epoch + 1000000, {}, 0, previous);
+        } catch (const std::invalid_argument&) {
+            invalid = true;
+        }
+        require(invalid, "nonfinite phase anchors must be rejected before FFI serialization");
+    }
 }
 void reference_timing() {
     const auto value = snapshot(epoch);

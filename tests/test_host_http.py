@@ -26,7 +26,7 @@ CONFIG = {"group_id": "lab", "reference_unit": "board-a", "nodes": [
 
 class HostCliTests(unittest.TestCase):
     def setUp(self):
-        example = Path(__file__).resolve().parents[1] / "examples" / "manage_group.py"
+        example = Path(__file__).resolve().parents[1] / "tools" / "manage_group.py"
         spec = importlib.util.spec_from_file_location("manage_group_example", example)
         self.example = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.example)

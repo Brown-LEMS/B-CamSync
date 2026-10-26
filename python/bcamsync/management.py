@@ -16,8 +16,12 @@ import socketserver
 import sys
 import threading
 from uuid import UUID, uuid4
+from typing import TYPE_CHECKING
 
-from . import Config, NetworkSession, Session, SyncConfig, SyncSession
+from . import NetworkSession, SyncConfig, SyncSession
+
+if TYPE_CHECKING:
+    from bcamsync_managed import Config, Session
 
 
 LIMIT = 1024 * 1024
@@ -34,10 +38,13 @@ def _operation_id(value: str | None) -> str | None:
 def _status(session, local_node: str, active: bool, operation_id: str | None) -> dict:
     if session is None:
         return {"node_id": local_node, "active": False, "operation_id": None,
-                "state": "stopped", "ready": False, "fault": "", "units": []}
+                "state": "stopped", "ready": False, "fault": "", "units": [],
+                "waiting_nodes": [], "stop_node": "", "stop_reason": ""}
     status = session.status()
     return {"node_id": local_node, "active": active, "operation_id": operation_id,
             "state": status.state, "ready": status.ready, "fault": status.fault,
+            "waiting_nodes": status.waiting_nodes, "stop_node": status.stop_node,
+            "stop_reason": status.stop_reason,
             "units": [{"unit_id": unit.unit_id, "state": unit.state, "ready": unit.ready,
                        "fault": unit.fault, "phase_ms": unit.phase_ms, "p95_ms": unit.p95_ms,
                        "max_ms": unit.max_ms, "measurement_end_ns": unit.measurement_end_ns}
@@ -120,6 +127,8 @@ class NodeService:
             return status
 
     def _create_session(self) -> Session:
+        from bcamsync_managed import Config, Session
+
         config = self.config
         if self.network is not None:
             resolved = self.network.resolve(config.startup_timeout_seconds)
@@ -234,6 +243,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.mode == "serve":
+            from bcamsync_managed import Config
+
             service = NodeService(Config.from_file(args.config), args.node, args.socket)
             previous = {}
 

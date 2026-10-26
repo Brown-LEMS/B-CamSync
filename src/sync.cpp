@@ -1,5 +1,6 @@
 #include "bcamsync/sync.hpp"
-#include "sync_runtime.hpp"
+#include "bcamsync/detail/sync_runtime.hpp"
+#include <atomic>
 #include <mutex>
 #include <thread>
 
@@ -9,17 +10,24 @@ public:
     detail::SyncRuntime runtime;
     std::mutex lifecycle;
     std::thread worker;
+    std::atomic<bool> finished{true};
     Impl(SyncConfig config, std::string node, LocalSyncUnits units)
         : runtime(std::move(config), std::move(node), std::move(units)) {}
     void start() {
         std::lock_guard<std::mutex> lock(lifecycle);
-        if (worker.joinable()) throw std::runtime_error("session already started; stop before restarting");
+        if (worker.joinable() && !finished.load()) {
+            const auto state = runtime.status().state;
+            if (state != "stopped" && state != "fault")
+                throw std::runtime_error("session already started; stop before restarting");
+        }
+        if (worker.joinable()) worker.join();
         runtime.begin();
-        worker = std::thread([this] { runtime.run(); runtime.finish(); });
+        finished = false;
+        worker = std::thread([this] { runtime.run(); runtime.finish(); finished = true; });
     }
     void stop() {
         std::lock_guard<std::mutex> lock(lifecycle);
-        runtime.request_stop();
+        if (!finished.load()) runtime.request_stop();
         if (worker.joinable()) worker.join();
     }
 };

@@ -3,6 +3,7 @@
 #include <chrono>
 
 namespace bcamsync::detail {
+/// Internal core/add-on bridge; applications use SyncSession or managed Session.
 /// Blocking shared runtime. Its caller owns the worker and any acquisition lifecycle.
 class SyncRuntime {
 public:

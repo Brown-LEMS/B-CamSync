@@ -262,15 +262,29 @@ void network_session() {
         std::this_thread::sleep_for(1ms);
     require(b->snapshots > previous_snapshots, "fixture entered in-progress remote observation");
     coordinator.stop();
-    const auto remote_stopped = std::chrono::steady_clock::now() + 1s;
+    const auto remote_stopped = std::chrono::steady_clock::now() + 3s;
     while (follower.status().state != "stopped" &&
            std::chrono::steady_clock::now() < remote_stopped)
         std::this_thread::sleep_for(1ms);
     require(follower.status().state == "stopped" && !follower.status().ready &&
                 follower.status().fault.empty(),
             "graceful coordinator shutdown stops follower without a fault");
-    require(!a->running && !b->running, "group shutdown releases both acquisition backends");
+    require(follower.status().stop_node == "a" && follower.status().stop_reason == "requested",
+            "remote shutdown reports the initiating node and reason");
+    require(!a->running && b->running && b->stops == 0,
+            "coordinator shutdown closes only its local acquisition backend");
+    const auto stopped_frame = follower.read("follower", 100ms);
+    std::this_thread::sleep_for(40ms);
+    const auto continued_frame = follower.read("follower", 100ms);
+    require(stopped_frame && continued_frame && continued_frame->sequence > stopped_frame->sequence &&
+                continued_frame->sensor_timestamp_ns > stopped_frame->sensor_timestamp_ns &&
+                !continued_frame->clock_valid && continued_frame->timestamp_ns == 0,
+            "remote synchronization stop preserves capture with explicit unavailable group time");
+    rejects([&] { follower.start(); });
+    require(b->starts == 1 && b->running, "managed restart requires explicit capture shutdown first");
     follower.stop();
+    require(!b->running && b->stops == 1 && !follower.read("follower", 100ms),
+            "explicit follower stop releases its acquisition backend");
     b->snapshot_delay_ms = 0;
     follower.start();
     coordinator.start();
@@ -285,14 +299,50 @@ void network_session() {
     GroupStatus state;
     do {
         state = coordinator.status();
-        if (!state.fault.empty())
+        if (state.state == "stopped")
             break;
         std::this_thread::sleep_for(20ms);
     } while (std::chrono::steady_clock::now() < deadline);
-    require(!state.ready && !state.fault.empty(), "peer loss faults synchronized group");
-    require(a->running && coordinator.read("reference", 100ms),
-            "peer loss leaves healthy local acquisition readable");
+    require(state.stop_node == "b" && state.stop_reason == "requested",
+            "follower shutdown preserves its origin through the coordinator");
+    require(state.state == "stopped" && !state.ready && state.fault.empty(),
+            "explicit follower stop gracefully ends group synchronization");
+    require(!b->running && a->running && coordinator.read("reference", 100ms),
+            "follower stop leaves coordinator acquisition readable");
     coordinator.stop();
+    require(!a->running && !coordinator.read("reference", 100ms),
+            "explicit coordinator stop releases its acquisition backend");
+}
+void remote_capture_failure() {
+    std::cout << "checking remote fault preserves managed acquisition\n" << std::flush;
+    const auto config = configuration(true);
+    auto a = std::make_shared<Probe>(), b = std::make_shared<Probe>();
+    auto follower = detail::SessionTestAccess::create(config, "b", backends(config, "b", {b}));
+    auto coordinator = detail::SessionTestAccess::create(config, "a", backends(config, "a", {a}));
+    follower.start();
+    coordinator.start();
+    require(coordinator.wait_ready(8s) && follower.wait_ready(2s),
+            "remote failure fixture reaches synchronized state");
+    const auto before = coordinator.read("reference", 100ms);
+    b->capture_failure = true;
+    const auto deadline = std::chrono::steady_clock::now() + 3s;
+    while (coordinator.status().fault.empty() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(5ms);
+    require(!coordinator.status().ready &&
+                coordinator.status().fault.find("injected camera failure") != std::string::npos,
+            "remote camera failure reaches group synchronization status");
+    require(coordinator.status().stop_node == "b" && coordinator.status().stop_reason == "fault",
+            "remote fault reports its originating node");
+    std::this_thread::sleep_for(40ms);
+    const auto after = coordinator.read("reference", 100ms);
+    require(before && after && after->sequence > before->sequence && a->running && a->stops == 0,
+            "remote fault leaves healthy local camera running and delivering newer frames");
+    require(b->running && b->stops == 0,
+            "synchronization fault does not close the remote capture backend");
+    b->capture_failure = false;
+    follower.stop();
+    coordinator.stop();
+    require(!a->running && !b->running, "explicit stops release faulted group acquisition");
 }
 void incompatible_peer() {
     std::cout << "checking topology handshake rejection\n" << std::flush;
@@ -437,10 +487,12 @@ void acquisition_without_common_clock() {
     auto probe = std::make_shared<Probe>();
     auto session = detail::SessionTestAccess::create(config, "b", backends(config, "b", {probe}));
     session.start();
-    rejects([&] { session.wait_ready(2s); });
+    require(!session.wait_ready(500ms) && session.status().fault.empty() &&
+                session.status().waiting_nodes == std::vector<std::string>{"a"},
+            "missing peer remains pending beyond the calibration startup deadline");
     const auto frame = session.read("follower", 100ms);
     require(frame && !frame->clock_valid && frame->timestamp_ns == 0 && frame->sensor_timestamp_ns > 0,
-            "clock startup failure preserves local frames with explicit unavailable group time");
+            "pending clock startup preserves local frames with explicit unavailable group time");
     require(probe->running, "backend injection does not disable physical clock policy");
     session.stop();
 #endif
@@ -474,6 +526,7 @@ int main() {
         malformed_sessions();
         local_session();
         network_session();
+        remote_capture_failure();
         incompatible_peer();
         cleanup_failures();
         local_capture_failures();

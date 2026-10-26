@@ -5,23 +5,22 @@ build-backend = "scikit_build_core.build"
 [project]
 name = "bcamsync"
 version = "0.1.0"
-description = "Synchronized board-level camera acquisition"
+description = "Camera-independent multi-device synchronization"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["numpy>=1.24"]
+dependencies = []
 
 [project.optional-dependencies]
 preview = ["Pillow>=11"]
 
 [project.scripts]
-bcamsync-manage = "bcamsync.management:main"
 bcamsync-network = "bcamsync.network:main"
-bcamsync-node = "bcamsync.node:main"
 
 [tool.scikit-build]
 wheel.packages = ["python/bcamsync"]
 cmake.build-type = "Release"
 
 [tool.scikit-build.cmake.define]
+BCAMSYNC_BUILD_MANAGED = "OFF"
 BCAMSYNC_BUILD_TESTS = "OFF"
 BCAMSYNC_BUILD_PYTHON = "ON"

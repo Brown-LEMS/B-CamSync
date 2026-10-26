@@ -1,6 +1,6 @@
 #include "bcamsync/session.hpp"
 #include "bcamsync/fake.hpp"
-#include "sync_runtime.hpp"
+#include "bcamsync/detail/sync_runtime.hpp"
 #include <algorithm>
 #include <mutex>
 #include <thread>
@@ -98,19 +98,19 @@ public:
                 sync->run();
             } catch (const std::exception& error) {
                 if (!sync->stopping()) sync->fail(error.what());
-                sync->wait_for_stop();
             } catch (...) {
                 if (!sync->stopping()) sync->fail("unknown acquisition failure");
-                sync->wait_for_stop();
             }
-            cleanup_capture();
             sync->finish();
         });
     }
     void stop() {
         std::lock_guard<std::mutex> lock(lifecycle);
         sync->request_stop();
-        if (worker.joinable()) worker.join();
+        if (worker.joinable()) {
+            worker.join();
+            cleanup_capture();
+        }
     }
 };
 Session::Session(Config config, std::string node)

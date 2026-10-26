@@ -18,22 +18,12 @@ def main() -> None:
         parser.error("--seconds must be finite and positive")
     config = Config.from_file(args.config)
     units = [unit for unit in config.units if unit.node_id == args.node]
-    coordinator = config.reference_node() == args.node
     with Session(config, args.node) as session:
         print("Consuming local frames; synchronization status is reported separately", flush=True)
         end = time.monotonic() + args.seconds
-        shutdown_deadline = end + config.startup_timeout_seconds + 10
         next_report = 0.0
-        while True:
+        while time.monotonic() < end:
             status = session.status()
-            if status.state == "stopped":
-                if coordinator:
-                    raise RuntimeError("Coordinator stopped unexpectedly")
-                break
-            if coordinator and time.monotonic() >= end:
-                break
-            if not coordinator and time.monotonic() >= shutdown_deadline:
-                raise RuntimeError("Coordinator shutdown timed out")
             for unit in units:
                 packet = session.read(unit.id, timeout_seconds=1)
                 if packet is None:

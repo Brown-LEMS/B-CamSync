@@ -13,12 +13,14 @@ if [[ $# == 0 ]]; then
         --mount "type=bind,source=$source_root,target=/src,readonly" \
         --mount "type=bind,source=$source_root/build-linux,target=/work/build" \
         -e BCAMSYNC_TOOLCHAIN="${BCAMSYNC_TOOLCHAIN:-gcc}" \
+        -e CARGO_HOME=/work/build/cargo-home \
         -w /src "$image" bash
 fi
 exec docker run --rm --platform "$platform" \
     --mount "type=bind,source=$source_root,target=/src,readonly" \
     --mount "type=bind,source=$source_root/build-linux,target=/work/build" \
     -e BCAMSYNC_TOOLCHAIN="${BCAMSYNC_TOOLCHAIN:-gcc}" \
+    -e CARGO_HOME=/work/build/cargo-home \
     -e BCAMSYNC_JOBS="${BCAMSYNC_JOBS:-2}" \
     -e BCAMSYNC_FUZZ_SECONDS \
     -w /src "$image" bash tools/build.sh "$@"

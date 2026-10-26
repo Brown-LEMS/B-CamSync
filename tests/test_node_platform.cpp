@@ -1,12 +1,17 @@
 #include "platform.hpp"
 #include "network_address.hpp"
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <fstream>
 #include <iostream>
 #include <set>
 #include <stdexcept>
+#include <thread>
 #include <unistd.h>
+#ifdef __linux__
+#include <signal.h>
+#endif
 
 using namespace bcamsync;
 using namespace bcamsync::detail;
@@ -72,6 +77,13 @@ void mapping() {
         "7F7F0101,,8,0,0,0,0,0,0,0,0,0,0,Normal\n", 1000000000000LL, 10000000000LL, 100);
     require(local.valid && local.offset_ns == 990000000000LL && local.uncertainty_ns == 100,
             "local reference mapping uses its local realtime clock");
+    const auto reference_report = "7F7F0101,,8,0,0,0,0,0,0,0,0,0,0,Normal\n";
+    require(tracking_estimate(config, "node-a", reference_report, 0, 0, 100000).valid,
+            "mapping uncertainty at the configured threshold is accepted");
+    const auto over_limit = tracking_estimate(config, "node-a", reference_report, 0, 0, 100001);
+    require(!over_limit.valid && over_limit.uncertainty_ns == 100001 &&
+            over_limit.fault.find("100001 ns > 100000 ns (local mapping 100001 ns)") != std::string::npos,
+            "threshold rejection reports measured, configured, and local mapping uncertainty");
     auto relaxed = config;
     relaxed.clock_max_offset_ms = 2;
     require(tracking_estimate(relaxed, "node-b", report("5", "1005", "0.001"),
@@ -185,6 +197,8 @@ void software_lifecycle() {
     std::atomic<bool> stopping{false};
     require(!platform.sample().valid, "unstarted platform has no clock mapping");
     platform.start(config, stopping, monotonic_ns() + 1000000000LL);
+    require(platform.resolve().to_json() == config.to_json(), "same-host startup retains the configured endpoints");
+    platform.prepare_clock(config);
     const auto estimate = platform.sample();
     require(estimate.valid && estimate.offset_ns > 1000000000000LL,
             "same-host nodes map boottime into realtime without provisioning");
@@ -197,8 +211,32 @@ void software_lifecycle() {
     config.clock_mode = "network";
     NodePlatform single(config, "node-a");
     single.start(config, stopping, monotonic_ns() + 1000000000LL);
+    single.prepare_clock(config);
     require(single.sample().valid && single.sample().offset_ns == 0,
             "single physical node keeps its native boottime domain without dependencies");
+}
+void deferred_clock_startup() {
+#ifdef __linux__
+    auto config = configuration();
+    config.nodes[0].address = "127.0.0.1";
+    config.nodes[1].address = "127.0.0.2";
+    NodePlatform platform(config, "node-a");
+    std::atomic<bool> stopping{false};
+    platform.start(config, stopping, monotonic_ns() + 1000000000LL);
+    require(platform.resolve().node("node-a").address == "127.0.0.1",
+            "local preparation exposes the control endpoint before clock startup");
+    const auto pending = platform.sample();
+    require(!pending.valid && pending.fault == "private clock is not prepared",
+            "local preparation does not wait for or launch the private clock");
+    auto partial = config;
+    partial.nodes[1].address.clear();
+    bool rejected = false;
+    try { platform.prepare_clock(partial); }
+    catch (const std::runtime_error&) { rejected = true; }
+    require(rejected && !platform.resolve().node("node-a").address.empty(),
+            "clock preparation requires peer endpoints and preserves the prepared local link");
+    platform.stop();
+#endif
 }
 void private_clock_smoke() {
     auto config = configuration();
@@ -222,10 +260,32 @@ void private_clock_smoke() {
     const auto deadline = monotonic_ns() + 20000000000LL;
     reference.start(config, stopping, deadline);
     follower.start(config, stopping, deadline);
-    require(reference.sample().valid && follower.sample().valid,
-            "private chronyd instances must communicate over configured high port");
+    require(!reference.sample().valid && !follower.sample().valid,
+            "local platform startup leaves clock convergence to the runtime");
+#ifdef __linux__
+    require(children() == before, "local preparation launches no clock process");
+#endif
+    reference.prepare_clock(reference.resolve());
+    follower.prepare_clock(follower.resolve());
+    reference.prepare_clock(reference.resolve());
+    follower.prepare_clock(follower.resolve());
+    while (!reference.sample().valid || !follower.sample().valid) {
+        require(monotonic_ns() < deadline, "private chronyd convergence deadline exceeded");
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
 #ifdef __linux__
     require(children().size() == before.size() + 2, "platform must own both private clock children");
+    const auto live = children();
+    const auto owned = *std::find_if(live.begin(), live.end(), [&](int pid) { return !before.count(pid); });
+    require(kill(owned, SIGKILL) == 0, "clock child exit fixture");
+    bool exited = false;
+    while (!exited && monotonic_ns() < deadline) {
+        const auto a = reference.sample(), b = follower.sample();
+        exited = a.fault.find("private chronyd exited") != std::string::npos ||
+                 b.fault.find("private chronyd exited") != std::string::npos;
+        if (!exited) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    require(exited, "sampling detects and reaps an exited private clock daemon");
 #endif
     follower.stop();
     reference.stop();
@@ -246,6 +306,7 @@ int main(int argc, char** argv) {
         address_selection();
 #endif
         software_lifecycle();
+        deferred_clock_startup();
         if (argc == 2 && std::string(argv[1]) == "--private-clock")
             private_clock_smoke();
         std::cout << "Node platform software checks passed\n";

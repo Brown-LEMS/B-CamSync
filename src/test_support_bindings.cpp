@@ -116,7 +116,7 @@ std::unique_ptr<Session> make_session(bool empty_reads) {
 
 // This extension is built only for software checks and is never installed.
 PYBIND11_MODULE(_test_support, module) {
-    py::module_::import("bcamsync._native");
+    py::module_::import("bcamsync_managed._native");
     module.def("make_packet", [] { return py::cast(bcamsync::python::FrameHandle{packet()}); });
     module.def("make_session", &make_session, py::arg("empty_reads") = false);
 }

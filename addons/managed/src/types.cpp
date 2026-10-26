@@ -1,5 +1,5 @@
 #include "bcamsync/types.hpp"
-#include "phase_policy_json.hpp"
+#include "bcamsync/detail/phase_policy_json.hpp"
 #include "arducam_profile.hpp"
 #include <algorithm>
 #include <cmath>
@@ -48,6 +48,7 @@ SyncConfig Config::sync_config() const {
     config.clock_max_age_seconds = clock_max_age_seconds;
     config.request_timeout_seconds = request_timeout_seconds;
     config.startup_timeout_seconds = startup_timeout_seconds;
+    config.join_timeout_seconds = join_timeout_seconds;
     return config;
 }
 void Config::validate() const {
@@ -146,6 +147,8 @@ Config Config::from_file(const std::string& path) {
     SET(request_timeout_seconds);
     SET(startup_timeout_seconds);
 #undef SET
+    if (j.contains("join_timeout_seconds") && !j.at("join_timeout_seconds").is_null())
+        c.join_timeout_seconds = j.at("join_timeout_seconds").get<double>();
     c.validate();
     return c;
 }
@@ -168,7 +171,8 @@ std::string Config::to_json() const {
         {"nodes", ns}, {"units", us}, {"phase_policy", detail::phase_policy_json(phase_policy)},
         {"clock_max_offset_ms", clock_max_offset_ms},
         {"clock_max_age_seconds", clock_max_age_seconds}, {"request_timeout_seconds", request_timeout_seconds},
-        {"startup_timeout_seconds", startup_timeout_seconds}}).dump();
+        {"startup_timeout_seconds", startup_timeout_seconds},
+        {"join_timeout_seconds", join_timeout_seconds ? nlohmann::json(*join_timeout_seconds) : nlohmann::json(nullptr)}}).dump();
 }
 std::string Config::sync_json() const { return sync_config().sync_json(); }
 const std::uint8_t* FramePacket::view_data(unsigned index) const {
