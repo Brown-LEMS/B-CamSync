@@ -3,77 +3,26 @@ name: Linux native validation
 on:
   push:
   pull_request:
-  workflow_dispatch:
 
 permissions:
   contents: read
-
-concurrency:
-  group: native-${{ github.ref }}
-  cancel-in-progress: true
 
 defaults:
   run:
     shell: bash
 
-jobs:
-  wheels:
-    name: Core wheel (Python ${{ matrix.python }}, ${{ matrix.target.arch }})
-    runs-on: ${{ matrix.target.runner }}
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      max-parallel: 4
-      matrix:
-        python: ["3.11", "3.12", "3.13", "3.14", "3.15"]
-        target:
-          - runner: ubuntu-24.04
-            arch: x86_64
-          - runner: ubuntu-24.04-arm
-            arch: aarch64
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          persist-credentials: false
-      - name: Build Bookworm wheel environment
-        run: |
-          docker build --progress plain -f tools/wheels.Dockerfile \
-            --build-arg PYTHON_VERSION=${{ matrix.python }} -t bcamsync-wheel .
-      - name: Build and test the installed core wheel
-        run: |
-          mkdir -p build-linux/wheels
-          docker run --rm \
-            --mount "type=bind,source=$PWD,target=/src,readonly" \
-            --mount "type=bind,source=$PWD/build-linux/wheels,target=/wheels" \
-            bcamsync-wheel 2>&1 | tee build-linux/wheel.log
-      - name: Upload tested wheel
-        uses: actions/upload-artifact@v4
-        with:
-          name: wheels-cpython${{ matrix.python }}-linux_${{ matrix.target.arch }}
-          path: build-linux/wheels/*.whl
-          if-no-files-found: error
-      - name: Preserve wheel validation log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: wheel-log-${{ matrix.python }}-${{ matrix.target.arch }}
-          path: build-linux/wheel.log
+concurrency:
+  group: native-${{ github.ref }}
+  cancel-in-progress: true
 
-  gcc:
-    name: Debian 12 GCC validation (${{ matrix.runner }})
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 40
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-24.04
-            platform: linux/amd64
-          - runner: ubuntu-24.04-arm
-            platform: linux/arm64
+jobs:
+  software:
+    name: Debian 12 ARM64 software checks
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
     env:
       BCAMSYNC_TOOLCHAIN: gcc
-      BCAMSYNC_PLATFORM: ${{ matrix.platform }}
+      BCAMSYNC_PLATFORM: linux/arm64
       BUILDKIT_PROGRESS: plain
     steps:
       - uses: actions/checkout@v5
@@ -82,69 +31,21 @@ jobs:
       - name: Build shared Debian development image
         run: |
           bash tools/container.sh image 2>&1 | tee "$RUNNER_TEMP/bcamsync-image.log"
-      - name: Validate core, managed capture, Release, SDK, and package delivery
-        run: |
-          for action in core software release sdk package; do
-            bash tools/container.sh "$action" 2>&1 | tee "$RUNNER_TEMP/bcamsync-$action.log"
-          done
-      - name: Preserve validation logs and deliverable packages
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: gcc-${{ matrix.runner }}
-          path: |
-            build-linux/logs/**
-            build-linux/packages/**
-            build-linux/**/Testing/Temporary/LastTest.log
-            ${{ runner.temp }}/bcamsync-*.log
-
-  clang:
-    name: Debian 12 Clang safety validation
-    runs-on: ubuntu-24.04
-    timeout-minutes: 40
-    env:
-      BCAMSYNC_TOOLCHAIN: clang
-      BCAMSYNC_PLATFORM: linux/amd64
-      BUILDKIT_PROGRESS: plain
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          persist-credentials: false
-      - name: Build shared Debian development image
-        run: |
-          bash tools/container.sh image 2>&1 | tee "$RUNNER_TEMP/bcamsync-image.log"
-      - name: Validate software through Clang
+      - name: Check core, managed fake capture, and Python interfaces
         run: |
           bash tools/container.sh software 2>&1 | tee "$RUNNER_TEMP/bcamsync-software.log"
-      - name: Compile official libcamera SDK interface through Clang
+      - name: Check CI wheel installer
         run: |
-          bash tools/container.sh sdk 2>&1 | tee "$RUNNER_TEMP/bcamsync-sdk.log"
-      - name: Prepare sanitizer shadow-memory address space
-        # Debian Clang 16 uses the traditional x86-64 mmap layout on this ephemeral runner.
-        run: sudo sysctl -w vm.mmap_rnd_bits=28
-      - name: Check address, undefined behavior, and frame ownership
-        run: |
-          bash tools/container.sh address 2>&1 | tee "$RUNNER_TEMP/bcamsync-address.log"
-      - name: Check thread synchronization
-        run: |
-          bash tools/container.sh thread 2>&1 | tee "$RUNNER_TEMP/bcamsync-thread.log"
-      - name: Run bounded timing and control-message fuzzing
-        run: |
-          bash tools/container.sh fuzz 2>&1 | tee "$RUNNER_TEMP/bcamsync-fuzz.log"
-      - name: Analyze ownership and SDK resource paths
-        run: |
-          bash tools/container.sh analyze 2>&1 | tee "$RUNNER_TEMP/bcamsync-analyze.log"
-      - name: Preserve safety logs, failures, and packages
+          docker run --rm \
+            --mount "type=bind,source=$PWD,target=/src,readonly" \
+            bcamsync-dev:bookworm \
+            /opt/bcamsync/venv/bin/python -m unittest discover -s tools -p test_install_ci_wheel.py -v
+      - name: Preserve software validation logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: clang-safety
+          name: software-arm64
           path: |
             build-linux/logs/**
-            build-linux/packages/**
             build-linux/**/Testing/Temporary/LastTest.log
-            build-linux/**/findings/**
-            build-linux/**/corpus/**
             ${{ runner.temp }}/bcamsync-*.log
-
-  # SDK checks use the image's pinned official libcamera 0.5.2; Arducam device validation uses the deployed vendor SDK.

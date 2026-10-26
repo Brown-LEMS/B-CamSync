@@ -28,16 +28,16 @@ class InstallerTests(unittest.TestCase):
         stack.enter_context(patch.dict(installer.os.environ, {"CONDA_PREFIX": ""}))
         return stack
 
-    def test_target_matches_current_abi_and_supported_architectures(self):
+    def test_target_matches_current_abi_on_arm64(self):
         minor = f"{sys.version_info.major}.{sys.version_info.minor}"
         abi = f"cp{sys.version_info.major}{sys.version_info.minor}"
-        for arch in ("aarch64", "x86_64"):
-            with self.subTest(arch=arch), self.environment(machine=arch):
-                self.assertEqual(installer.wheel_target(),
-                                 (f"wheels-cpython{minor}-linux_{arch}", f"-{abi}-{abi}-linux_{arch}.whl"))
+        with self.environment():
+            self.assertEqual(installer.wheel_target(),
+                             (f"wheels-cpython{minor}-linux_aarch64", f"-{abi}-{abi}-linux_aarch64.whl"))
 
     def test_unsupported_environments_fail_before_contacting_github(self):
-        for changes in ({"system": "Darwin"}, {"machine": "armv7l"}, {"libc": ("musl", "1.2")},
+        for changes in ({"system": "Darwin"}, {"machine": "armv7l"}, {"machine": "x86_64"},
+                        {"libc": ("musl", "1.2")},
                         {"libc": ("glibc", "2.35")}, {"free_threaded": True}, {"debug": True},
                         {"prefix": "/usr", "base_prefix": "/usr"}):
             with self.subTest(changes=changes), self.environment(**changes), \
@@ -46,17 +46,17 @@ class InstallerTests(unittest.TestCase):
                     installer.main([])
                 github.assert_not_called()
 
-    def test_latest_run_selects_only_successful_branch_pushes(self):
+    def test_latest_run_selects_only_successful_manual_wheel_builds_for_branch(self):
         run = dict(databaseId=42, headSha="abc", url="https://github.com/build/42")
         with patch.object(installer.subprocess, "run", return_value=subprocess.CompletedProcess(
                 [], 0, stdout=json.dumps([run]))) as command:
             self.assertEqual(installer.latest_run("owner/repo", "experiment"), run)
         args = command.call_args.args[0]
-        for flag, value in (("--workflow", "native.yml"), ("--branch", "experiment"),
-                            ("--event", "push"), ("--status", "success"), ("--limit", "1")):
+        for flag, value in (("--workflow", "wheels.yml"), ("--branch", "experiment"),
+                            ("--event", "workflow_dispatch"), ("--status", "success"), ("--limit", "1")):
             self.assertEqual(args[args.index(flag) + 1], value)
         with patch.object(installer, "github", return_value=[]):
-            with self.assertRaisesRegex(RuntimeError, "No successful"):
+            with self.assertRaisesRegex(RuntimeError, "No successful manual wheels.yml build.*Trigger that workflow first"):
                 installer.latest_run("owner/repo", "main")
 
     def test_missing_expired_and_paginated_artifacts(self):

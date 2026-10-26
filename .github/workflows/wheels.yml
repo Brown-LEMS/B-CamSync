@@ -1,0 +1,49 @@
+name: ARM64 core wheels
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  wheels:
+    name: ARM64 core wheel (Python ${{ matrix.python }})
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        python: ["3.11", "3.12", "3.13", "3.14", "3.15"]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Build Bookworm wheel environment
+        run: |
+          docker build --progress plain -f tools/wheels.Dockerfile \
+            --build-arg PYTHON_VERSION=${{ matrix.python }} -t bcamsync-wheel .
+      - name: Build and test the installed core wheel
+        run: |
+          mkdir -p build-linux/wheels
+          docker run --rm \
+            --mount "type=bind,source=$PWD,target=/src,readonly" \
+            --mount "type=bind,source=$PWD/build-linux/wheels,target=/wheels" \
+            bcamsync-wheel 2>&1 | tee build-linux/wheel.log
+      - name: Upload tested wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-cpython${{ matrix.python }}-linux_aarch64
+          path: build-linux/wheels/*.whl
+          if-no-files-found: error
+      - name: Preserve wheel validation log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-log-${{ matrix.python }}-aarch64
+          path: build-linux/wheel.log

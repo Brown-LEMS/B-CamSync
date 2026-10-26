@@ -1,0 +1,91 @@
+name: ARM64 full validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  gcc:
+    name: Debian 12 ARM64 GCC validation
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    env:
+      BCAMSYNC_TOOLCHAIN: gcc
+      BCAMSYNC_PLATFORM: linux/arm64
+      BUILDKIT_PROGRESS: plain
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Build shared Debian development image
+        run: |
+          bash tools/container.sh image 2>&1 | tee "$RUNNER_TEMP/bcamsync-image.log"
+      - name: Validate core, managed capture, Release, SDK, and package delivery
+        run: |
+          for action in core software release sdk package; do
+            bash tools/container.sh "$action" 2>&1 | tee "$RUNNER_TEMP/bcamsync-$action.log"
+          done
+      - name: Preserve validation logs and deliverable packages
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gcc-arm64
+          path: |
+            build-linux/logs/**
+            build-linux/packages/**
+            build-linux/**/Testing/Temporary/LastTest.log
+            ${{ runner.temp }}/bcamsync-*.log
+
+  clang:
+    name: Debian 12 ARM64 Clang safety validation
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    env:
+      BCAMSYNC_TOOLCHAIN: clang
+      BCAMSYNC_PLATFORM: linux/arm64
+      BUILDKIT_PROGRESS: plain
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Build shared Debian development image
+        run: |
+          bash tools/container.sh image 2>&1 | tee "$RUNNER_TEMP/bcamsync-image.log"
+      - name: Validate software through Clang
+        run: |
+          bash tools/container.sh software 2>&1 | tee "$RUNNER_TEMP/bcamsync-software.log"
+      - name: Compile official libcamera SDK interface through Clang
+        run: |
+          bash tools/container.sh sdk 2>&1 | tee "$RUNNER_TEMP/bcamsync-sdk.log"
+      - name: Check address, undefined behavior, and frame ownership
+        run: |
+          bash tools/container.sh address 2>&1 | tee "$RUNNER_TEMP/bcamsync-address.log"
+      - name: Check thread synchronization
+        run: |
+          bash tools/container.sh thread 2>&1 | tee "$RUNNER_TEMP/bcamsync-thread.log"
+      - name: Run bounded timing and control-message fuzzing
+        run: |
+          bash tools/container.sh fuzz 2>&1 | tee "$RUNNER_TEMP/bcamsync-fuzz.log"
+      - name: Analyze ownership and SDK resource paths
+        run: |
+          bash tools/container.sh analyze 2>&1 | tee "$RUNNER_TEMP/bcamsync-analyze.log"
+      - name: Preserve safety logs, failures, and packages
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clang-safety-arm64
+          path: |
+            build-linux/logs/**
+            build-linux/packages/**
+            build-linux/**/Testing/Temporary/LastTest.log
+            build-linux/**/findings/**
+            build-linux/**/corpus/**
+            ${{ runner.temp }}/bcamsync-*.log
+
+  # SDK checks use the image's pinned official libcamera 0.5.2; Arducam device validation uses the deployed vendor SDK.

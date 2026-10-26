@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install the core wheel from the latest successful main push using GitHub CLI."""
+"""Install the core wheel from the latest successful manual wheel build using GitHub CLI."""
 
 import argparse
 import json
@@ -31,8 +31,8 @@ def wheel_target():
     if sysconfig.get_config_var("Py_GIL_DISABLED") or sysconfig.get_config_var("Py_DEBUG"):
         raise RuntimeError("Prebuilt wheels require a standard, non-debug CPython build with the GIL.")
     arch = platform.machine()
-    if platform.system() != "Linux" or arch not in ("aarch64", "x86_64"):
-        raise RuntimeError("Prebuilt wheels support Linux aarch64 and x86_64.")
+    if platform.system() != "Linux" or arch != "aarch64":
+        raise RuntimeError("Prebuilt wheels support Linux aarch64.")
     libc, version = platform.libc_ver()
     if libc != "glibc" or tuple(map(int, version.split("."))) < (2, 36):
         raise RuntimeError("Prebuilt wheels require glibc 2.36 or later (Debian 12 / Bookworm).")
@@ -42,11 +42,11 @@ def wheel_target():
 
 
 def latest_run(repo, branch):
-    runs = github("run", "list", "--repo", repo, "--workflow", "native.yml",
-                  "--branch", branch, "--event", "push", "--status", "success",
+    runs = github("run", "list", "--repo", repo, "--workflow", "wheels.yml",
+                  "--branch", branch, "--event", "workflow_dispatch", "--status", "success",
                   "--limit", "1", "--json", "databaseId,headSha,url")
     if not runs:
-        raise RuntimeError(f"No successful native.yml push build exists for {repo}@{branch}.")
+        raise RuntimeError(f"No successful manual wheels.yml build exists for {repo}@{branch}. Trigger that workflow first.")
     return runs[0]
 
 
@@ -85,7 +85,7 @@ def main(argv=None):
     artifact, suffix = wheel_target()
     if shutil.which("gh") is None:
         raise RuntimeError("Install GitHub CLI (gh) and run 'gh auth login' before using this tool.")
-    progress(f"Finding the latest successful push build for {args.repo}@{args.branch}")
+    progress(f"Finding the latest successful manual wheel build for {args.repo}@{args.branch}")
     run = latest_run(args.repo, args.branch)
     progress(f"Build: {run['url']}\nCommit: {run['headSha']}")
     require_artifact(args.repo, run["databaseId"], artifact)
