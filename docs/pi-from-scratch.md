@@ -27,8 +27,8 @@ In Imager:
 
 | Setting | What to enter |
 | --- | --- |
-| Hostname | `bcam-pi` |
-| Username | `camera` |
+| Hostname | `bcam-pi` (example) |
+| Username | `camera` (example) |
 | Password | A password you choose and keep for SSH login |
 | Wi-Fi | Your network name (SSID) and password, if using Wi-Fi |
 | Localisation | Your country, time zone, and keyboard layout |
@@ -70,7 +70,7 @@ ssh camera@192.168.1.42
 
 `192.168.1.42` is an example; replace it with your Pi's actual address. If you have a screen and keyboard attached to the Pi, `hostname -I` also prints its addresses.
 
-**On the Pi**, check the model, OS, and architecture:
+*Optional*: **On the Pi**, check the model, OS, and architecture:
 
 ```sh
 cat /proc/device-tree/model
