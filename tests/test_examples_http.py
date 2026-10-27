@@ -1,6 +1,7 @@
 """HTTP examples: real JPEG transport and cleanup, simulated camera SDK and encoder."""
 
 from contextlib import redirect_stdout
+import builtins
 from http.client import HTTPConnection
 from io import BytesIO
 import io
@@ -164,6 +165,34 @@ class HttpPreviewTests(unittest.TestCase):
         cv2.imshow.assert_not_called()
         cv2.waitKey.assert_not_called()
 
+    def test_image_dependencies_load_before_acquiring_or_starting_cameras(self):
+        camera = Mock(id="camera-1")
+        manager = Mock()
+        manager.get.return_value = camera
+        sdk = SimpleNamespace(CameraManager=SimpleNamespace(singleton=lambda: manager))
+        original_import = builtins.__import__
+        for example, ids in ((single, ["camera-1"]), (dual, ["camera-1", "camera-2"])):
+            with self.subTest(example=example.__name__):
+                imported = set()
+
+                def load(name, *args, **kwargs):
+                    if name in ("cv2", "numpy"):
+                        imported.add(name)
+                    return original_import(name, *args, **kwargs)
+
+                def capture(*_):
+                    self.assertEqual(imported, {"cv2", "numpy"})
+                    raise RuntimeError("capture reached")
+
+                camera.acquire.side_effect = capture
+                with patch.dict(sys.modules, {"libcamera": sdk, "cv2": Mock()}), \
+                        patch("builtins.__import__", side_effect=load), \
+                        patch.object(sys, "argv", [example.__name__, *ids]), \
+                        patch.object(example, "WebPreview"), \
+                        patch.object(dual, "Capture", side_effect=capture), \
+                        redirect_stdout(io.StringIO()), self.assertRaisesRegex(RuntimeError, "capture reached"):
+                    example.main()
+
     def test_single_camera_keeps_requeueing_and_stops_without_gui_calls(self):
         with tempfile.TemporaryFile() as storage:
             storage.write(bytes(range(16)))
@@ -199,7 +228,8 @@ class HttpPreviewTests(unittest.TestCase):
             selector.__enter__.return_value = selector
             selector.select.side_effect = [[object()], KeyboardInterrupt]
             preview = Mock()
-            with patch.dict(sys.modules, {"libcamera": sdk, "cv2": None}), \
+            cv2 = Mock()
+            with patch.dict(sys.modules, {"libcamera": sdk, "cv2": cv2}), \
                     patch.object(sys, "argv", ["single_board_http.py"]), \
                     patch.object(single, "WebPreview", return_value=preview), \
                     patch.object(single.selectors, "DefaultSelector", return_value=selector), \
@@ -212,6 +242,8 @@ class HttpPreviewTests(unittest.TestCase):
             camera.stop.assert_called_once()
             camera.release.assert_called_once()
             preview.close.assert_called_once()
+            cv2.imshow.assert_not_called()
+            cv2.waitKey.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -268,6 +268,10 @@ def main():
             parser.error(f"two cameras are required; found {len(camera_ids)}")
         args.camera_ids = camera_ids[:2]
     print(f"board-1 (reference): {args.camera_ids[0]}\nboard-2: {args.camera_ids[1]}", flush=True)
+    # Finish image imports before cameras can start producing frames.
+    import cv2
+    import numpy
+
     config = sync_config()
     with ExitStack() as stack:
         preview = WebPreview(args.bind, args.port, ("board-1", "board-2"))

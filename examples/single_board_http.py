@@ -134,6 +134,8 @@ def main():
         parser.error(f"Camera not found: {args.camera_id}")
     print(f"Board: {camera.id}", flush=True)
 
+    # Finish image imports before cameras can start producing frames.
+    import cv2
     import numpy as np
 
     with ExitStack() as stack:

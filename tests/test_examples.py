@@ -1,6 +1,7 @@
 """Preview examples: real mapped pixels and timing adapters, simulated SDK and GUI."""
 
 from contextlib import redirect_stdout
+import builtins
 import importlib.util
 import io
 from pathlib import Path
@@ -106,6 +107,26 @@ class PreviewTests(unittest.TestCase):
                     dual.main()
                 self.assertEqual(capture.call_args.args[0], selected)
                 self.assertIn(f"board-1 (reference): {selected[0]}", output.getvalue())
+
+    def test_dual_loads_image_dependencies_before_constructing_capture(self):
+        imported = set()
+        original_import = builtins.__import__
+
+        def load(name, *args, **kwargs):
+            if name in ("cv2", "numpy"):
+                imported.add(name)
+            return original_import(name, *args, **kwargs)
+
+        def capture(*_):
+            self.assertEqual(imported, {"cv2", "numpy"})
+            raise RuntimeError("capture reached")
+
+        with patch.dict(sys.modules, {"cv2": Mock()}), \
+                patch("builtins.__import__", side_effect=load), \
+                patch.object(sys, "argv", ["opencv_sync.py", "camera-1", "camera-2"]), \
+                patch.object(dual, "Capture", side_effect=capture), \
+                redirect_stdout(io.StringIO()), self.assertRaisesRegex(RuntimeError, "capture reached"):
+            dual.main()
 
     def test_missing_cameras_fail_before_importing_opencv_or_starting_capture(self):
         for example, camera_ids in ((single, []), (dual, []), (dual, ["camera-1"])):
