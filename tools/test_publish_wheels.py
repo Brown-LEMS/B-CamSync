@@ -83,15 +83,31 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(calls[1][:3], ("release", "create", "rolling"))
         self.assertIn("--draft=false", calls[-1])
 
-    def test_rolling_update_reuses_release_hides_replacement_and_cleans_old_assets(self):
-        existing = dict(id=7, assets=[dict(id=11, name="obsolete.whl")], immutable=False)
-        calls, _ = self.commands(existing)
-        self.assertEqual(calls[0][:3], ("release", "edit", "rolling"))
-        self.assertIn("--draft=true", calls[0])
+    def test_published_rolling_update_replaces_assets_without_unpublishing_or_republishing(self):
+        existing = dict(id=7, draft=False, assets=[dict(id=11, name="obsolete.whl")], immutable=False)
+        calls, notes = self.commands(existing)
+        self.assertEqual(calls[0][:3], ("release", "upload", "rolling"))
         self.assertFalse(any(call[:2] == ("release", "create") for call in calls))
-        self.assertIn("--clobber", calls[1])
-        self.assertIn("repos/owner/repo/releases/assets/11", calls[2])
+        self.assertFalse(any(arg.startswith("--draft") for call in calls for arg in call))
+        self.assertIn("--clobber", calls[0])
+        self.assertIn("repos/owner/repo/releases/assets/11", calls[1])
+        self.assertIn("repos/owner/repo/git/refs/tags/rolling", calls[2])
+        self.assertEqual(calls[-1][:3], ("release", "edit", "rolling"))
+        self.assertIn("--prerelease=true", calls[-1])
+        self.assertIn("Commit: abc", notes[-1])
+
+    def test_existing_initial_rolling_draft_is_published_after_upload(self):
+        calls, _ = self.commands(dict(id=7, draft=True, assets=[], immutable=False))
+        self.assertEqual(calls[0][:3], ("release", "upload", "rolling"))
+        self.assertFalse(any("--draft=true" in call for call in calls))
         self.assertIn("--draft=false", calls[-1])
+
+    def test_failed_in_place_upload_does_not_hide_release_or_change_tag_and_notes(self):
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.commands(dict(id=7, draft=False, assets=[], immutable=False), fail_upload=True)
+        self.assertEqual(len(self.last_calls), 1)
+        self.assertEqual(self.last_calls[0][:3], ("release", "upload", "rolling"))
+        self.assertIn("--clobber", self.last_calls[0])
 
     def test_versioned_release_uses_fixed_tag_and_never_clobbers_assets_or_moves_tags(self):
         calls, _ = self.commands(None, version="0.2.0")

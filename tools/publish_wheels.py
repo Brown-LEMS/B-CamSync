@@ -27,7 +27,7 @@ def github(*args):
 
 
 def existing_release(repo, tag):
-    # Authenticated listing includes drafts, including an interrupted rolling update.
+    # Authenticated listing also finds drafts left by an interrupted initial publication.
     pages = json.loads(github("api", "--paginate", "--slurp", f"repos/{repo}/releases?per_page=100"))
     return next((release for page in pages for release in page if release["tag_name"] == tag), None)
 
@@ -73,10 +73,7 @@ def publish(repo, commit, version, directory, run_url):
     with tempfile.TemporaryDirectory(prefix="bcamsync-release-") as temporary:
         body = Path(temporary) / "notes.md"
         body.write_text(notes)
-        if existing:
-            # Keep one Release ID, but hide it until its wheel set, tag, and metadata agree.
-            github("release", "edit", tag, "--repo", repo, "--draft=true")
-        else:
+        if not existing:
             github("release", "create", tag, "--repo", repo, "--target", commit,
                    "--title", title, "--notes-file", str(body), "--draft", "--latest=false")
         upload = ["release", "upload", tag, "--repo", repo, *map(str, wheels)]
@@ -91,9 +88,12 @@ def publish(repo, commit, version, directory, run_url):
         if not version:
             github("api", "--method", "PATCH", f"repos/{repo}/git/refs/tags/rolling",
                    "-f", f"sha={commit}", "-F", "force=true")
-        github("release", "edit", tag, "--repo", repo, "--target", commit,
-               "--title", title, "--notes-file", str(body), "--prerelease=false" if version else "--prerelease=true",
-               "--latest=true" if version else "--latest=false", "--draft=false")
+        edit = ["release", "edit", tag, "--repo", repo, "--target", commit,
+                "--title", title, "--notes-file", str(body), "--prerelease=false" if version else "--prerelease=true",
+                "--latest=true" if version else "--latest=false"]
+        if not existing or existing["draft"]:
+            edit.append("--draft=false")
+        github(*edit)
     print(f"Published https://github.com/{repo}/releases/tag/{tag}", flush=True)
 
 

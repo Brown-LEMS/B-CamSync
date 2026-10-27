@@ -52,8 +52,7 @@ def release_wheel(repo, tag, suffix):
     except HTTPError as error:
         error.close()
         if error.code == 404:
-            raise RuntimeError(f"Public release {repo}@{tag} is unavailable. It must be published first; "
-                               "rolling updates are briefly unavailable during publication.") from error
+            raise RuntimeError(f"Public release {repo}@{tag} is unavailable. It must be published first.") from error
         raise
     if release["draft"]:
         raise RuntimeError(f"Release {tag} has not been published.")
