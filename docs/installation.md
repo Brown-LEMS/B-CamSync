@@ -2,6 +2,8 @@
 
 [User guide](../README.md) · [Pi 5 first run](getting-started.md) · [Integration guide](integration.md)
 
+Starting with a blank microSD card? Follow the [fresh Pi walkthrough](pi-from-scratch.md), including Imager's SSH username/password setup and the B0267 camera-stack installer, before using this installation reference.
+
 This library includes a Rust synchronization core and Python bindings. The recommended installation exposes `SyncSession` for application-owned capture. Managed C++ acquisition is a separate optional package, `bcamsync-managed`. Your application supplies its camera SDK and image pipeline. The Pi 5 examples use Python libcamera for capture and OpenCV for local preview or HTTP JPEG encoding; the HTTP examples require no Pi display. Recording and SSH desktop preview applications are separate tools.
 
 Run commands from the root of the shared repository checkout. Use the same revision of this library and its examples. Prebuilt core wheels avoid compiling Rust and C++ on the Pi. Examples remain source files you can copy into your own project.

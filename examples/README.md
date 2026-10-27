@@ -1,5 +1,7 @@
 # Pi 5 Python examples
 
+For setup from a blank card, follow the [fresh Pi walkthrough](../docs/pi-from-scratch.md), starting with Raspberry Pi Imager and SSH username/password configuration.
+
 These four standalone files use application-owned libcamera capture with either local OpenCV windows or an HTTP web page. Each B0267 board supplies four views in one grayscale strip. All examples use a 5120×800, 8-bit sensor mode, a 1280×200 preview, 40 fps, 10 ms exposure, and analogue gain 1.0. Change those constants in the script when adapting the application.
 
 | Hardware | OpenCV windows | HTTP web preview | Synchronization |

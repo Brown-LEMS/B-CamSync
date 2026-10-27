@@ -2,6 +2,8 @@
 
 [User guide](../README.md) · [Installation](installation.md) · [Integration](integration.md) · [Examples](../examples/README.md)
 
+For a new Pi or your first SSH connection, start with [From a blank Raspberry Pi to a B0267 demo](pi-from-scratch.md). It covers Imager, SSH credentials, the camera stack, package installation, and browser preview step by step.
+
 Start with one board to check capture, then add a second board and synchronization. Four independent Python examples offer either OpenCV windows or HTTP web preview for each topology. All own their cameras and buffers. The dual-board examples attach this library's `SyncSession` using reusable `CameraTiming` adapters; this library decides the corrections.
 
 ## 1. Prepare the Pi

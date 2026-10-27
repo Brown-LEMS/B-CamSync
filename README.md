@@ -6,6 +6,8 @@ B-CamSync is a camera synchronization library with a Rust core and interfaces fo
 
 ## Start on a Pi 5
 
+New to Raspberry Pi? Follow [From a blank Raspberry Pi to a B0267 demo](docs/pi-from-scratch.md) for Raspberry Pi Imager setup with an SSH username and password, camera-stack installation, the B-CamSync package, and browser preview.
+
 The [`examples/`](examples/README.md) directory contains four independent Python applications for Arducam B0267 boards, covering one or two boards with OpenCV windows or HTTP web preview. They use libcamera for capture. Complete the [Python installation](docs/installation.md#python); the scripts enumerate cameras automatically when run without camera arguments.
 
 For a fresh Pi, use the [prebuilt core wheel](docs/installation.md#install-a-prebuilt-core-wheel-recommended) to avoid installing Rust and C++ build tools. Once the application venv is ready, run `.venv/bin/python tools/install_ci_wheel.py`. The tool anonymously downloads the rolling Release wheel for your Python version on ARM64. Use `--release vX.Y.Z` for a persistent version. The camera stack and OpenCV remain application dependencies.
@@ -49,6 +51,7 @@ Nodes may start independently and wait for configured peers. Calling `stop()` on
 
 ## Guides
 
+- [Fresh Pi setup](docs/pi-from-scratch.md): write Bookworm with Imager, connect over SSH, install the B0267 stack and B-CamSync, and run a demo.
 - [First run on Pi 5](docs/getting-started.md): single-board preview, dual-board synchronization, and status.
 - [Installation](docs/installation.md): synchronization core, optional managed capture, and C++ linking.
 - [Integration](docs/integration.md): API responsibilities, adapter hooks, and lifecycle.
