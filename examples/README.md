@@ -2,12 +2,13 @@
 
 For setup from a blank card, follow the [fresh Pi walkthrough](../docs/pi-from-scratch.md), starting with Raspberry Pi Imager and SSH username/password configuration.
 
-These four standalone files use application-owned libcamera capture with either local OpenCV windows or an HTTP web page. Each B0267 board supplies four views in one grayscale strip. All examples use a 5120×800, 8-bit sensor mode, a 1280×200 preview, 40 fps, 10 ms exposure, and analogue gain 1.0. Change those constants in the script when adapting the application.
+These six standalone files use application-owned libcamera capture with either local OpenCV windows or an HTTP web page. Each B0267 board supplies four views in one grayscale strip. All examples use a 5120×800, 8-bit sensor mode, a 1280×200 preview, 40 fps, 10 ms exposure, and analogue gain 1.0. Change those constants in the script when adapting the application.
 
 | Hardware | OpenCV windows | HTTP web preview | Synchronization |
 | --- | --- | --- | --- |
 | One Pi 5, one B0267 board | [`single_board.py`](single_board.py) | [`single_board_http.py`](single_board_http.py) | None: these scripts do not import this library |
 | One Pi 5, two B0267 boards | [`opencv_sync.py`](opencv_sync.py) | [`opencv_sync_http.py`](opencv_sync_http.py) | `SyncSession` with one reusable `CameraTiming` adapter per board |
+| Two Pi 5 nodes, two B0267 boards each | [`two_nodes_sync.py`](two_nodes_sync.py) | [`two_nodes_sync_http.py`](two_nodes_sync_http.py) | One four-board `SyncSession` group with network clock estimation; [setup below](#two-pi-5-nodes-with-two-boards-each) |
 
 Complete [installation](../docs/installation.md#python) with the compatible vendor camera stack. The OpenCV-window scripts below need a graphical session on the Pi; the HTTP alternatives later in this guide need no Pi display. Start the single-board window preview without arguments:
 
@@ -31,7 +32,7 @@ To inspect IDs or choose specific boards, use:
 .venv/bin/python examples/opencv_sync.py 'REFERENCE_CAMERA_ID' 'SECOND_CAMERA_ID'
 ```
 
-All four scripts support `--list`, which uses the camera SDK without opening cameras or importing OpenCV/NumPy. It can run in a plain SSH terminal. The dual-board scripts also require the installed synchronization core. Explicit IDs preserve their supplied order; use them when additional cameras are attached or the physical reference board must stay fixed.
+All six scripts support `--list`, which uses the camera SDK without opening cameras or importing OpenCV/NumPy. It can run in a plain SSH terminal. The synchronization scripts also require the installed synchronization core. Explicit IDs preserve their supplied order; use them when additional cameras are attached or the physical reference board must stay fixed. The two-node examples can run `--list` without network arguments or clock executables.
 
 The dual-board example constructs its single-node configuration in `sync_config()` and uses the first board as the phase reference. The application submits requests and reports sensor metadata through `CameraTiming`; this library chooses frame-period corrections automatically. The capture thread continues during synchronization shutdown so the adapter can confirm baseline restoration before cameras close.
 
@@ -52,3 +53,51 @@ Open `http://PI_IP:8000/` in a browser on a computer that can reach the Pi, repl
 The page refreshes latest JPEG snapshots at approximately 10 fps while acquisition remains configured at 40 fps. The dual-board page also shows synchronization state and phase metrics. HTTP requests read encoded snapshots and never access camera requests or control synchronization. Closing a tab leaves capture running; use Ctrl+C in the Pi terminal to stop the application. OpenCV is used only to encode JPEGs, with no `imshow` or `waitKey` calls; no Web framework or extra Python dependency is required.
 
 Recording, SSH desktop preview, and managed capture applications live in [`tools/`](../tools/README.md). Configuration templates for those tools and multi-node deployments live in [`docs/configs/`](../docs/configs). Synthetic acquisition fixtures and CMake installation checks live in `tests/`.
+
+## Two Pi 5 nodes with two boards each
+
+Run the same standalone script on each Pi, selecting its identity with `--node`. Both Pis must have the compatible B0267 camera stack, the same B-CamSync core build, and the same example revision. Neither script imports another example or requires the managed add-on or a JSON configuration file.
+
+Connect both Pis to an existing, mutually reachable IPv4 network; use wired Ethernet for this setup. Provide both nodes' addresses identically on both command lines. This example uses `network_mode="existing"`, so it does not change interface addresses, discover nodes through multicast, or require NetworkManager link setup. Use stable addresses for the duration of a run, such as DHCP reservations. Camera IDs are local to each Pi and can be identical on different Pis; only logical board IDs are shared across the group.
+
+Install chrony on both Pis:
+
+```sh
+sudo apt update
+sudo apt install chrony
+command -v chronyd
+command -v chronyc
+```
+
+`clock_mode="network"` uses the core's private chronyd processes to estimate clock mappings between the Pis. The core manages these processes and does not use them to adjust the system clock. You do not need to edit the system chrony configuration. Allow the nodes to communicate over TCP 58080 for synchronization control and UDP 58081 for private clock estimation, and allow your computer to reach each Pi's HTTP port 8000 for browser preview. Network clock quality must satisfy the configured bound before the group can become ready; working SSH or visible pictures alone does not establish clock or phase quality.
+
+The following addresses are examples; replace them with your actual addresses. Start in either order, in a terminal on each Pi:
+
+```sh
+# On Pi A:
+.venv/bin/python examples/two_nodes_sync_http.py \
+  --node node-a --address-a 192.168.0.105 --address-b 192.168.0.106
+
+# On Pi B:
+.venv/bin/python examples/two_nodes_sync_http.py \
+  --node node-b --address-a 192.168.0.105 --address-b 192.168.0.106
+```
+
+Each process enumerates local cameras and selects the first two sorted IDs. It prints their mapping to `board-a1`/`board-a2` on Pi A and `board-b1`/`board-b2` on Pi B. All four boards share the reference `board-a1`: the first selected board on Pi A. The first board on Pi B is another follower, rather than a second reference.
+
+To select local devices explicitly, append two IDs from that Pi's `--list` output, preserving quotes around each ID:
+
+```sh
+.venv/bin/python examples/two_nodes_sync_http.py --list
+.venv/bin/python examples/two_nodes_sync_http.py \
+  --node node-a --address-a 192.168.0.105 --address-b 192.168.0.106 \
+  'FIRST_LOCAL_CAMERA_ID' 'SECOND_LOCAL_CAMERA_ID'
+```
+
+Open `http://192.168.0.105:8000/` and `http://192.168.0.106:8000/` on your computer. Each page shows only that Pi's two strips, with a compact node/group status above the images and collapsed four-board timing details below. Images stay local to their capture application; synchronization traffic carries timing and controls, rather than video. Both Pis may use HTTP port 8000 because they have different IP addresses. `--bind` and `--port` select the local HTTP listener as in the single-Pi examples. Refresh the whole page when switching between examples in an existing browser tab.
+
+For OpenCV windows on each Pi's graphical desktop, replace `two_nodes_sync_http.py` with `two_nodes_sync.py` and keep the same network and optional camera arguments. No remote image relay or combined four-board browser page is provided by these minimal examples.
+
+Preview starts while the group waits for its peer and estimates clocks. The terminal reports waiting nodes, clock validity/uncertainty, global readiness, and phase/p95/max for the four logical boards. Wait for `ready=True`; default phase acceptance targets remain p95 ≤ 0.5 ms and max ≤ 1 ms across two settled windows. The default clock mapping uncertainty limit is 0.1 ms. These are acceptance thresholds, not measured results from a two-Pi experiment. The example checks use simulated devices; two physical Pis and four B0267 boards still require a joint device run and separate optical validation.
+
+Press Ctrl+C in an HTTP terminal, or q/Esc in an OpenCV window, to stop that local application. Stopping either node ends synchronization throughout the joined group and restores baseline frame periods. The other node continues its local preview, reports the group stop or fault, and marks readiness false. A disconnected peer also ends synchronization after communication failure detection. Close both applications and start both explicitly for a new round; the examples do not automatically restart synchronization. Closing a browser tab does not stop capture.
