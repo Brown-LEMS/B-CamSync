@@ -23,6 +23,11 @@ def sync_config(address_a, address_b, boards_a=2, boards_b=2):
     config.fps = 40
     config.network_mode = "existing"
     config.clock_mode = "network"
+    # Demo clock budget: 200 us. Keep the default phase readiness thresholds.
+    config.clock_max_offset_ms = 0.2
+    policy = config.phase_policy
+    policy.max_mapping_span_ns = 200_000
+    config.phase_policy = policy
     nodes, units = [], []
     for node_id, address, prefix, count in (("node-a", address_a, "a", boards_a),
                                             ("node-b", address_b, "b", boards_b)):

@@ -37,6 +37,16 @@ class TwoNodeExamplesTests(unittest.TestCase):
                           ("board-b1", "node-b"), ("board-b2", "node-b")])
         self.assertEqual(config.clock_port, 58081)
 
+    def test_demo_clock_budget_is_200_us_without_changing_phase_acceptance(self):
+        for example in EXAMPLES:
+            with self.subTest(example=example.__name__):
+                config = example.sync_config("192.168.0.105", "192.168.0.106", 1, 1)
+                self.assertEqual(config.clock_max_offset_ms, 0.2)
+                self.assertEqual(config.phase_policy.max_mapping_span_ns, 200_000)
+                self.assertEqual(config.phase_policy.ready_p95_ms, 0.5)
+                self.assertEqual(config.phase_policy.ready_max_ms, 1.0)
+                self.assertEqual(config.phase_policy.ready_windows, 2)
+
     def test_detected_counts_define_identical_membership_in_both_scripts(self):
         for boards_a, boards_b in ((1, 1), (1, 2), (2, 1), (2, 2)):
             with self.subTest(boards_a=boards_a, boards_b=boards_b):
