@@ -65,18 +65,19 @@ def main():
                     libcamera.controls.AnalogueGainMode: 1,
                     libcamera.controls.ExposureTime: 10000,
                     libcamera.controls.AnalogueGain: 1.0}
-        if camera.start(controls):
-            raise RuntimeError("Cannot start camera")
-        stack.callback(camera.stop)
         stack.callback(cv2.destroyAllWindows)
         requests = []
         for buffer in allocator.buffers(stream.stream):
             request = camera.create_request()
             if request.add_buffer(stream.stream, buffer):
                 raise RuntimeError("Cannot attach camera buffer")
+            requests.append(request)
+        if camera.start(controls):
+            raise RuntimeError("Cannot start camera")
+        stack.callback(camera.stop)
+        for request in requests:
             if camera.queue_request(request):
                 raise RuntimeError("Cannot queue camera request")
-            requests.append(request)
 
         print("Previewing one board; press q or Esc in the window, or Ctrl+C, to exit.")
         with selectors.DefaultSelector() as selector:

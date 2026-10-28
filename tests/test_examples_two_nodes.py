@@ -158,7 +158,8 @@ class TwoNodeExamplesTests(unittest.TestCase):
                                          [f"board-{prefix}1", f"board-{prefix}2"])
                         self.assertEqual(manager.get.call_count, 2)
                     for camera in cameras:
-                        camera.stop.assert_called_once()
+                        camera.start.assert_not_called()
+                        camera.stop.assert_not_called()
                         camera.release.assert_called_once()
 
     def test_main_selects_local_ids_loads_images_first_and_preserves_local_order(self):

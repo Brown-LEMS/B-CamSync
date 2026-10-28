@@ -172,17 +172,18 @@ def main():
                     libcamera.controls.AnalogueGainMode: 1,
                     libcamera.controls.ExposureTime: 10000,
                     libcamera.controls.AnalogueGain: 1.0}
-        if camera.start(controls):
-            raise RuntimeError("Cannot start camera")
-        stack.callback(camera.stop)
         requests = []
         for buffer in allocator.buffers(stream.stream):
             request = camera.create_request()
             if request.add_buffer(stream.stream, buffer):
                 raise RuntimeError("Cannot attach camera buffer")
+            requests.append(request)
+        if camera.start(controls):
+            raise RuntimeError("Cannot start camera")
+        stack.callback(camera.stop)
+        for request in requests:
             if camera.queue_request(request):
                 raise RuntimeError("Cannot queue camera request")
-            requests.append(request)
 
         preview.start()
         print("Capturing one board; use Ctrl+C to exit.", flush=True)

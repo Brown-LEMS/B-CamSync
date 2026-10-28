@@ -155,6 +155,7 @@ class PreviewTests(unittest.TestCase):
         capture.requests = {0: (self.camera, self.stream, timing, self.request)}
         capture.submitted, capture.images = {}, {}
         capture.error, capture.done, capture.lock = None, threading.Event(), threading.Lock()
+        capture.ready, capture.cameras = threading.Event(), []
         capture.queue(self.request)
         self.camera.queue_request.side_effect = lambda _: capture.done.set() or 0
         with patch.object(dual.selectors, "DefaultSelector", return_value=self.selector):

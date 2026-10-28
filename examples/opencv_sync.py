@@ -44,6 +44,9 @@ class Capture:
         self.done = threading.Event()
         self.error = None
         self.thread = None
+        self.ready = threading.Event()
+        self.cameras = []
+        self.stops = ExitStack()
         for unit, camera_id in zip(config.units, camera_ids):
             camera = self.manager.get(camera_id)
             if camera is None:
@@ -80,15 +83,14 @@ class Capture:
                         libcamera.controls.AnalogueGainMode: 1,
                         libcamera.controls.ExposureTime: 10000,
                         libcamera.controls.AnalogueGain: 1.0}
-            if camera.start(controls):
-                raise RuntimeError(f"Cannot start camera: {camera.id}")
-            stack.callback(camera.stop)
+            requests = []
+            self.cameras.append((camera, controls, requests))
             for buffer in allocator.buffers(stream.stream):
                 request = camera.create_request(len(self.requests))
                 if request.add_buffer(stream.stream, buffer):
                     raise RuntimeError("Cannot attach camera buffer")
                 self.requests[request.cookie] = camera, stream, timing, request
-                self.queue(request)
+                requests.append(request)
 
     def queue(self, request):
         camera, _, timing, _ = self.requests[request.cookie]
@@ -102,19 +104,32 @@ class Capture:
     def start(self):
         self.thread = threading.Thread(target=self.run, name="capture")
         self.thread.start()
+        if not self.ready.wait(10):
+            with self.lock:
+                missing = sorted(set(self.units) - self.images.keys())
+            raise RuntimeError(f"Timed out waiting for first camera frames: {missing}")
+        if self.error is not None:
+            raise self.error
 
     def run(self):
-        import numpy as np
         try:
+            import numpy as np
             with selectors.DefaultSelector() as selector:
                 selector.register(self.manager.event_fd, selectors.EVENT_READ)
+                # All cameras and requests are prepared before any camera starts.
+                for camera, controls, requests in self.cameras:
+                    if camera.start(controls):
+                        raise RuntimeError(f"Cannot start camera: {camera.id}")
+                    self.stops.callback(camera.stop)
+                    for request in requests:
+                        self.queue(request)
                 while not self.done.is_set():
                     if not selector.select(0.05):
                         continue
                     for request in self.manager.get_ready_requests():
+                        camera, stream, timing, _ = self.requests[request.cookie]
                         if request.status != self.sdk.Request.Status.Complete:
-                            raise RuntimeError("Camera request was cancelled")
-                        _, stream, timing, _ = self.requests[request.cookie]
+                            raise RuntimeError(f"Camera request was cancelled: {timing.unit_id} ({camera.id})")
                         buffer = request.buffers[stream.stream]
                         if buffer.metadata.status == self.sdk.FrameMetadata.Status.Success:
                             metadata = request.metadata
@@ -134,15 +149,19 @@ class Capture:
                                 self.images[timing.unit_id] = image
                         request.reuse()
                         self.queue(request)
+                        if len(self.images) == len(self.units):
+                            self.ready.set()
         except Exception as error:
             self.error = error
             for timing in self.units.values():
                 timing.error = str(error)
+            self.ready.set()
 
     def close(self):
         self.done.set()
         if self.thread is not None:
             self.thread.join()
+        self.stops.close()
 
 
 def main():
