@@ -8,7 +8,7 @@ These six standalone files use application-owned libcamera capture with either l
 | --- | --- | --- | --- |
 | One Pi 5, one B0267 board | [`single_board.py`](single_board.py) | [`single_board_http.py`](single_board_http.py) | None: these scripts do not import this library |
 | One Pi 5, two B0267 boards | [`opencv_sync.py`](opencv_sync.py) | [`opencv_sync_http.py`](opencv_sync_http.py) | `SyncSession` with one reusable `CameraTiming` adapter per board |
-| Two Pi 5 nodes, two B0267 boards each | [`two_nodes_sync.py`](two_nodes_sync.py) | [`two_nodes_sync_http.py`](two_nodes_sync_http.py) | One four-board `SyncSession` group with network clock estimation; [setup below](#two-pi-5-nodes-with-two-boards-each) |
+| Two Pi 5 nodes, one or two B0267 boards each | [`two_nodes_sync.py`](two_nodes_sync.py) | [`two_nodes_sync_http.py`](two_nodes_sync_http.py) | One group of detected boards with network clock estimation; [setup below](#two-pi-5-nodes-with-one-or-two-boards-each) |
 
 Complete [installation](../docs/installation.md#python) with the compatible vendor camera stack. The OpenCV-window scripts below need a graphical session on the Pi; the HTTP alternatives later in this guide need no Pi display. Start the single-board window preview without arguments:
 
@@ -54,9 +54,11 @@ The page refreshes latest JPEG snapshots at approximately 10 fps while acquisiti
 
 Recording, SSH desktop preview, and managed capture applications live in [`tools/`](../tools/README.md). Configuration templates for those tools and multi-node deployments live in [`docs/configs/`](../docs/configs). Synthetic acquisition fixtures and CMake installation checks live in `tests/`.
 
-## Two Pi 5 nodes with two boards each
+## Two Pi 5 nodes with one or two boards each
 
 Run the same standalone script on each Pi, selecting its identity with `--node`. Both Pis must have the compatible B0267 camera stack, the same B-CamSync core build, and the same example revision. Neither script imports another example or requires the managed add-on or a JSON configuration file.
+
+Board counts are automatic. Each Pi selects up to two local camera IDs and exchanges its detected count with the other Pi before opening cameras. Both then build the same synchronization group from those counts: 1+1, 1+2, 2+1, or 2+2 boards. Missing second boards have no placeholder image or synchronization unit, and there is no board-count argument. Each node still needs at least one camera. The startup exchange briefly uses TCP 58080 on node-a and closes before the core starts; no additional port configuration is needed. Membership is fixed for that run; restart both applications after changing the connected boards.
 
 Connect both Pis to an existing, mutually reachable IPv4 network; use wired Ethernet for this setup. Provide both nodes' addresses identically on both command lines. This example uses `network_mode="existing"`, so it does not change interface addresses, discover nodes through multicast, or require NetworkManager link setup. Use stable addresses for the duration of a run, such as DHCP reservations. Camera IDs are local to each Pi and can be identical on different Pis; only logical board IDs are shared across the group.
 
@@ -83,9 +85,9 @@ The following addresses are examples; replace them with your actual addresses. S
   --node node-b --address-a 192.168.0.105 --address-b 192.168.0.106
 ```
 
-Each process enumerates local cameras and selects the first two sorted IDs. It prints their mapping to `board-a1`/`board-a2` on Pi A and `board-b1`/`board-b2` on Pi B. All four boards share the reference `board-a1`: the first selected board on Pi A. The first board on Pi B is another follower, rather than a second reference.
+Each process enumerates local cameras and selects up to the first two sorted IDs. It prints their mapping to `board-a1` and, if present, `board-a2` on Pi A; Pi B uses `board-b1` and, if present, `board-b2`. All detected boards share the reference `board-a1`: the first selected board on Pi A. The first board on Pi B is another follower, rather than a second reference. If each Pi has just one board, the commands above automatically create a two-board group.
 
-To select local devices explicitly, append two IDs from that Pi's `--list` output, preserving quotes around each ID:
+To select local devices explicitly, append one or two IDs from that Pi's `--list` output, preserving quotes around each ID:
 
 ```sh
 .venv/bin/python examples/two_nodes_sync_http.py --list
@@ -94,10 +96,10 @@ To select local devices explicitly, append two IDs from that Pi's `--list` outpu
   'FIRST_LOCAL_CAMERA_ID' 'SECOND_LOCAL_CAMERA_ID'
 ```
 
-Open `http://192.168.0.105:8000/` and `http://192.168.0.106:8000/` on your computer. Each page shows only that Pi's two strips, with a compact node/group status above the images and collapsed four-board timing details below. Images stay local to their capture application; synchronization traffic carries timing and controls, rather than video. Both Pis may use HTTP port 8000 because they have different IP addresses. `--bind` and `--port` select the local HTTP listener as in the single-Pi examples. Refresh the whole page when switching between examples in an existing browser tab.
+Open `http://192.168.0.105:8000/` and `http://192.168.0.106:8000/` on your computer. Each page shows only that Pi's detected strips, with a compact node/group status above the images and collapsed group timing details below. Images stay local to their capture application; synchronization traffic carries timing and controls, rather than video. Both Pis may use HTTP port 8000 because they have different IP addresses. `--bind` and `--port` select the local HTTP listener as in the single-Pi examples. Refresh the whole page when switching between examples in an existing browser tab.
 
 For OpenCV windows on each Pi's graphical desktop, replace `two_nodes_sync_http.py` with `two_nodes_sync.py` and keep the same network and optional camera arguments. No remote image relay or combined four-board browser page is provided by these minimal examples.
 
-Preview starts while the group waits for its peer and estimates clocks. The terminal reports waiting nodes, clock validity/uncertainty, global readiness, and phase/p95/max for the four logical boards. Wait for `ready=True`; default phase acceptance targets remain p95 ≤ 0.5 ms and max ≤ 1 ms across two settled windows. The default clock mapping uncertainty limit is 0.1 ms. These are acceptance thresholds, not measured results from a two-Pi experiment. The example checks use simulated devices; two physical Pis and four B0267 boards still require a joint device run and separate optical validation.
+Before capture, each script prints its detected local count and waits for the other node's inventory; Ctrl+C cancels that wait. Once counts agree, preview starts while synchronization joins the group and estimates clocks. The terminal reports waiting nodes, clock validity/uncertainty, global readiness, and phase/p95/max for the detected logical boards. Wait for `ready=True`; default phase acceptance targets remain p95 ≤ 0.5 ms and max ≤ 1 ms across two settled windows. The default clock mapping uncertainty limit is 0.1 ms. These are acceptance thresholds, not measured results from a two-Pi experiment. The example checks use simulated devices; two physical Pis and their connected B0267 boards still require a joint device run and separate optical validation.
 
 Press Ctrl+C in an HTTP terminal, or q/Esc in an OpenCV window, to stop that local application. Stopping either node ends synchronization throughout the joined group and restores baseline frame periods. The other node continues its local preview, reports the group stop or fault, and marks readiness false. A disconnected peer also ends synchronization after communication failure detection. Close both applications and start both explicitly for a new round; the examples do not automatically restart synchronization. Closing a browser tab does not stop capture.

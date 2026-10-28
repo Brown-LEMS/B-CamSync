@@ -1,10 +1,12 @@
-"""Synchronize four B0267 boards across two Pi 5 nodes; preview only local cameras in OpenCV windows."""
+"""Synchronize B0267 boards across two Pi 5 nodes; preview only local cameras in OpenCV windows."""
 
 import argparse
 from contextlib import ExitStack
+import json
 import mmap
 import selectors
 import shutil
+import socket
 import threading
 import time
 
@@ -12,19 +14,22 @@ from bcamsync import NodeConfig, SyncConfig, SyncSession, SyncUnitConfig
 from bcamsync.adapters.libcamera import CameraTiming
 
 
-def sync_config(address_a, address_b):
-    """One shared four-board topology; only each node's camera IDs stay local."""
+def sync_config(address_a, address_b, boards_a=2, boards_b=2):
+    """Use both nodes' detected counts; camera IDs stay local to each Pi."""
+    if boards_a not in (1, 2) or boards_b not in (1, 2):
+        raise ValueError("Each node must have one or two boards")
     config = SyncConfig()
-    config.group_id = "pi5-four-boards"
+    config.group_id = "pi5-two-nodes"
     config.fps = 40
     config.network_mode = "existing"
     config.clock_mode = "network"
     nodes, units = [], []
-    for node_id, address, prefix in (("node-a", address_a, "a"), ("node-b", address_b, "b")):
+    for node_id, address, prefix, count in (("node-a", address_a, "a", boards_a),
+                                            ("node-b", address_b, "b", boards_b)):
         node = NodeConfig()
         node.id, node.address = node_id, address
         nodes.append(node)
-        for index in (1, 2):
+        for index in range(1, count + 1):
             unit = SyncUnitConfig()
             unit.id, unit.node_id = f"board-{prefix}{index}", node_id
             units.append(unit)
@@ -32,6 +37,60 @@ def sync_config(address_a, address_b):
     config.reference_unit = "board-a1"
     config.validate()
     return config
+
+
+def discover_boards(local_node, address_a, address_b, local_count):
+    """Exchange detected counts before SyncSession fixes the group's membership.
+
+    Node A briefly uses its synchronization TCP port for this startup exchange.
+    Both scripts close that connection before starting the synchronization core.
+    """
+    if local_node == "node-a":
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server.bind((address_a, 58080))
+            server.listen(1)
+            server.settimeout(1)
+            while True:
+                print("Waiting for node-b to report its local boards...", flush=True)
+                try:
+                    connection, _ = server.accept()
+                    break
+                except TimeoutError:
+                    continue
+            with connection:
+                connection.settimeout(5)
+                with connection.makefile("rwb") as stream:
+                    peer = json.loads(stream.readline(1024))
+                    if peer.get("node") != "node-b" or peer.get("boards") not in (1, 2):
+                        raise ValueError("Invalid node-b board inventory")
+                    counts = {"node-a": local_count, "node-b": peer["boards"]}
+                    stream.write((json.dumps(counts) + "\n").encode())
+                    stream.flush()
+                    if stream.readline(1024) != b"ready\n":
+                        raise ValueError("Node-b did not confirm the board inventory")
+    else:
+        while True:
+            print("Waiting for node-a to exchange local board counts...", flush=True)
+            try:
+                connection = socket.create_connection((address_a, 58080), timeout=1,
+                                                      source_address=(address_b, 0))
+                break
+            except (ConnectionRefusedError, TimeoutError):
+                time.sleep(1)
+        with connection:
+            connection.settimeout(5)
+            with connection.makefile("rwb") as stream:
+                stream.write((json.dumps({"node": "node-b", "boards": local_count}) + "\n").encode())
+                stream.flush()
+                counts = json.loads(stream.readline(1024))
+                if counts.get("node-a") not in (1, 2) or counts.get("node-b") != local_count:
+                    raise ValueError("Invalid shared board inventory")
+                stream.write(b"ready\n")
+                stream.flush()
+    print(f"Detected group: node-a={counts['node-a']} board(s), "
+          f"node-b={counts['node-b']} board(s)", flush=True)
+    return counts["node-a"], counts["node-b"]
 
 
 class Capture:
@@ -162,7 +221,7 @@ def report(status, clock, local_node):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("camera_ids", nargs="*", metavar="CAMERA_ID",
-                        help="two local board IDs; defaults to the first two sorted camera IDs")
+                        help="one or two local IDs; defaults to up to two sorted camera IDs")
     parser.add_argument("--list", action="store_true", help="list local camera IDs without network setup")
     parser.add_argument("--node", choices=("node-a", "node-b"), help="identity of this Pi")
     parser.add_argument("--address-a", help="node-a's existing IPv4 address (same on both Pis)")
@@ -175,10 +234,10 @@ def main():
         return
     if not all((args.node, args.address_a, args.address_b)):
         parser.error("--node, --address-a and --address-b are required unless --list is used")
-    if len(args.camera_ids) not in (0, 2):
-        parser.error("provide either no camera IDs or two distinct local camera IDs")
-    if len(args.camera_ids) == 2 and args.camera_ids[0] == args.camera_ids[1]:
-        parser.error("the two local boards must have distinct camera IDs")
+    if len(args.camera_ids) > 2:
+        parser.error("provide at most two local camera IDs")
+    if len(set(args.camera_ids)) != len(args.camera_ids):
+        parser.error("local camera IDs must be distinct")
     try:
         config = sync_config(args.address_a, args.address_b)
     except ValueError as error:
@@ -188,9 +247,15 @@ def main():
     if not args.camera_ids:
         import libcamera
         camera_ids = sorted(camera.id for camera in libcamera.CameraManager.singleton().cameras)
-        if len(camera_ids) < 2:
-            parser.error(f"two local cameras are required; found {len(camera_ids)}")
+        if not camera_ids:
+            parser.error("no local cameras found")
         args.camera_ids = camera_ids[:2]
+    print(f"Detected {len(args.camera_ids)} local board(s).", flush=True)
+    try:
+        boards_a, boards_b = discover_boards(args.node, args.address_a, args.address_b, len(args.camera_ids))
+    except KeyboardInterrupt:
+        return
+    config = sync_config(args.address_a, args.address_b, boards_a, boards_b)
     local_units = [unit for unit in config.units if unit.node_id == args.node]
     print(f"Local node: {args.node}; group reference: {config.reference_unit} (node-a)", flush=True)
     for unit, camera_id in zip(local_units, args.camera_ids):
@@ -207,7 +272,7 @@ def main():
         session = SyncSession(config, args.node, capture.units)
         try:
             session.start()
-            print("Previewing both boards; press q or Esc in a window, or Ctrl+C, to exit.")
+            print("Previewing local boards; press q or Esc in a window, or Ctrl+C, to exit.")
             next_report = 0
             while True:
                 if capture.error is not None:
