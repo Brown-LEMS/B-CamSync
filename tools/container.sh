@@ -16,7 +16,10 @@ if [[ $# == 0 ]]; then
         -e CARGO_HOME=/work/build/cargo-home \
         -w /src "$image" bash
 fi
+# Keep HTTP test servers on these loopback addresses from waiting on reverse DNS.
 exec docker run --rm --platform "$platform" \
+    --add-host bcamsync-test-node-a:127.0.0.2 \
+    --add-host bcamsync-test-node-b:127.0.0.3 \
     --mount "type=bind,source=$source_root,target=/src,readonly" \
     --mount "type=bind,source=$source_root/build-linux,target=/work/build" \
     -e BCAMSYNC_TOOLCHAIN="${BCAMSYNC_TOOLCHAIN:-gcc}" \
