@@ -70,18 +70,18 @@ class ImportStartupTests(unittest.TestCase):
         cameras = ("camera-1", "camera-2") if synchronized else ("camera-1",)
 
         def load(module, globals=None, locals=None, fromlist=(), level=0):
-            if (module in ("numpy", "cv2") and globals is not None
-                    and globals.get("__name__") == name and module not in imported):
-                imported.add(module)
-                in_capture_thread = threading.current_thread() is not app
-                if in_capture_thread:
-                    # Hold a cold worker import across the deadline even if the scheduler
-                    # starts the worker before Capture.start enters its first-frame wait.
-                    self.assertTrue(deadline.waiting.wait(2), "Camera never began first-frame waiting")
-                # Model a first import taking longer than the ten-second startup budget.
-                deadline.advance(11)
-                if in_capture_thread:
-                    self.assertTrue(deadline.expired.wait(2), "First-frame wait did not expire")
+            if module in ("numpy", "cv2") and globals is not None and globals.get("__name__") == name:
+                if module not in imported:
+                    imported.add(module)
+                    in_capture_thread = threading.current_thread() is not app
+                    if in_capture_thread:
+                        # Hold a cold worker import across the deadline even if the scheduler
+                        # starts the worker before Capture.start enters its first-frame wait.
+                        self.assertTrue(deadline.waiting.wait(2), "Camera never began first-frame waiting")
+                    # Model a first import taking longer than the ten-second startup budget.
+                    deadline.advance(11)
+                    if in_capture_thread:
+                        self.assertTrue(deadline.expired.wait(2), "First-frame wait did not expire")
                 with sdk.changed:
                     sdk.record("import", module)
             return original_import(module, globals, locals, fromlist, level)
@@ -151,7 +151,7 @@ class ImportStartupTests(unittest.TestCase):
                 stack.enter_context(patch.object(example, "Capture", capture))
             if name.endswith("_http"):
                 preview = SimpleNamespace(start=lambda: None, close=lambda: None, publish=publish)
-                stack.enter_context(patch.object(example, "WebPreview", lambda *_: preview))
+                stack.enter_context(patch.object(example, "WebPreview", lambda *_, **_options: preview))
             stack.enter_context(patch.object(builtins, "__import__", load))
 
             app.start()
@@ -166,9 +166,6 @@ class ImportStartupTests(unittest.TestCase):
                 if failures:
                     raise failures[0]
                 self.assertTrue(requested and not deadline.expired.is_set(), list(sdk.events))
-                startup = [(event, detail) for _, event, detail, *_ in sdk.events
-                           if event in ("import", "acquire")]
-                self.assertEqual(set(startup[:2]), {("import", "cv2"), ("import", "numpy")}, startup)
                 for camera in cameras:
                     sdk.complete(camera)
                 self.assertTrue(shown.wait(2), "No frames reached the preview")
@@ -180,4 +177,8 @@ class ImportStartupTests(unittest.TestCase):
             if failures:
                 raise failures[0]
             self.assertFalse(app.is_alive(), "Preview did not shut down")
+            startup = [(event, detail) for _, event, detail, *_ in sdk.events
+                       if event in ("import", "acquire")]
+            self.assertEqual(set(startup[:2]), {("import", "cv2"), ("import", "numpy")}, startup)
+            self.assertTrue(all(event == "acquire" for event, _ in startup[2:]), startup)
             self.assertTrue(all(camera.state == "available" for camera in sdk.cameras.values()))

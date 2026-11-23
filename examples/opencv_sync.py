@@ -101,8 +101,8 @@ class Capture:
         if camera.queue_request(request):
             raise RuntimeError(f"Cannot queue camera request: {camera.id}")
 
-    def start(self):
-        self.thread = threading.Thread(target=self.run, name="capture")
+    def start(self, np):
+        self.thread = threading.Thread(target=self.run, args=(np,), name="capture")
         self.thread.start()
         if not self.ready.wait(10):
             with self.lock:
@@ -111,9 +111,8 @@ class Capture:
         if self.error is not None:
             raise self.error
 
-    def run(self):
+    def run(self, np):
         try:
-            import numpy as np
             with selectors.DefaultSelector() as selector:
                 selector.register(self.manager.event_fd, selectors.EVENT_READ)
                 # All cameras and requests are prepared before any camera starts.
@@ -187,14 +186,14 @@ def main():
     print(f"board-1 (reference): {args.camera_ids[0]}\nboard-2: {args.camera_ids[1]}", flush=True)
     # Finish image imports before cameras can start producing frames.
     import cv2
-    import numpy
+    import numpy as np
 
     config = sync_config()
     with ExitStack() as stack:
         capture = Capture(args.camera_ids, config, stack)
         stack.callback(capture.close)
         stack.callback(cv2.destroyAllWindows)
-        capture.start()
+        capture.start(np)
         session = SyncSession(config, config.nodes[0].id, capture.units)
         try:
             session.start()

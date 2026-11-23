@@ -93,7 +93,7 @@ class StartupTests(unittest.TestCase):
             with self.subTest(example=name), ExitStack() as stack:
                 capture, cameras, requests, manager, events = self.fixture(load_example(name), stack)
                 self.assertEqual(events, [("configure", 1), ("request", 1), ("configure", 2), ("request", 2)])
-                capture.start()
+                capture.start(np)
                 self.assertIsNone(capture.error)
                 self.assertEqual(set(capture.images), {"board-1", "board-2"})
                 self.assertTrue(capture.ready.is_set())
@@ -106,7 +106,7 @@ class StartupTests(unittest.TestCase):
                 capture, cameras, _, _, _ = self.fixture(load_example(name), stack)
                 cameras[1].start.side_effect = RuntimeError("second camera failed")
                 with self.assertRaisesRegex(RuntimeError, "second camera failed"):
-                    capture.start()
+                    capture.start(np)
                 stack.close()
                 cameras[0].stop.assert_called_once()
                 cameras[1].stop.assert_not_called()
@@ -119,7 +119,7 @@ class StartupTests(unittest.TestCase):
                 capture, _, requests, _, _ = self.fixture(load_example(name), stack)
                 requests[0].status = "cancelled"
                 with self.assertRaisesRegex(RuntimeError, r"cancelled: board-1 \(camera-1\)"):
-                    capture.start()
+                    capture.start(np)
                 self.assertFalse(capture.images)
 
     def test_first_frame_from_one_board_does_not_finish_startup(self):
@@ -128,7 +128,7 @@ class StartupTests(unittest.TestCase):
                 capture, _, requests, manager, _ = self.fixture(load_example(name), stack)
                 second_frame = threading.Event()
                 manager.get_ready_requests.side_effect = lambda: requests if second_frame.is_set() else requests[:1]
-                capture.thread = threading.Thread(target=capture.run)
+                capture.thread = threading.Thread(target=capture.run, args=(np,))
                 capture.thread.start()
                 self.assertFalse(capture.ready.wait(0.03))
                 second_frame.set()

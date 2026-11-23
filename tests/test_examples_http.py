@@ -45,7 +45,8 @@ class HttpPreviewTests(unittest.TestCase):
     def test_real_http_page_jpeg_status_and_browser_reconnect(self):
         for example, boards in ((single, ("board-1",)), (dual, ("board-1", "board-2"))):
             with self.subTest(example=example.__name__):
-                preview = example.WebPreview("127.0.0.1", 0, boards)
+                cv2 = encoder()
+                preview = example.WebPreview("127.0.0.1", 0, boards, cv2=cv2)
                 try:
                     with redirect_stdout(io.StringIO()):
                         preview.start()
@@ -61,8 +62,7 @@ class HttpPreviewTests(unittest.TestCase):
                               for index, board in enumerate(boards)}
                     status = {"state": "capturing"} if example is single else {
                         "state": "tracking", "ready": True, "fault": "", "units": []}
-                    cv2 = encoder()
-                    with patch.dict(sys.modules, {"cv2": cv2}):
+                    with patch.dict(sys.modules, {"cv2": None}):
                         preview.publish(images, status)
                         for index, board in enumerate(boards):
                             code, headers, jpeg = request(preview, f"/{board}.jpg?refresh=1")
@@ -86,12 +86,11 @@ class HttpPreviewTests(unittest.TestCase):
     def test_jpeg_failure_is_reported_and_unstarted_server_can_close(self):
         for example in (single, dual):
             with self.subTest(example=example.__name__):
-                preview = example.WebPreview("127.0.0.1", 0, ("board-1",))
+                cv2 = Mock()
+                cv2.imencode.return_value = False, None
+                preview = example.WebPreview("127.0.0.1", 0, ("board-1",), cv2=cv2)
                 try:
-                    cv2 = Mock()
-                    cv2.imencode.return_value = False, None
-                    with patch.dict(sys.modules, {"cv2": cv2}), \
-                            self.assertRaisesRegex(RuntimeError, "JPEG encoding failed"):
+                    with self.assertRaisesRegex(RuntimeError, "JPEG encoding failed"):
                         preview.publish({"board-1": np.zeros((2, 2), dtype=np.uint8)}, {})
                 finally:
                     preview.close()
@@ -128,12 +127,12 @@ class HttpPreviewTests(unittest.TestCase):
         session.status.return_value = SimpleNamespace(state="fault", ready=False, fault="clock fault", units=[])
         events, previews = [], []
         preview_class = dual.WebPreview
-        capture.start.side_effect = lambda: events.append("capture-start")
+        capture.start.side_effect = lambda _: events.append("capture-start")
         capture.close.side_effect = lambda: events.append("capture-close")
         session.stop.side_effect = lambda: events.append("sync-stop")
 
-        def create_preview(_address, _port, boards):
-            preview = preview_class("127.0.0.1", 0, boards)
+        def create_preview(_address, _port, boards, *, cv2):
+            preview = preview_class("127.0.0.1", 0, boards, cv2=cv2)
             previews.append(preview)
             return preview
 

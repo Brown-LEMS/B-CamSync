@@ -159,7 +159,7 @@ class PreviewTests(unittest.TestCase):
         capture.queue(self.request)
         self.camera.queue_request.side_effect = lambda _: capture.done.set() or 0
         with patch.object(dual.selectors, "DefaultSelector", return_value=self.selector):
-            capture.run()
+            capture.run(np)
         self.assertIsNone(capture.error)
         frame = timing.snapshot().frames[0]
         self.assertEqual(frame.sensor_timestamp_ns, self.request.metadata["sensor"])
@@ -219,7 +219,7 @@ class PreviewTests(unittest.TestCase):
             with self.subTest(state=state):
                 capture = Mock(units={}, images={"board-1": object()}, lock=threading.Lock(), error=None)
                 events = []
-                capture.start.side_effect = lambda: events.append("capture-start")
+                capture.start.side_effect = lambda _: events.append("capture-start")
                 capture.close.side_effect = lambda: events.append("capture-close")
 
                 def create_capture(camera_ids, config, stack):

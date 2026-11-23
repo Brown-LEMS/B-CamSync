@@ -204,7 +204,7 @@ class TwoNodeExamplesTests(unittest.TestCase):
                         inventory.assert_called_once_with("node-b", "192.168.0.105", "192.168.0.106", len(selected))
 
     def test_http_serves_two_local_images_with_global_status_and_collapsed_details(self):
-        preview = http.WebPreview("127.0.0.1", 0, "node-b", ("board-b1", "board-b2"))
+        preview = http.WebPreview("127.0.0.1", 0, "node-b", ("board-b1", "board-b2"), cv2=encoder())
         try:
             with redirect_stdout(StringIO()):
                 preview.start()
@@ -220,7 +220,7 @@ class TwoNodeExamplesTests(unittest.TestCase):
                       "waiting_nodes": ["node-a"], "units": [{"id": "board-a1"}, {"id": "board-b1"}]}
             images = {board: np.full((8, 32), 80 + 40 * index, dtype=np.uint8)
                       for index, board in enumerate(("board-b1", "board-b2"))}
-            with patch.dict(sys.modules, {"cv2": encoder()}):
+            with patch.dict(sys.modules, {"cv2": None}):
                 preview.publish(images, status)
             self.assertEqual(json.loads(request(preview, "/status")[2]), status)
             for index, board in enumerate(images):
@@ -234,7 +234,7 @@ class TwoNodeExamplesTests(unittest.TestCase):
         self.assertFalse(preview.thread.is_alive())
 
     def test_http_shows_only_one_board_when_only_one_was_detected(self):
-        preview = http.WebPreview("127.0.0.1", 0, "node-b", ("board-b1",))
+        preview = http.WebPreview("127.0.0.1", 0, "node-b", ("board-b1",), cv2=encoder())
         try:
             with redirect_stdout(StringIO()):
                 preview.start()
@@ -242,9 +242,8 @@ class TwoNodeExamplesTests(unittest.TestCase):
             self.assertIn(b'data-src="/board-b1.jpg"', page)
             self.assertNotIn(b'data-src="/board-b2.jpg"', page)
             self.assertEqual(request(preview, "/board-b2.jpg")[0], 404)
-            with patch.dict(sys.modules, {"cv2": encoder()}):
-                preview.publish({"board-b1": np.full((8, 32), 80, dtype=np.uint8)},
-                                {"state": "calibrating", "ready": False})
+            preview.publish({"board-b1": np.full((8, 32), 80, dtype=np.uint8)},
+                            {"state": "calibrating", "ready": False})
             self.assertEqual(request(preview, "/board-b1.jpg")[0], 200)
         finally:
             preview.close()
@@ -257,7 +256,7 @@ class TwoNodeExamplesTests(unittest.TestCase):
                     capture = Mock(units={"board-b1": Mock(), "board-b2": Mock()},
                                    images={"board-b1": object(), "board-b2": object()},
                                    lock=threading.Lock(), error=None)
-                    capture.start.side_effect = lambda: events.append("capture-start")
+                    capture.start.side_effect = lambda _: events.append("capture-start")
                     capture.close.side_effect = lambda: events.append("capture-close")
                     session = Mock()
                     session.status.return_value = SimpleNamespace(
