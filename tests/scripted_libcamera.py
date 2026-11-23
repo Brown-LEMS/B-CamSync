@@ -1,6 +1,7 @@
 """A controllable libcamera request pipeline for the Python preview examples."""
 
 from collections import deque
+from itertools import count
 import os
 import selectors
 import tempfile
@@ -68,13 +69,14 @@ class Camera:
         assert stream is self.stream.stream
         return self._transition("configured", "allocated", "allocate")
 
-    def create_request(self, cookie):
+    def create_request(self, cookie=None):
         assert self.state == "allocated"
         assert all(camera.state != "running" for camera in self.manager.cameras.values())
-        return Request(cookie)
+        return Request(next(self.manager.request_ids) if cookie is None else cookie)
 
     def start(self, controls):
-        self.applied_duration = controls["FrameDurationLimits"][0]
+        self.default_duration = controls["FrameDurationLimits"]
+        self.applied_duration = self.default_duration[0]
         return self._transition("allocated", "running", "start")
 
     def queue_request(self, request):
@@ -82,8 +84,11 @@ class Camera:
             assert self.state == "running"
             assert request not in self.pending and len(self.pending) < len(self.buffers)
             self.pending.append(request)
-            self.manager.record("queue", self.id, request.cookie, request.controls["FrameDurationLimits"][0])
+            self.manager.record("queue", self.id, request.cookie, self.requested_duration(request))
         return 0
+
+    def requested_duration(self, request):
+        return request.controls.get("FrameDurationLimits", self.default_duration)[0]
 
     def stop(self):
         with self.manager.changed:
@@ -103,6 +108,7 @@ class ScriptedLibcamera:
         self.changed = threading.Condition()
         self.events = deque(maxlen=80)
         self.completed = deque()
+        self.request_ids = count()
         self.delivered = self.handled = self.drained = 0
         self.event_fd, self.notify_fd = os.pipe()
         stack.callback(os.close, self.event_fd)
@@ -167,7 +173,7 @@ class ScriptedLibcamera:
         with self.changed:
             assert camera.pending, (camera_id, "no request to complete")
             request = camera.pending.popleft()
-            requested = request.controls["FrameDurationLimits"][0]
+            requested = camera.requested_duration(request)
             reported = camera.applied_duration
             now = boot_time_ns()
             if camera.timestamp is None:
