@@ -4,14 +4,14 @@ On 2026-11-25, the same board on the same port sometimes delivered all 12 reques
 
 ## Hardware and software
 
-The test machine was `rpi5-1`, a Raspberry Pi 5 Model B Rev 1.1 running Debian Bookworm arm64 and kernel `6.12.109+rpt-rpi-2712`. Both B0267 boards reported firmware `0x10004` and two data lanes. The vendor builds were rpicam-apps `v1.9.0 a819af48889f-dirty`, libcamera `v0.5.2+125-69c6546d-dirty` and libpisp `v1.2.1 981977ff21f3`. The network configuration stayed fixed during these trials. Onboard Ethernet `eth0` had no carrier, and the host used `eth1` for the management connection. The operator's earlier estimates of approximately 30% and 80% startup success under different interference conditions come from separate experiments.
+The test machine was `rpi5-1`, a Raspberry Pi 5 Model B Rev 1.1 running Debian Bookworm arm64 and kernel `6.12.109+rpt-rpi-2712`. Both B0267 boards reported firmware `0x10004` and two data lanes. The vendor builds were rpicam-apps `v1.9.0 a819af48889f-dirty`, libcamera `v0.5.2+125-69c6546d-dirty` and libpisp `v1.2.1 981977ff21f3`. The initial rpicam-hello and direct capture measurements used `eth1` for management with no carrier on onboard Ethernet. The historical probe replay used onboard Ethernet. The operator's earlier estimates of approximately 30% and 80% startup success under different interference conditions come from separate experiments.
 
 | rpicam index on this boot | libcamera ID component | Sensor subdevice | RP1 CFE | FE image node |
 | --- | --- | --- | --- | --- |
 | 0 | `i2c@88000/arducam_pivariety@c` | `arducam-pivariety 10-000c` | `1f00110000.csi` | `/dev/video12` |
 | 1 | `i2c@80000/arducam_pivariety@c` | `arducam-pivariety 11-000c` | `1f00128000.csi` | `/dev/video4` |
 
-All experiment logs cited below are in the local, Git-ignored directory `results/pi5-startup-cb7Ad4OX/`. Identify the selected sensor and its connected capture node on the current boot with `rpicam-hello --list-cameras` and `media-ctl -p -d /dev/mediaN`.
+The initial logs are in the local, Git-ignored directory `results/pi5-startup-cb7Ad4OX/`. The historical probe replay logs are in `results/pi5-b0267-restart-eth0/`. Identify the selected sensor and its connected capture node on the current boot with `rpicam-hello --list-cameras` and `media-ctl -p -d /dev/mediaN`.
 
 ## First attempt with rpicam
 
@@ -33,6 +33,10 @@ Count a first-attempt pass when the application reports a viewfinder frame befor
 | Both | 10/16 | 6 | Three zero-buffer and three one-buffer stalls |
 
 Both boards reached `Camera started!`. In the one-buffer cases the logs show a frame-start event, a CFE image dequeue and PiSP processing of that buffer before the next CFE image dequeue timed out. The missing `arducam-pivariety_mono.json` warning also appeared in successful processes. The small per-port samples describe these trials only. The evidence is in `baseline.log` and `01.app` through `16.app`.
+
+### How many starts each process needed
+
+Counting each `Camera started!` before the first viewfinder frame gives 10/16 processes with a frame on the first start, 13/16 within two starts, 15/16 within three and 16/16 within six. In round 14 the application logged five consecutive frontend timeouts and first displayed a frame about 6.55 seconds after the initial request queue. Each retry stopped the camera and started a fresh set of requests in the same process. The public Arducam libcamera pipeline cancels its pending requests on a frontend timeout. The public Raspberry Pi and Arducam command-line applications handle the cancellation by stopping and restarting capture. The public source describes this mechanism, and the target's logs establish that its vendor build actually used it. [Arducam pipeline timeout handler](https://github.com/ArduCAM/libcamera/blob/e4f106ed38b9da6b3a812666036fa6adb29257c4/src/libcamera/pipeline/rpi/common/pipeline_base.cpp#L1406-L1424) · [Arducam application restart loop](https://github.com/ArduCAM/libcamera-apps/blob/ddacad9f864aed593f8af7e2c6167243b4799925/apps/rpicam_hello.cpp#L19-L41)
 
 ## Five-second watchdog control
 
@@ -64,6 +68,8 @@ Relative to the stream-on register write, the three-row buffers were timestamped
 
 A second 12-start series recorded the generic kernel `vb2_buf_done` event together with I²C. Matching buffer index and monotonic timestamp identified all 61 buffers actually dequeued across seven successful and five stalled starts. Five buffers with only three written rows completed in interrupt context at +234.46 to +234.52 ms, at least 39 ms before the first control selector write. In successful round 01, a later 455-row buffer was timestamped at +258.80 ms but completed at +351.40 ms, after the control writes. In failed round 12 the corresponding buffer acquired a timestamp at +258.83 ms and was returned only during stream-off cleanup. Cleanup events were excluded from delivered-frame counts. See `dma-trace/01.trace` and `dma-trace/12.trace`.
 
+Both trace series captured reads of the board's busy register (`0x0107`). All 14 successful and 10 stalled starts observed it clear. From the stream-on write to the first zero reply, the ranges were 270.77–278.42 ms for successes and 270.82–278.34 ms for stalls. After each of the six control writes, every trial observed one busy reply followed by a zero reply, and the driver's final check also read zero. In the DMA trace series, four of the five stalled runs completed one or two buffers in interrupt context before that first zero and none afterward. The fifth had no interrupt-context completions. The command interface reported readiness in every failed trial while continuous image delivery never began.
+
 ## Receiver link-rate warning
 
 The kernel logged a calculated link rate of 1536 Mbps per lane and a D-PHY out-of-range warning in all 20 direct trials. Both sensor subdevices exposed a fixed `pixel_rate` of 384,000,000 pixels/s and no `link_freq` control in the captured inventory. The driver calculation matches 384,000,000 × 8 bits ÷ 2 data lanes = 1,536,000,000 bits/s per lane. The D-PHY table ends at 1500 Mbps and selects its highest frequency band for this value. The warning establishes which setting the receiver used. Determining the actual transmitter line rate requires independent evidence. The same warning accompanied 13 successful starts and seven stalls. [CFE rate calculation](https://github.com/raspberrypi/linux/blob/7d1826930811232688a50c99c540fbb137aed081/drivers/media/platform/raspberrypi/rp1_cfe/cfe.c#L1060-L1105) · [D-PHY frequency selection](https://github.com/raspberrypi/linux/blob/7d1826930811232688a50c99c540fbb137aed081/drivers/media/platform/raspberrypi/rp1_cfe/dphy.c#L101-L130)
@@ -79,6 +85,35 @@ In 16 rpicam starts, eight trials toggled `trigger_mode` from 0 to 1 for 350 ms 
 In 24 direct captures, the control condition started in free-run and the gated condition set `trigger_mode=1` before launch. Both requested `trigger_mode=0` approximately 350 ms after `VIDIOC_STREAMON` returned. Free-run delivered 32 buffers in 8/12 starts and gating in 11/12. In 11 of the 12 gated trials, two or three buffers had already arrived before release. The gated failure stopped at two. See `gate.sh` and `gate.log`.
 
 In a separate interleaved comparison, every trial began with the sensor runtime-suspended. One group used normal runtime power management and delivered eight buffers in 9/12 starts. The other explicitly resumed the sensor 500 ms before launching the capture and kept it active through capture. It delivered eight buffers in 10/12 starts. Both groups reproduced the stall. The power policy was restored to `auto`. See `prewake.log` and `prewake/`.
+
+## What the earlier Pi 5 probe could observe
+
+The August 2026 `bapd8_acquisition` tests used the same B0267 model and Arducam package series on a Pi 5 Rev 1.1. The probes launched `rpicam-raw` for H.264 input or `rpicam-vid` for MJPEG. Their frame-rate calculation used the interval between the first and last recorded timestamps, excluding any delay before the first output. The console printed frame rate, gaps and output size. The JSON summary recorded whether the camera log contained a timeout, and the script required at least two timestamps. The surviving report mentions frontend timeouts during high-load capture. The two original probe directories were absent from the current Pi user's home, and their per-process logs were unavailable in the local project archives. The time of the first frame in those historical runs remains unknown. [August Pi 5 results](https://github.com/xiaoran007/bapd8_acquisition/blob/1ff7a30c89cb5c666457529e2af3a90bfd287976/rpi/recording_probe.md#L14-L60) · [Probe summary calculation](https://github.com/xiaoran007/bapd8_acquisition/blob/984271b013ec4ce1dbd949232cdabf3d9c1b0bf8/rpi/probe_dual_encode.py#L174-L198)
+
+The later acquisition service validated its Pi 4 profile and started libcamera once, with systemd restart disabled. In B-CamSync the single-board and dual-board Python examples likewise call `camera.start()` once and raise an error when a running request is cancelled. The managed backend starts once and reports a fault on cancellation. The startup test also reads the process log and counts a frontend timeout as a failed trial. [Historical platform check](https://github.com/xiaoran007/bapd8_acquisition/blob/e9523d1f9ea8e0eae720777cea494bc10baa5527/rpi/config.py#L201-L202) · [Historical native start](https://github.com/xiaoran007/bapd8_acquisition/blob/e9523d1f9ea8e0eae720777cea494bc10baa5527/rpi/native/capture_encode.cpp#L442) · [Historical service](https://github.com/xiaoran007/bapd8_acquisition/blob/e9523d1f9ea8e0eae720777cea494bc10baa5527/deployment/rpi/bapd8-rpi.service#L17) · [B-CamSync startup test](../tools/check_camera_startup.py)
+
+### Replaying the historical RAW capture settings
+
+With `eth0` linked at 1 Gbit/s, each process captured one board using the historical RAW settings. The experiment repeated board indices 0, 1, 1, 0, saved presentation timestamps and traced six-byte I²C writes to the two CamArrays at address `0x0c`. Raw output went to `/dev/null` to isolate camera startup from encoding and storage. The capture command below shows the four-second variant. The second series used the historical probe's default ten-second recording duration.
+
+```sh
+rpicam-raw --camera "$camera" --timeout 4000 --nopreview --denoise off \
+  --mode 5120:800:8:P --framerate 45 --buffer-count 8 \
+  --save-pts "$trial.pts" --output /dev/null --verbose 2
+```
+
+| Capture duration | Processes | First application frame before any restart | At least two output timestamps | Exit code 0 |
+| --- | ---: | ---: | ---: | ---: |
+| 4 s | 16 | 12 | 14 | 16 |
+| 10 s | 8 | 6 | 8 | 8 |
+
+In the ten-second series, rounds 01 and 05 each restarted once before the first application frame. Both recorded 372 timestamps at 45.020 fps. The six processes that succeeded immediately recorded 425–430 timestamps at the same rate. In the four-second series, round 12 restarted twice and recorded 42 timestamps at 45.020 fps. Rounds 05 and 07 each restarted three times and exited with zero timestamps. The raw application checks its recording deadline after receiving a usable request and before submitting that buffer for output. This allows a process to recover after its recording window expires and exit successfully with an empty timestamp file. The historical Python probe would have rejected these two empty recordings in its summary calculation. [Raspberry Pi RAW event loop](https://github.com/raspberrypi/rpicam-apps/blob/v1.9.0/apps/rpicam_raw.cpp#L37-L65)
+
+All eleven pre-frame restarts across the two series matched a frontend timeout followed by host writes of 0 and then 1 to the selected board's `MODE_SELECT` register (`0x0100`). The intervals from the stream-off write to the next stream-on write were 11.98–13.11 ms. The Pi's boot ID stayed the same, and each restart occurred within the original application process. The I²C trace identifies a host-issued stream cycle. It cannot reveal separate reset activity inside the CamArray. See `four-seconds/12.app`, `four-seconds/12.trace`, `ten-seconds/01.pts` and the other per-trial files under `results/pi5-b0267-restart-eth0/`. These trials changed the capture profile as well as the Ethernet connection compared with the earlier rpicam-hello run, so they do not isolate the Ethernet effect.
+
+### Public reports for this camera family
+
+Arducam support described a cold-boot timeout on the B0266 stereo kit with UC-512 Rev.D1 and firmware `0x10003`, and reported that a Rev.D2 replacement started successfully. Its workaround was a second application invocation. A separate Raspberry Pi kernel report covers the OV9281 quad kit and gaps during capture. Arducam acknowledged that the driver exposes pixel rate without a link-frequency control. Neither report establishes the cause of repeated warm-start stalls with B0267 firmware `0x10004`. [Arducam B0266 support thread](https://forum.arducam.com/t/arducam-pivariety-b0266-camera-times-out-on-first-boot-works-after-restart-on-pi-5/10182) · [Raspberry Pi kernel issue 7310](https://github.com/raspberrypi/linux/issues/7310)
 
 ## Remaining causal test
 
