@@ -51,15 +51,15 @@ docker run --rm --platform linux/arm64 \
 
 ## Capture and recording
 
-Use the startup checks on a Pi 5 with a working camera environment. Each runs the corresponding [HTTP preview example](../examples/README.md#http-web-preview) in ten fresh processes and reports the success ratio. Set the cable position before each run and use the same camera IDs and argument order for comparisons.
+Use the startup check on a Pi 5 with a working camera environment. It runs the selected [HTTP preview example](../examples/README.md#http-web-preview) in ten fresh processes and reports the success ratio. Set the cable position before each run and choose the same cameras in the same order for comparisons.
 
 ```sh
-.venv/bin/python tools/check_single_board_startup.py --list
-.venv/bin/python tools/check_single_board_startup.py 'CAMERA_ID'
-.venv/bin/python tools/check_dual_board_startup.py 'REFERENCE_CAMERA_ID' 'SECOND_CAMERA_ID'
+.venv/bin/python tools/check_camera_startup.py
 ```
 
-Omit IDs to use the examples' default sorted selection. To check each port individually with both boards connected, run the single-board check once per ID. The checks use a loopback HTTP listener and need no browser or Pi display. A round passes when all selected boards publish a JPEG within 16 seconds, the log contains no libcamera frontend timeout, and the example shuts down cleanly. Dual-board startup uses the example's normal synchronization path without waiting for phase lock. The checks pause 0.5 seconds between processes, print the example log for each failed round, and return exit status 1 if any round fails.
+Choose mode 1 for one board or mode 2 for two. Pick from the displayed camera numbers. For two boards, enter two numbers separated by a space, with the reference board first. To check each port individually with both boards connected, run single-board mode once per port.
+
+The check uses a loopback HTTP listener and needs no browser or Pi display. A round passes when all selected boards publish a JPEG within 16 seconds, the log contains no libcamera frontend timeout, and the example shuts down cleanly. Dual-board startup uses the example's normal synchronization path without waiting for phase lock. The check pauses 0.5 seconds between processes, prints one summary line per round, and returns exit status 1 if any round fails.
 
 [`opencv_capture.py`](opencv_capture.py) is the previous application-owned libcamera pipeline with synchronization reports, restart checks, browser preview, and optional MJPG AVI recording. It uses the installed synchronization core, Python libcamera, OpenCV, and NumPy. Copy its configuration template and replace both `camera_id` placeholders with the IDs reported by libcamera:
 

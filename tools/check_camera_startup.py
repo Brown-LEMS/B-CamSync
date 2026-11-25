@@ -1,4 +1,4 @@
-"""Run fresh HTTP preview processes and check first-frame delivery."""
+"""Select one or two cameras and measure their startup success on a Pi."""
 
 import argparse
 from contextlib import closing
@@ -67,48 +67,70 @@ def trial(command, boards):
             clean_stop = stop(process)
 
         output.seek(0)
-        log = output.read().decode(errors="replace").splitlines()
+        frontend_timeout = any(b"Camera frontend has timed out" in line for line in output)
 
-    if any("Camera frontend has timed out" in line for line in log):
-        return "libcamera frontend timed out", log
+    if frontend_timeout:
+        return False, "libcamera frontend timed out"
     if finished >= deadline or missing:
         reason = (f"{STARTUP_SECONDS}s first-frame deadline expired" if finished >= deadline
                   else f"example exited before first previews (exit {process.returncode})")
         if missing:
-            reason += f"; missing preview from {', '.join(sorted(missing))}"
-        return reason, log
+            reason += f" (missing preview from {', '.join(sorted(missing))})"
+        return False, reason
     if not clean_stop:
-        return f"example did not shut down cleanly (exit {process.returncode})", log
-    selection = [line for line in log if line.startswith(("Board:", "board-"))]
-    return None, [*selection, f"First previews in {finished - started:.2f} s"]
+        return False, f"example did not shut down cleanly (exit {process.returncode})"
+    return True, f"first previews in {finished - started:.2f} s"
 
 
-def main(example, count):
-    parser = argparse.ArgumentParser(description=f"Run {ROUNDS} starts of {example}.")
-    parser.add_argument("camera_ids", nargs="*", metavar="CAMERA_ID",
-                        help=f"{count} camera ID(s); defaults to the example's selection")
-    parser.add_argument("--list", action="store_true", help="list camera IDs without starting capture")
-    args = parser.parse_args()
-    if args.camera_ids and (len(args.camera_ids) != count or len(set(args.camera_ids)) != count):
-        parser.error(f"provide either no camera IDs or {count} distinct camera ID(s)")
-    command = [sys.executable, "-u", str(EXAMPLES / example), *args.camera_ids]
-    if args.list:
-        return subprocess.call([*command, "--list"])
+def choose(prompt, choices, count):
+    while True:
+        numbers = input(prompt).split()
+        if len(numbers) == count and len(set(numbers)) == count and all(n in choices for n in numbers):
+            return [choices[number] for number in numbers]
+        print("Invalid selection. Choose from the listed numbers.")
+
+
+def main():
+    argparse.ArgumentParser(description=__doc__).parse_args()
+    modes = {"1": ("single_board_http.py", 1), "2": ("opencv_sync_http.py", 2)}
+    [(example, count)] = choose("Mode (1 = single board, 2 = dual board): ", modes, 1)
+    try:
+        listing = subprocess.run([sys.executable, str(EXAMPLES / "single_board_http.py"), "--list"],
+                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                                 check=True, timeout=STARTUP_SECONDS)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        print("Could not list libcamera cameras.", file=sys.stderr)
+        return 1
+    camera_ids = listing.stdout.splitlines()
+    if len(camera_ids) < count:
+        print(f"Found {len(camera_ids)} cameras. This mode needs {count}.", file=sys.stderr)
+        return 1
+
+    choices = {str(index): camera_id for index, camera_id in enumerate(camera_ids, 1)}
+    for number, camera_id in choices.items():
+        print(f"  {number}. {camera_id}")
+    prompt = "Camera number: " if count == 1 else "Two camera numbers (reference first, e.g. 1 2): "
+    selected = choose(prompt, choices, count)
+    command = [sys.executable, "-u", str(EXAMPLES / example), *selected]
 
     boards = tuple(f"board-{index}" for index in range(1, count + 1))
     successes = 0
+    print(f"Running {ROUNDS} startup rounds with {', '.join(selected)}", flush=True)
     for number in range(1, ROUNDS + 1):
-        print(f"[{number}/{ROUNDS}] Starting {example}", flush=True)
-        failure, lines = trial(command, boards)
-        if failure is None:
-            successes += 1
-            print("  PASS", flush=True)
-        else:
-            print(f"  FAIL: {failure}", flush=True)
-        for line in lines:
-            print(f"    {line}", flush=True)
+        passed, summary = trial(command, boards)
+        successes += passed
+        result = "PASS" if passed else "FAIL"
+        print(f"[{number}/{ROUNDS}] {result} — {summary}", flush=True)
         if number < ROUNDS:
             time.sleep(PAUSE_SECONDS)
 
     print(f"Startup success: {successes}/{ROUNDS} ({successes / ROUNDS:.0%})", flush=True)
     return int(successes != ROUNDS)
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (EOFError, KeyboardInterrupt):
+        print("\nStartup check cancelled.", file=sys.stderr)
+        raise SystemExit(130)

@@ -3,17 +3,19 @@
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
+import subprocess
 import sys
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-import _camera_startup
+import check_camera_startup
 
 
 FAKE_PREVIEW = r"""
 import argparse
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 
 parser = argparse.ArgumentParser()
 parser.add_argument("camera_ids", nargs="+")
@@ -41,7 +43,7 @@ with HTTPServer((args.bind, args.port), Handler) as server:
     try:
         server.serve_forever(poll_interval=0.01)
     except KeyboardInterrupt:
-        print("Released cameras")
+        Path(__file__).with_suffix(".released").touch()
 """
 
 
@@ -51,41 +53,75 @@ class CameraStartupTests(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         preview = Path(directory.name) / "preview.py"
         preview.write_text(FAKE_PREVIEW)
+        self.released = preview.with_suffix(".released")
         self.command = [sys.executable, "-u", str(preview)]
 
     def test_one_board_passes_after_preview(self):
-        failure, lines = _camera_startup.trial([*self.command, "camera-a"], ("board-1",))
-        self.assertIsNone(failure)
-        self.assertIn("board-1: camera-a", lines)
+        passed, summary = check_camera_startup.trial([*self.command, "camera-a"], ("board-1",))
+        self.assertTrue(passed)
+        self.assertIn("first previews in", summary)
+        self.assertTrue(self.released.is_file())
 
     def test_dual_board_requires_both_previews(self):
         boards = ("board-1", "board-2")
-        failure, lines = _camera_startup.trial([*self.command, "camera-a", "camera-b"], boards)
-        self.assertIsNone(failure)
-        self.assertIn("board-2: camera-b", lines)
-        with patch.object(_camera_startup, "STARTUP_SECONDS", 1):
-            failure, lines = _camera_startup.trial([*self.command, "camera-a", "missing"], boards)
-        self.assertIn("deadline expired; missing preview from board-2", failure)
-        self.assertIn("Released cameras", lines)
+        passed, _ = check_camera_startup.trial([*self.command, "camera-a", "camera-b"], boards)
+        self.assertTrue(passed)
+        self.released.unlink()
+        with patch.object(check_camera_startup, "STARTUP_SECONDS", 1):
+            passed, summary = check_camera_startup.trial([*self.command, "camera-a", "missing"], boards)
+        self.assertFalse(passed)
+        self.assertIn("deadline expired (missing preview from board-2)", summary)
+        self.assertTrue(self.released.is_file())
 
     def test_frontend_timeout_counts_as_failure_even_with_a_jpeg(self):
-        failure, lines = _camera_startup.trial([*self.command, "watchdog"], ("board-1",))
-        self.assertEqual(failure, "libcamera frontend timed out")
-        self.assertIn("Camera frontend has timed out!", lines)
-        self.assertIn("Released cameras", lines)
+        passed, summary = check_camera_startup.trial([*self.command, "watchdog"], ("board-1",))
+        self.assertFalse(passed)
+        self.assertEqual(summary, "libcamera frontend timed out")
+        self.assertTrue(self.released.is_file())
 
-    def test_reports_success_ratio_after_ten_rounds_in_supplied_order(self):
-        with (patch.object(sys, "argv", ["check", "camera-b", "camera-a"]),
-              patch.object(_camera_startup, "PAUSE_SECONDS", 0),
-              patch.object(_camera_startup, "trial", side_effect=[(None, [])] * 8 +
-                           [("first-frame failure", ["camera log"])] * 2) as trial,
+
+class CameraStartupMenuTests(unittest.TestCase):
+    def run_menu(self, inputs, outcomes):
+        listing = subprocess.CompletedProcess([], 0, stdout="camera-a\ncamera-b\n")
+        with (patch.object(sys, "argv", ["check"]),
+              patch("builtins.input", side_effect=inputs),
+              patch.object(check_camera_startup, "PAUSE_SECONDS", 0),
+              patch.object(check_camera_startup.subprocess, "run", return_value=listing) as discover,
+              patch.object(check_camera_startup, "trial", side_effect=outcomes) as trial,
               redirect_stdout(StringIO()) as output):
-            code = _camera_startup.main("opencv_sync_http.py", 2)
+            code = check_camera_startup.main()
+        discover.assert_called_once()
+        self.assertEqual(discover.call_args.args[0][-1], "--list")
+        self.assertEqual(discover.call_args.kwargs["stderr"], subprocess.DEVNULL)
+        return code, output.getvalue(), trial.call_args_list
+
+    def test_single_board_can_be_selected_by_number(self):
+        code, output, calls = self.run_menu(["1", "2"], [(True, "first previews in 0.20 s")] * 10)
+        self.assertEqual(code, 0)
+        self.assertIn("  2. camera-b", output)
+        self.assertIn("Startup success: 10/10 (100%)", output)
+        self.assertEqual(len(calls), 10)
+        for command, boards in (call.args for call in calls):
+            self.assertEqual(Path(command[-2]).name, "single_board_http.py")
+            self.assertEqual(command[-1], "camera-b")
+            self.assertEqual(boards, ("board-1",))
+
+    def test_dual_board_preserves_selection_order_and_prints_one_line_per_round(self):
+        outcomes = [(True, "first previews in 0.20 s")] * 8 + [(False, "libcamera frontend timed out")] * 2
+        code, output, calls = self.run_menu(["2", "2 2", "2 1"], outcomes)
         self.assertEqual(code, 1)
-        self.assertEqual(trial.call_count, 10)
-        for command, boards in (call.args for call in trial.call_args_list):
+        self.assertEqual(len(calls), 10)
+        for command, boards in (call.args for call in calls):
+            self.assertEqual(Path(command[-3]).name, "opencv_sync_http.py")
             self.assertEqual(command[-2:], ["camera-b", "camera-a"])
             self.assertEqual(boards, ("board-1", "board-2"))
-        self.assertIn("[10/10]", output.getvalue())
-        self.assertIn("camera log", output.getvalue())
-        self.assertIn("Startup success: 8/10 (80%)", output.getvalue())
+        self.assertEqual(output.splitlines(), [
+            "  1. camera-a",
+            "  2. camera-b",
+            "Invalid selection. Choose from the listed numbers.",
+            "Running 10 startup rounds with camera-b, camera-a",
+            *(f"[{number}/10] PASS — first previews in 0.20 s" for number in range(1, 9)),
+            "[9/10] FAIL — libcamera frontend timed out",
+            "[10/10] FAIL — libcamera frontend timed out",
+            "Startup success: 8/10 (80%)",
+        ])
