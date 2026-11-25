@@ -4,7 +4,7 @@ On 2026-11-25, the same board on the same port sometimes delivered all 12 reques
 
 ## Hardware and software
 
-The test machine was `rpi5-1`, a Raspberry Pi 5 Model B Rev 1.1 running Debian Bookworm arm64 and kernel `6.12.109+rpt-rpi-2712`. Both B0267 boards reported firmware `0x10004` and two data lanes. The vendor builds were rpicam-apps `v1.9.0 a819af48889f-dirty`, libcamera `v0.5.2+125-69c6546d-dirty` and libpisp `v1.2.1 981977ff21f3`. The initial rpicam-hello and direct capture measurements used `eth1` for management with no carrier on onboard Ethernet. The historical probe replay used onboard Ethernet. The operator's earlier estimates of approximately 30% and 80% startup success under different interference conditions come from separate experiments.
+The test machine was `rpi5-1`, a Raspberry Pi 5 Model B Rev 1.1 running Debian Bookworm arm64 and kernel `6.12.109+rpt-rpi-2712`. Both B0267 boards reported firmware `0x10004` and two data lanes. The vendor builds were rpicam-apps `v1.9.0 a819af48889f-dirty`, libcamera `v0.5.2+125-69c6546d-dirty` and libpisp `v1.2.1 981977ff21f3`. The initial rpicam-hello and direct capture measurements used `eth1` for management with no carrier on onboard Ethernet. The historical probe replay and subsequent inspection of buffers after stream-off used onboard Ethernet. The operator's earlier estimates of approximately 30% and 80% startup success under different interference conditions come from separate experiments.
 
 | rpicam index on this boot | libcamera ID component | Sensor subdevice | RP1 CFE | FE image node |
 | --- | --- | --- | --- | --- |
@@ -59,6 +59,12 @@ All 20 calls to `VIDIOC_STREAMON` succeeded. Thirteen attempts delivered all 12 
 ### How much of each buffer was written
 
 A separate 16-start series filled each MMAP buffer with `0xa5a5` words before every queue and checked every active pixel after dequeue. Thirteen starts delivered the requested eight buffers, and three stalled. Ten of the 16 sequence-zero buffers contained just three written rows out of 800. The other 797 retained the sentinel, although the kernel reported `bytesused=8192000` and left `V4L2_BUF_FLAG_ERROR` clear. Round 03 recovered from a three-row first buffer and captured eight buffers. Rounds 07 and 09 returned an 800-row first buffer and then stalled. Both the kernel's byte count and the coverage of the first buffer alone would miss relevant failures. See `check_raw_rows.c`, `rows.log` and `rows/`.
+
+### What was in the next buffer after a stall
+
+With the onboard Ethernet link active, we repeated direct capture 16 times on the `10-000c` board. Whenever a trial timed out, we inspected all four mapped DMA buffers immediately after `VIDIOC_STREAMOFF` returned. The program prefilled every buffer before each queue. Ten trials delivered eight buffers. In three of the six stalled trials (04, 10 and 13), no buffer was dequeued and all four buffers still contained the sentinel in every active pixel. The other three stalled after delivering one or two buffers, including at least one complete 800-row image each. The next buffer was never dequeued and contained 451, 438 or 430 consecutive written rows starting at row zero in trials 01, 06 and 08 respectively. Every remaining active pixel in those buffers retained the sentinel.
+
+Eight of the ten successful trials also delivered a short image before settling into complete frames. The post-stop snapshot proves that part of the undelivered frame reached memory. It cannot date its last write relative to the 1.2-second poll timeout or stream-off. The media graph and video node format were restored and compared byte for byte. See `results/pi5-b0267-restart-eth0/post-stop/`, especially `04.rows` and `08.rows`.
 
 ### Control-bus timing
 
@@ -116,5 +122,7 @@ All eleven pre-frame restarts across the two series matched a frontend timeout f
 Arducam support described a cold-boot timeout on the B0266 stereo kit with UC-512 Rev.D1 and firmware `0x10003`, and reported that a Rev.D2 replacement started successfully. Its workaround was a second application invocation. A separate Raspberry Pi kernel report covers the OV9281 quad kit and gaps during capture. Arducam acknowledged that the driver exposes pixel rate without a link-frequency control. Neither report establishes the cause of repeated warm-start stalls with B0267 firmware `0x10004`. [Arducam B0266 support thread](https://forum.arducam.com/t/arducam-pivariety-b0266-camera-times-out-on-first-boot-works-after-restart-on-pi-5/10182) · [Raspberry Pi kernel issue 7310](https://github.com/raspberrypi/linux/issues/7310)
 
 ## Remaining causal test
+
+The post-stop snapshots distinguish untouched buffers from partially written frames. To locate the first missing event in the latter case, align the receiver's frame-start and frame-end acknowledgement bits with DMA completion for the last buffer. The public RP1 CFE handler can complete a previous buffer in software when a new frame start arrives without the preceding frame-end interrupt. A successful dequeue alone therefore cannot establish that RP1 observed the corresponding frame-end acknowledgement. [Raspberry Pi CFE interrupt handler](https://github.com/raspberrypi/linux/blob/rpi-6.12.y/drivers/media/platform/raspberrypi/rp1_cfe/cfe.c#L723-L762)
 
 Incomplete startup images are visible in direct DMA buffers, and their timestamps precede the post-start control replay. The underlying cause remains unresolved. Two software comparisons could separate the transmitter control sequence from receiver configuration. First, keep RP1 settings fixed while varying when Pivariety replays its six controls. Then hold the board mode, controls and timing fixed while varying only the RP1 high-speed receive frequency setting. Score each condition by first-attempt stalls and actual row coverage through the onset of regular frames.
