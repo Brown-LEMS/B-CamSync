@@ -61,6 +61,16 @@ Choose mode 1 for one board or mode 2 for two. Pick from the displayed camera nu
 
 The check uses a loopback HTTP listener and needs no browser or Pi display. A round passes when all selected boards publish a JPEG within 16 seconds, the log contains no libcamera frontend timeout, and the example shuts down cleanly. Dual-board startup uses the example's normal synchronization path without waiting for phase lock. The check pauses 0.5 seconds between processes, prints one summary line per round, and returns exit status 1 if any round fails.
 
+To measure recovery and phase lock, supply two explicit camera IDs and a new results directory. Each fresh process can use up to 20 stream restarts per board during startup. The measurement records each attempt, the first JPEG from each board, the time when the application reports synchronization ready, and whether shutdown completed. The first deadline covers camera startup and HTTP publication. The synchronization deadline starts once both JPEGs are available.
+
+```sh
+.venv/bin/python -u tools/check_camera_startup.py \
+  --camera-ids "$reference_id" "$second_id" --rounds 200 \
+  --output-dir results/startup-200 --camera-timeout 100 --sync-timeout 30
+```
+
+Inspect `rounds.jsonl` for per-round outcomes and `001.log` onward for complete application output. When launching this check as a background job on the Pi, use `nohup env --default-signal=INT` before the command so the example receives the Ctrl+C used for normal shutdown.
+
 [`opencv_capture.py`](opencv_capture.py) is the previous application-owned libcamera pipeline with synchronization reports, restart checks, browser preview, and optional MJPG AVI recording. It uses the installed synchronization core, Python libcamera, OpenCV, and NumPy. Copy its configuration template and replace both `camera_id` placeholders with the IDs reported by libcamera:
 
 ```sh
