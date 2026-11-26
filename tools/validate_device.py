@@ -28,6 +28,7 @@ def status_record(status) -> dict:
         "units": [{"unit_id": unit.unit_id, "state": unit.state, "ready": unit.ready,
                    "phase_ms": unit.phase_ms, "p95_ms": unit.p95_ms, "max_ms": unit.max_ms,
                    "measurement_end_ns": unit.measurement_end_ns,
+                   "aligned_from_sequence": unit.aligned_from_sequence,
                    "fault": unit.fault} for unit in sorted(status.units, key=lambda unit: unit.unit_id)],
     }
 

@@ -345,7 +345,8 @@ def status_record(status, clock, local_node):
             "clock": {"valid": clock.valid, "uncertainty_ns": clock.uncertainty_ns},
             "units": [{"id": unit.unit_id, "state": unit.state, "ready": unit.ready,
                        "phase_ms": unit.phase_ms, "p95_ms": unit.p95_ms,
-                       "max_ms": unit.max_ms, "fault": unit.fault} for unit in status.units]}
+                       "max_ms": unit.max_ms, "fault": unit.fault,
+                       "aligned_from_sequence": unit.aligned_from_sequence} for unit in status.units]}
 
 
 def report(status, clock, local_node):

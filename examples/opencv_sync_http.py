@@ -460,7 +460,8 @@ def run_preview(args, parser):
                 preview.publish(images, {"state": status.state, "ready": status.ready,
                                          "fault": status.fault,
                                          "units": [{"id": unit.unit_id, "phase_ms": unit.phase_ms,
-                                                    "p95_ms": unit.p95_ms, "max_ms": unit.max_ms}
+                                                    "p95_ms": unit.p95_ms, "max_ms": unit.max_ms,
+                                                    "aligned_from_sequence": unit.aligned_from_sequence}
                                                    for unit in status.units]})
                 sync = (status.state, status.ready, status.fault)
                 if not args.verbose and sync != last_sync:

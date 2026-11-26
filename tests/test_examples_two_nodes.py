@@ -24,6 +24,16 @@ NETWORK = ["--node", "node-b", "--address-a", "192.168.0.105", "--address-b", "1
 
 
 class TwoNodeExamplesTests(unittest.TestCase):
+    def test_http_exposes_alignment_sequence_on_the_other_node(self):
+        unit = SimpleNamespace(unit_id="board-a1", state="qualifying", ready=False, phase_ms=0.,
+                               p95_ms=0., max_ms=0., fault="", aligned_from_sequence=1 << 43)
+        state = SimpleNamespace(state="aligned", ready=False, fault="", waiting_nodes=[],
+                                stop_node="", stop_reason="", units=[unit])
+        status = http.status_record(state, SimpleNamespace(valid=True, uncertainty_ns=100), "node-b")
+        self.assertEqual(status["state"], "aligned")
+        self.assertFalse(status["ready"])
+        self.assertEqual(status["units"][0]["aligned_from_sequence"], 1 << 43)
+
     def test_both_scripts_build_the_same_four_board_network_topology(self):
         configs = [example.sync_config("192.168.0.105", "192.168.0.106") for example in EXAMPLES]
         self.assertEqual(configs[0].to_json(), configs[1].to_json())

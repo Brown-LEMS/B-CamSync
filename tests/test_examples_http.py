@@ -120,11 +120,13 @@ class HttpPreviewTests(unittest.TestCase):
         for camera in cameras:
             camera.acquire.assert_not_called()
 
-    def test_dual_sync_fault_keeps_http_capture_alive_and_ctrl_c_cleans_up(self):
+    def test_dual_http_serves_frames_through_alignment_and_sync_fault(self):
         capture = Mock(units={}, images={"board-1": np.full((2, 4), 128, dtype=np.uint8)},
                        lock=threading.Lock(), error=None)
         session = Mock()
-        session.status.return_value = SimpleNamespace(state="fault", ready=False, fault="clock fault", units=[])
+        unit = SimpleNamespace(unit_id="board-1", phase_ms=0., p95_ms=0., max_ms=0., aligned_from_sequence=0)
+        session.status.side_effect = [SimpleNamespace(state="aligned", ready=False, fault="", units=[unit]),
+                                      SimpleNamespace(state="fault", ready=False, fault="clock fault", units=[])]
         events, previews = [], []
         preview_class = dual.WebPreview
         capture.start.side_effect = lambda _: events.append("capture-start")
@@ -141,7 +143,11 @@ class HttpPreviewTests(unittest.TestCase):
         def pause(_seconds):
             status = json.loads(request(previews[0], "/status")[2])
             self.assertFalse(status["ready"])
-            self.assertEqual(status["fault"], "clock fault")
+            if not iterations:
+                self.assertEqual(status["state"], "aligned")
+                self.assertEqual(status["units"][0]["aligned_from_sequence"], 0)
+            else:
+                self.assertEqual(status["fault"], "clock fault")
             self.assertEqual(request(previews[0], "/board-1.jpg")[0], 200)
             capture.close.assert_not_called()
             session.stop.assert_not_called()
