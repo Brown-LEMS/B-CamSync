@@ -49,6 +49,8 @@ For two Pi 5 nodes, use the [multi-node examples](examples/README.md#two-pi-5-no
 
 Application code controls session lifetime and inspects quality. Device adapters translate sensor metadata and library-generated corrections into camera SDK calls. Phase estimation, correction decisions, synchronization transport, and clock mapping are internal to this library; applications do not schedule pulses themselves.
 
+Choose when to start using frames. Capture is available immediately. The `aligned` group state identifies the first provisionally aligned frame from each camera. `wait_ready()` waits for the configured quality windows to pass. See [how to select buffered frames by sequence](docs/integration.md#choose-the-first-frames-to-use).
+
 Nodes may start independently and wait for configured peers. Calling `stop()` on any participating node ends group synchronization, restores baseline controls, and warns while application capture continues. A new synchronization round requires explicit startup. The single-Pi examples use the Pi's shared local clock and need neither NetworkManager nor chrony.
 
 ## Guides

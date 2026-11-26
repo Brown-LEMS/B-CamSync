@@ -37,7 +37,7 @@ config = SyncConfig.from_file("group.json")
 capture.start()
 try:
     with SyncSession(config, "node-a", adapters) as sync:
-        # Inspect sync.status().ready to label synchronized intervals.
+        # Inspect group status to choose when to start using frames.
         # Group synchronization may stop while this application loop keeps running.
         capture.run_application_loop(sync)
     # Capture is still running here, with baseline frame-period controls restored.
@@ -54,6 +54,23 @@ Calling `stop()` on any participating node ends the current synchronization roun
 `wait_ready(timeout_seconds)` returns `False` when its caller timeout expires or the group stops normally; caller timeout does not cancel startup. Synchronization faults still raise `RuntimeError`. Applications that continue processing through synchronization faults can inspect the nonthrowing `status()` instead of propagating the waiting exception. Keep recording independently and mark subsequent frames as unsynchronized when readiness is false. `clock().valid` becomes false when synchronization cleanup completes.
 
 Synchronization never automatically rejoins after a group exit. Once the core session has completed (`stopped` or `fault`), explicitly call `start()` on each node for a new round; an intervening `stop()` remains safe and joins cleanup. Adapter state must honor the new control round. Membership and reference selection stay fixed by configuration.
+
+### Choose the first frames to use
+
+An application can consume frames as soon as capture starts. During `calibrating`, the library measures and adjusts frame timing. Group state `aligned` means all followers have finished initial phase acquisition and entered fine tracking with a valid reference. At this stage `status.ready` is still false and startup frame quality is provisional. Once the configured quality windows pass, group state becomes `tracking` and `wait_ready()` succeeds. A reference-only group can proceed directly to `tracking`.
+
+For early aligned capture, keep the original camera sequences with buffered frames. Each `UnitStatus.aligned_from_sequence` gives the inclusive sequence of that camera's frame in the first matched group. The markers appear together and remain available through `tracking`, including for applications that first read status after the transition. Sequence numbers are local to each camera, and zero is a valid marker. Stop or fault clears the markers. Read fresh markers when starting another synchronization round.
+
+```python
+# A managed FramePacket carries the original SDK sequence in camera_sequence.
+status = session.status()
+if status.state in ("aligned", "tracking"):
+    start = next(u.aligned_from_sequence for u in status.units if u.unit_id == packet.unit_id)
+    if start is not None and packet.camera_sequence >= start:
+        consume(packet)
+```
+
+With application-owned libcamera capture, compare against `buffer.metadata.sequence`, the same value passed to `CameraTiming.observe()`. To require qualified synchronization, keep the capture callbacks running and wait for `wait_ready()` before starting your output. An already-buffered frame retains the synchronization conditions at its own exposure, even if it is delivered later.
 
 ### Reuse the libcamera timing adapter
 
