@@ -271,6 +271,29 @@ void wire_membership() {
     malformed["waiting_nodes"] = "node-b";
     rejects([&] { detail::status_from_json(malformed); });
 }
+void wire_alignment() {
+    GroupStatus group;
+    group.state = "calibrating";
+    group.units.resize(2);
+    const auto initial = detail::status_json(group);
+    require(initial["units"][0]["aligned_from_sequence"].is_null() &&
+                !detail::status_from_json(initial).units[0].aligned_from_sequence,
+            "alignment sequences are absent before alignment");
+    group.state = "aligned";
+    group.units[0].aligned_from_sequence = 0;
+    group.units[1].aligned_from_sequence = std::uint64_t{1} << 43;
+    auto wire = detail::status_json(group);
+    const auto restored = detail::status_from_json(wire);
+    require(restored.state == "aligned" && !restored.ready, "group alignment precedes readiness");
+    for (std::size_t i = 0; i < group.units.size(); ++i)
+        require(restored.units[i].aligned_from_sequence == group.units[i].aligned_from_sequence,
+                "wire preserves optional full-width alignment sequences");
+    wire["units"][1].erase("aligned_from_sequence");
+    require(!detail::status_from_json(wire).units[1].aligned_from_sequence,
+            "older status messages have no alignment sequence");
+    wire["units"][1]["aligned_from_sequence"] = -1;
+    rejects([&] { detail::status_from_json(wire); });
+}
 void synchronization_types() {
     SyncConfig sync;
     sync.group_id = "external-sensors";
@@ -441,6 +464,7 @@ int main() {
         synchronization_types();
         configuration_files();
         wire_membership();
+        wire_alignment();
         std::cout << "types tests passed\n";
     } catch (const std::exception& e) {
         std::cerr << e.what() << '\n';
