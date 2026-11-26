@@ -238,8 +238,8 @@ class HttpManagementTests(unittest.TestCase):
                 value.unit_id = "sensor"
                 value.snapshot_timestamp_ns = boot_time_ns()
                 frame = FrameTiming()
-                frame.camera_sequence = 1
-                frame.sensor_timestamp_ns = frame.timestamp_ns = value.snapshot_timestamp_ns - 1
+                frame.camera_sequence = value.snapshot_timestamp_ns // 25_000_000
+                frame.sensor_timestamp_ns = frame.timestamp_ns = frame.camera_sequence * 25_000_000
                 value.frames = [frame]
                 return value
 

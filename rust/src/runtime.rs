@@ -1436,13 +1436,14 @@ mod tests {
                 "fault" => Ok(json!("")),
                 "snapshot" => {
                     let now = boot_time_ns();
+                    let sequence = (now / 25_000_000) as u64;
                     Ok(json!(TimingSnapshot {
                         unit_id: request["unit"].as_str().unwrap().into(),
                         snapshot_timestamp_ns: now,
                         frames: vec![FrameTiming {
-                            camera_sequence: 1,
-                            sensor_timestamp_ns: now - 1,
-                            timestamp_ns: now - 1,
+                            camera_sequence: sequence,
+                            sensor_timestamp_ns: sequence as i64 * 25_000_000,
+                            timestamp_ns: sequence as i64 * 25_000_000,
                             ..FrameTiming::default()
                         }],
                         ..TimingSnapshot::default()
