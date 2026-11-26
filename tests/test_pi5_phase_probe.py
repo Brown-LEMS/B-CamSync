@@ -13,12 +13,15 @@ from pi5_phase_tracking import Tracker, identify, limit_phase_policy
 
 class PhaseProbeTests(unittest.TestCase):
     def test_initial_lock_respects_mode_headroom_for_stock_and_adaptive(self):
-        policy = SimpleNamespace(startup_delta_us=1000, tracking_delta_us=200)
+        policy = SimpleNamespace(startup_delta_us=1000, tracking_delta_us=200, deadband_ms=0.25)
         cfg = SimpleNamespace(phase_policy=policy, validate=lambda: None)
         camera = SimpleNamespace(baseline_us=22727, minimum_us=22221, maximum_us=199993)
         limit_phase_policy(cfg, camera)
         self.assertEqual(cfg.phase_policy.startup_delta_us, 506)
         self.assertEqual(cfg.phase_policy.tracking_delta_us, 200)
+        self.assertEqual(cfg.phase_policy.deadband_ms, 0.25)
+        limit_phase_policy(cfg, camera, deadband_us=100)
+        self.assertEqual(cfg.phase_policy.deadband_ms, 0.1)
 
     def test_request_cancels_either_drift_sign_with_quantized_effect_and_latency(self):
         for fps, bias in [(24, -0.18), (40, 0.12)]:
