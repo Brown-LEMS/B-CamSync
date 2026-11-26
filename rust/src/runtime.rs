@@ -1,6 +1,6 @@
-use crate::config::{boot_time_ns, monotonic_ns, realtime_ns, NodeConfig, SyncConfig};
+use crate::config::{boot_time_ns, monotonic_ns, NodeConfig, SyncConfig};
 use crate::phase::{validate_timing, PhaseController};
-use crate::timing::{CorrectionStatus, Pulse, TimingSnapshot};
+use crate::timing::{CorrectionStatus, FrameTiming, Pulse, TimingSnapshot};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -129,6 +129,56 @@ fn ns(seconds: f64) -> i64 {
 }
 fn decode<T: serde::de::DeserializeOwned>(value: Value) -> Result<T> {
     serde_json::from_value(value).map_err(|e| e.to_string())
+}
+
+/// Adapter suffixes include their last transmitted frame. Join them in local time so
+/// every frame in a controller window gets the same, current node clock mapping.
+fn extend_observations(
+    history: &mut Vec<FrameTiming>,
+    batch: &mut TimingSnapshot,
+    limit: usize,
+) -> Result<()> {
+    if batch.frames.len() > limit {
+        return Err("invalid timing window size".into());
+    }
+    if let (Some(last), Some(first)) = (history.last(), batch.frames.first()) {
+        if let Some(anchor) = batch
+            .frames
+            .iter()
+            .position(|f| f.camera_sequence == last.camera_sequence)
+        {
+            if batch.frames[anchor].sensor_timestamp_ns != last.sensor_timestamp_ns {
+                return Err("sensor timestamp changed for an observed sequence".into());
+            }
+            // Some application adapters always return their complete ring.
+            history.extend_from_slice(&batch.frames[anchor + 1..]);
+        } else if last.camera_sequence.checked_add(1) == Some(first.camera_sequence) {
+            history.append(&mut batch.frames);
+        } else {
+            return Err("camera sequence discontinuity between snapshots".into());
+        }
+    } else {
+        history.clone_from(&batch.frames);
+    }
+    history.drain(..history.len().saturating_sub(limit));
+    batch.frames.clone_from(history);
+    Ok(())
+}
+
+fn map_observations(mut result: TimingSnapshot, clock: &ClockEstimate) -> Result<TimingSnapshot> {
+    if !clock.valid {
+        return Err("common clock is unavailable".into());
+    }
+    result.snapshot_timestamp_ns = shifted(result.snapshot_timestamp_ns, clock.offset_ns)?;
+    for frame in &mut result.frames {
+        frame.timestamp_ns = shifted(frame.timestamp_ns, clock.offset_ns)?;
+        frame.mapping_span_ns = shifted(frame.mapping_span_ns, clock.uncertainty_ns)?;
+    }
+    if result.correction.restored_timestamp_ns != 0 {
+        result.correction.restored_timestamp_ns =
+            shifted(result.correction.restored_timestamp_ns, clock.offset_ns)?;
+    }
+    Ok(result)
 }
 impl Runtime {
     pub fn new(
@@ -399,30 +449,15 @@ impl Runtime {
         }
         shifted(boot_time_ns(), clock.offset_ns)
     }
-    fn snapshot(&self, unit: &str) -> Result<TimingSnapshot> {
-        let snapshot: TimingSnapshot =
-            decode(self.host.call(json!({"op": "snapshot", "unit": unit}))?)?;
+    fn snapshot(&self, unit: &str, from: Option<u64>) -> Result<TimingSnapshot> {
+        let snapshot: TimingSnapshot = decode(
+            self.host
+                .call(json!({"op": "snapshot", "unit": unit, "from": from}))?,
+        )?;
         if snapshot.unit_id != unit {
             return Err("snapshot unit identity differs".into());
         }
         Ok(snapshot)
-    }
-    fn mapped_snapshot(&self, unit: &str) -> Result<TimingSnapshot> {
-        let mut result = self.snapshot(unit)?;
-        let clock = self.clock();
-        if !clock.valid {
-            return Err("common clock is unavailable".into());
-        }
-        result.snapshot_timestamp_ns = shifted(result.snapshot_timestamp_ns, clock.offset_ns)?;
-        for frame in &mut result.frames {
-            frame.timestamp_ns = shifted(frame.timestamp_ns, clock.offset_ns)?;
-            frame.mapping_span_ns = shifted(frame.mapping_span_ns, clock.uncertainty_ns)?;
-        }
-        if result.correction.restored_timestamp_ns != 0 {
-            result.correction.restored_timestamp_ns =
-                shifted(result.correction.restored_timestamp_ns, clock.offset_ns)?;
-        }
-        Ok(result)
     }
     fn adjust_local(
         &self,
@@ -465,7 +500,7 @@ impl Runtime {
         let deadline = monotonic_ns().saturating_add(ns(s.config.request_timeout_seconds));
         while !pending.is_empty() {
             pending.retain(|unit| {
-                let result = self.snapshot(unit).and_then(|observed| {
+                let result = self.snapshot(unit, None).and_then(|observed| {
                     let correction = observed.correction;
                     if s.corrections
                         .get(unit)
@@ -681,7 +716,7 @@ impl Runtime {
             }
             if monotonic_ns() >= next_health {
                 self.capture_health(s)?;
-                next_health = monotonic_ns() + 1_000_000_000;
+                next_health = monotonic_ns() + ns(s.config.clock_max_age_seconds.min(1.0) / 2.0);
             }
             let listener = s.server.as_ref().unwrap();
             if poll_fd(listener.as_raw_fd(), libc::POLLIN, 100)? {
@@ -721,7 +756,7 @@ impl Runtime {
                 if let Err(error) = health {
                     self.fail(&error);
                 }
-                next_health = monotonic_ns() + 1_000_000_000;
+                next_health = monotonic_ns() + ns(s.config.clock_max_age_seconds.min(1.0) / 2.0);
             }
             if !self.stopping() {
                 if !s.membership_complete {
@@ -793,15 +828,12 @@ impl Runtime {
                         Ok(json!({"active": true}))
                     }
                     "snapshots" => {
-                        self.health(s)?;
                         let snapshots: Vec<_> = s
                             .local_units
                             .iter()
-                            .map(|unit| self.mapped_snapshot(unit))
+                            .map(|unit| self.snapshot(unit, incoming["from"][unit].as_u64()))
                             .collect::<Result<_>>()?;
-                        Ok(
-                            json!({"node": s.local, "snapshots": snapshots, "checked_at": realtime_ns()}),
-                        )
+                        Ok(json!({"node": s.local, "snapshots": snapshots, "clock": self.clock()}))
                     }
                     "adjust" => {
                         let unit = incoming["unit"].as_str().ok_or("invalid control unit")?;
@@ -1012,23 +1044,48 @@ impl Runtime {
                 controllers.insert(unit.id.clone(), controller);
             }
         }
+        // Evaluate on new camera data. Clock checks and status RPCs do not need to run at
+        // camera rate; a slow network request can deliver several observations in one suffix.
+        let poll_ns = (500_000_000 / i64::from(s.config.fps)).max(1_000_000);
         let mut next = 0;
+        let mut next_health = 0;
+        let mut next_peer_status = 0;
+        let mut history: BTreeMap<String, Vec<FrameTiming>> = BTreeMap::new();
         let mut last_metrics: BTreeMap<String, UnitStatus> = BTreeMap::new();
         while !self.stopping() {
-            if monotonic_ns() < next {
-                self.pause(Duration::from_millis(20));
+            let now = monotonic_ns();
+            if now < next {
+                self.pause(Duration::from_nanos((next - now) as u64));
                 continue;
             }
-            self.health(s)?;
+            next = now + poll_ns;
+            if now >= next_health {
+                self.health(s)?;
+                next_health = now + ns(s.config.clock_max_age_seconds.min(1.0) / 2.0);
+            }
+            let cursors: BTreeMap<_, _> = history
+                .iter()
+                .filter_map(|(id, frames)| frames.last().map(|f| (id.clone(), f.camera_sequence)))
+                .collect();
             let mut snapshots = BTreeMap::new();
             for unit in &s.local_units {
-                snapshots.insert(unit.clone(), self.mapped_snapshot(unit)?);
+                let mut batch = self.snapshot(unit, cursors.get(unit).copied())?;
+                extend_observations(
+                    history.entry(unit.clone()).or_default(),
+                    &mut batch,
+                    policy.max_samples,
+                )?;
+                snapshots.insert(unit.clone(), map_observations(batch, &self.clock())?);
             }
             for node in s.config.nodes.clone() {
                 if node.id == s.local {
                     continue;
                 }
-                let result = self.rpc(s, &node.id, json!({"command": "snapshots"}))?;
+                let result = self.rpc(
+                    s,
+                    &node.id,
+                    json!({"command": "snapshots", "from": cursors}),
+                )?;
                 if result["node"] != node.id {
                     return Err("snapshot node identity differs".into());
                 }
@@ -1036,16 +1093,22 @@ impl Runtime {
                     .as_array()
                     .ok_or("invalid node timing snapshots")?;
                 for row in rows {
-                    let snapshot: TimingSnapshot = decode(row.clone())?;
-                    if snapshot.frames.len() > 512 {
-                        return Err("invalid timing window size".into());
-                    }
+                    let mut snapshot: TimingSnapshot = decode(row.clone())?;
                     if s.config.unit(&snapshot.unit_id)?.node_id != node.id
                         || snapshots.contains_key(&snapshot.unit_id)
                     {
                         return Err("snapshot unit identity differs".into());
                     }
-                    snapshots.insert(snapshot.unit_id.clone(), snapshot);
+                    extend_observations(
+                        history.entry(snapshot.unit_id.clone()).or_default(),
+                        &mut snapshot,
+                        policy.max_samples,
+                    )?;
+                    let clock: ClockEstimate = decode(result["clock"].clone())?;
+                    snapshots.insert(
+                        snapshot.unit_id.clone(),
+                        map_observations(snapshot, &clock)?,
+                    );
                 }
             }
             if snapshots.len() != s.config.units.len() {
@@ -1093,8 +1156,7 @@ impl Runtime {
                         return Err(format!("{}: {}", unit.id, decision.fault));
                     }
                     status.ready &= decision.ready;
-                    if let Some(mut pulse) = decision.action {
-                        pulse.expires_ns = shifted(self.common_now()?, 1_000_000_000)?;
+                    if let Some(pulse) = decision.action {
                         if unit.node_id == s.local {
                             self.adjust_local(s, &unit.id, pulse)?;
                         } else {
@@ -1113,13 +1175,16 @@ impl Runtime {
             } else if monotonic_ns() > s.startup_deadline {
                 return Err("group startup calibration deadline exceeded".into());
             }
+            let ready_changed = status.ready != self.status().ready;
             self.publish(status.clone());
-            for node in s.config.nodes.clone() {
-                if node.id != s.local {
-                    self.rpc(s, &node.id, json!({"command": "status", "status": status}))?;
+            if ready_changed || now >= next_peer_status {
+                for node in s.config.nodes.clone() {
+                    if node.id != s.local {
+                        self.rpc(s, &node.id, json!({"command": "status", "status": status}))?;
+                    }
                 }
+                next_peer_status = now + ns(policy.evaluation_seconds.min(1.0));
             }
-            next = monotonic_ns() + ns(policy.evaluation_seconds.min(1.0));
         }
         Ok(())
     }
@@ -1203,6 +1268,7 @@ struct Connection {
 impl Connection {
     fn new(stream: TcpStream, timeout: f64) -> Result<Self> {
         stream.set_nonblocking(true).map_err(|e| e.to_string())?;
+        stream.set_nodelay(true).map_err(|e| e.to_string())?;
         Ok(Self {
             stream,
             timeout,
@@ -1305,6 +1371,42 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     use std::sync::Arc;
 
+    #[test]
+    fn incremental_observations_preserve_sensor_time_and_remap_the_whole_window() {
+        let frame = |sequence| FrameTiming {
+            camera_sequence: sequence,
+            sensor_timestamp_ns: sequence as i64 * 1000,
+            timestamp_ns: sequence as i64 * 1000 + 10,
+            ..FrameTiming::default()
+        };
+        let mut history = vec![frame(1), frame(2)];
+        let mut batch = TimingSnapshot {
+            snapshot_timestamp_ns: 4000,
+            frames: vec![frame(2), frame(3)],
+            ..TimingSnapshot::default()
+        };
+        extend_observations(&mut history, &mut batch, 4).unwrap();
+        let mapped = map_observations(
+            batch,
+            &ClockEstimate {
+                valid: true,
+                offset_ns: 50,
+                uncertainty_ns: 4,
+                ..ClockEstimate::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(mapped.frames.len(), 3);
+        assert_eq!(mapped.frames[0].timestamp_ns, 1060);
+        assert_eq!(mapped.frames[2].sensor_timestamp_ns, 3000);
+        assert_eq!(history[0].timestamp_ns, 1010);
+        let mut next = TimingSnapshot {
+            frames: vec![frame(5)],
+            ..TimingSnapshot::default()
+        };
+        assert!(extend_observations(&mut history, &mut next, 4).is_err());
+    }
+
     #[derive(Default)]
     struct Counters {
         binds: AtomicUsize,
@@ -1343,7 +1445,7 @@ mod tests {
                             timestamp_ns: now - 1,
                             ..FrameTiming::default()
                         }],
-                        correction: CorrectionStatus::default()
+                        ..TimingSnapshot::default()
                     }))
                 }
                 "platform_start" => {
