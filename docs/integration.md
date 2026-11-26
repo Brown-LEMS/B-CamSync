@@ -82,7 +82,7 @@ Methods can run on the synchronization thread concurrently with your capture cal
 | Method | Required behavior |
 | --- | --- |
 | `bind(session_id, round_id)` | Bind the control namespace for this synchronization run, without starting or stopping cameras. |
-| `snapshot()` | Return a consistent `TimingSnapshot`: unit ID, current local boot time, ordered frame history, and correction feedback. |
+| `snapshot()` | Return the unit ID, current local boot time, ordered frame history and correction feedback. A follower also supplies its legal `minimum_duration_us` and `maximum_duration_us` for the active mode and exposure. |
 | `adjust(pulse)` | Accept or reject the bounded frame-period correction and return its current `CorrectionStatus`. Acceptance and submission are separate from observed completion. |
 | `cancel()` | Request restoration of the baseline frame period while capture continues; report its observed completion in subsequent snapshots. |
 | `fault()` | Return an empty string when healthy, or a capture/control error description. |
@@ -93,11 +93,13 @@ Preserve `FrameTiming.sensor_timestamp_ns` as the original sensor timestamp, nev
 
 Supply monotonic camera sequences and ordered, fresh timing history. Record requested and device-reported frame durations in microseconds, plus the correction ID associated with the submitted request. `TimingSnapshot.snapshot_timestamp_ns` and correction restoration timestamps use local boot-time nanoseconds. Use `boot_time_ns()` for local observations and `monotonic_ns()` for the actuator's submission deadline argument, as the examples do.
 
+The runtime can request the suffix of the observation history beginning at an inclusive sequence cursor using `snapshot_from(sequence)`. The standard libcamera adapter provides this operation. A custom adapter can use the default implementation derived from its complete snapshot.
+
 ### Frame-period corrections
 
 Adapter implementers can import `PhaseActuator` from `bcamsync.adapters` to track bounded pulses, expiry, cancellation, and restoration. This library's controller generates a `Pulse` and its runtime calls `SyncUnit.adjust(pulse)` locally or through the synchronization protocol. The adapter registers that request with `PhaseActuator.adjust()`; it does not choose the correction. Bind the actuator in `bind()` and use actual device duration limits. Call `next(baseline_us, monotonic_ns())` when submitting each request, apply the returned `duration_us` through your SDK, and retain the `Submission` alongside that request.
 
-Call `completed()` for a restoration submission only when device completion metadata confirms that the baseline duration has taken effect. Queueing a request or accepting a pulse does not confirm restoration. The OpenCV adapter retains pending restoration feedback across requests until the reported duration returns to baseline; use that real-device example for this distinction. Export the actuator's current `snapshot()` as `TimingSnapshot.correction`.
+An adapter with a hardware restoration acknowledgement can pass the corresponding submission to `completed()`. For libcamera, the built-in adapters record the stable device-reported baseline before a command and call `observe_duration()` on completed requests. They confirm the observed return to baseline after an effective command. A request too small to produce a measurable change is observed for 12 frames after restoration. When setting `request_timeout_seconds` for slow modes, allow time for the camera queue and this observation window. Export the actuator state as `TimingSnapshot.correction`.
 
 ## Optional managed capture: `Session`
 
@@ -136,6 +138,8 @@ Reads continue while synchronization is starting or faulted. Inspect `status().r
 The minimal Pi 5 `SyncSession` example constructs configuration in `sync_config()` and needs no JSON file. The extended capture tool uses [`external_one_node_pi5.json`](configs/external_one_node_pi5.json). For a timing-only multi-node configuration, see [`external_two_nodes.json`](configs/external_two_nodes.json). All nodes in a group must agree on membership, reference unit, frame rate, clock mode, and phase policy. The reference is explicitly configured; node discovery resolves known members rather than electing a topology.
 
 A single-node group uses its local clock without networking. Physical multi-node sessions additionally use transport and private clock estimation, even for application-owned capture; automatic networking also prepares links and discovers the configured members. See [deployment](deployment.md) for address policy and optional persistent services. `SyncSession` changes acquisition ownership; it uses the same multi-node runtime facilities as `Session`.
+
+Start capture at the configured frame rate and keep it running while `wait_ready()` waits for camera-response identification, initial phase acquisition and quality qualification. The library obtains the effective period changes and request delay from the current stream. Configure readiness through `ready_p95_ms`, `ready_max_ms` and `ready_windows`. The earlier fixed deadband, assumed application delay, tracking burst size and fixed correction interval have been retired. Rebuild C++ adapters against the current headers and upgrade all nodes of a synchronization group together.
 
 Default readiness targets are p95 ≤ 0.5 ms and max ≤ 1 ms across two settled windows. Continue observing status during acquisition; applications choose whether to stop recording, mark intervals, or continue when quality changes. The minimal OpenCV example keeps preview running after synchronization exits. The extended capture tool also continues recording and marks its measurement report as failed if readiness is lost. Managed browser recording writes immediately when requested and retains metadata for downstream selection.
 

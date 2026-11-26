@@ -1,6 +1,6 @@
 # B-CamSync
 
-B-CamSync is a camera synchronization library with a Rust core and interfaces for C++ and Python. This library measures frame-phase differences, applies bounded frame-period corrections through camera adapters, and reports synchronization quality within one node or across multiple nodes.
+B-CamSync is a camera synchronization library with a Rust core and interfaces for C++ and Python. At startup it measures each follower's free-running frame period, tests how its sensor responds to shorter and longer requests, and learns the delay until a request changes frame timing. It then aligns the frames and tracks drift with individual frame-period corrections. Applications supply the target frame rate and receive synchronization quality within one node or across multiple nodes.
 
 **Use `SyncSession` to add synchronization to your existing capture pipeline.** Your application configures cameras, acquires frames, owns image buffers, displays images, and records video. This library consumes sensor timing and requests corrections through device adapters. The separately installed C++ managed capture add-on can take over camera operations when that is useful to your application.
 
