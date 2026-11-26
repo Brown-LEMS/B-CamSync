@@ -192,19 +192,26 @@ class HttpPreviewTests(unittest.TestCase):
                         redirect_stdout(io.StringIO()), self.assertRaisesRegex(RuntimeError, "capture reached"):
                     example.main()
 
-    def test_single_camera_keeps_requeueing_and_stops_without_gui_calls(self):
+    def test_single_camera_retries_then_requeues_and_stops_without_gui_calls(self):
         with tempfile.TemporaryFile() as storage:
             storage.write(bytes(range(16)))
             storage.flush()
             stream = SimpleNamespace(stream=object(), stride=8, size=SimpleNamespace(width=4, height=2))
             buffer = SimpleNamespace(planes=[SimpleNamespace(fd=storage.fileno(), offset=0)],
-                                     metadata=SimpleNamespace(status="success"))
-            camera_request = Mock(status="complete", buffers={stream.stream: buffer})
-            camera_request.add_buffer.return_value = 0
+                                     metadata=SimpleNamespace(status="success", sequence=0))
+            requests = []
             camera = Mock(id="camera-1")
             for operation in (camera.acquire, camera.configure, camera.start, camera.queue_request):
                 operation.return_value = 0
-            camera.create_request.return_value = camera_request
+
+            def create(cookie):
+                request = Mock(cookie=cookie, status="cancelled" if cookie == 1 else "complete",
+                               buffers={stream.stream: buffer})
+                request.add_buffer.return_value = 0
+                requests.append(request)
+                return request
+
+            camera.create_request.side_effect = create
             configuration = camera.generate_configuration.return_value
             configuration.at.return_value = stream
             configuration.validate.return_value = "valid"
@@ -212,7 +219,13 @@ class HttpPreviewTests(unittest.TestCase):
             allocator.allocate.return_value = 0
             allocator.buffers.return_value = [buffer]
             manager = Mock(cameras=[camera])
-            manager.get_ready_requests.return_value = [camera_request]
+
+            def complete():
+                buffer.metadata.sequence += 1
+                # Include the stopped generation's cancellation in every subsequent batch.
+                return list(requests)
+
+            manager.get_ready_requests.side_effect = complete
             sdk = SimpleNamespace(CameraManager=SimpleNamespace(singleton=lambda: manager),
                                   StreamRole=SimpleNamespace(Viewfinder="preview"),
                                   Size=lambda *_: stream.size, PixelFormat=str, SensorConfiguration=SimpleNamespace,
@@ -225,7 +238,7 @@ class HttpPreviewTests(unittest.TestCase):
                                       "ExposureTime", "AnalogueGain")}))
             selector = MagicMock()
             selector.__enter__.return_value = selector
-            selector.select.side_effect = [[object()], KeyboardInterrupt]
+            selector.select.side_effect = [[object()] for _ in range(4)] + [KeyboardInterrupt]
             preview = Mock()
             cv2 = Mock()
             with patch.dict(sys.modules, {"libcamera": sdk, "cv2": cv2}), \
@@ -236,9 +249,10 @@ class HttpPreviewTests(unittest.TestCase):
                 single.main()
             np.testing.assert_array_equal(preview.publish.call_args.args[0]["board-1"],
                                           [[0, 1, 2, 3], [8, 9, 10, 11]])
-            self.assertEqual(camera.queue_request.call_count, 2)
-            camera_request.reuse.assert_called_once()
-            camera.stop.assert_called_once()
+            self.assertEqual(camera.queue_request.call_count, 5)
+            requests[0].reuse.assert_not_called()
+            self.assertEqual(requests[1].reuse.call_count, 3)
+            self.assertEqual(camera.stop.call_count, 2)
             camera.release.assert_called_once()
             preview.close.assert_called_once()
             cv2.imshow.assert_not_called()

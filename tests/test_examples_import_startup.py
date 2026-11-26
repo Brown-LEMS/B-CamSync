@@ -78,8 +78,8 @@ class ImportStartupTests(unittest.TestCase):
                         # Hold a cold worker import across the deadline even if the scheduler
                         # starts the worker before Capture.start enters its first-frame wait.
                         self.assertTrue(deadline.waiting.wait(2), "Camera never began first-frame waiting")
-                    # Model a first import taking longer than the ten-second startup budget.
-                    deadline.advance(11)
+                    # Model a first import taking longer than the full startup budget.
+                    deadline.advance(1000)
                     if in_capture_thread:
                         self.assertTrue(deadline.expired.wait(2), "First-frame wait did not expire")
                 with sdk.changed:
@@ -166,13 +166,14 @@ class ImportStartupTests(unittest.TestCase):
                 if failures:
                     raise failures[0]
                 self.assertTrue(requested and not deadline.expired.is_set(), list(sdk.events))
-                for camera in cameras:
-                    sdk.complete(camera)
+                for _ in range(3 if name in ("single_board_http", "opencv_sync_http") else 1):
+                    for camera in cameras:
+                        sdk.complete(camera)
                 self.assertTrue(shown.wait(2), "No frames reached the preview")
             finally:
                 quit_preview.set()
                 if synchronized and not shown.is_set():
-                    deadline.advance(11)
+                    deadline.advance(1000)
                 app.join(3)
             if failures:
                 raise failures[0]

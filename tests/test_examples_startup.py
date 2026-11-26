@@ -1,11 +1,14 @@
 """Camera startup ordering and cleanup with simulated SDK and timing ports."""
 
-from contextlib import ExitStack
+from contextlib import ExitStack, redirect_stdout
 import importlib.util
+import io
+import json
 from pathlib import Path
 import sys
 import tempfile
 import threading
+import time
 from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, Mock, patch
@@ -32,6 +35,14 @@ def load_example(name):
     return module
 
 
+def completed(requests):
+    for request in requests:
+        buffer = next(iter(request.buffers.values()))
+        buffer.metadata.sequence += 1
+        request.metadata["SensorTimestamp"] = time.monotonic_ns()
+    return requests
+
+
 class StartupTests(unittest.TestCase):
     def fixture(self, example, stack):
         events, cameras, requests = [], [], []
@@ -45,13 +56,19 @@ class StartupTests(unittest.TestCase):
                                      size=SimpleNamespace(width=4, height=2))
             buffer = SimpleNamespace(planes=[SimpleNamespace(fd=storage.fileno(), offset=0)],
                                      metadata=SimpleNamespace(status="success", sequence=1))
-            request = Mock(cookie=index - 1, status="complete", buffers={stream.stream: buffer},
-                           metadata={"SensorTimestamp": index, "FrameDuration": 25000})
-            request.add_buffer.return_value = 0
-            requests.append(request)
+            requests.append(None)
+
+            def create(cookie, i=index, buffer=buffer, stream=stream):
+                events.append(("request", i))
+                request = Mock(cookie=cookie, status="complete", buffers={stream.stream: buffer},
+                               metadata={"SensorTimestamp": 0, "FrameDuration": 25000})
+                request.add_buffer.return_value = 0
+                requests[i - 1] = request
+                return request
+
             camera.acquire.return_value = 0
             camera.configure.side_effect = lambda _, i=index: events.append(("configure", i)) or 0
-            camera.create_request.side_effect = lambda _, i=index, r=request: events.append(("request", i)) or r
+            camera.create_request.side_effect = create
             camera.start.side_effect = lambda _, i=index: events.append(("start", i)) or 0
             camera.stop.side_effect = lambda i=index: events.append(("stop", i))
             camera.release.side_effect = lambda i=index: events.append(("release", i))
@@ -63,7 +80,7 @@ class StartupTests(unittest.TestCase):
             camera.allocator = Mock(allocate=Mock(return_value=0), buffers=Mock(return_value=[buffer]))
         manager = Mock()
         manager.get.side_effect = dict((camera.id, camera) for camera in cameras).get
-        manager.get_ready_requests.return_value = requests
+        manager.get_ready_requests.side_effect = lambda: completed(requests)
         sdk = SimpleNamespace(
             CameraManager=SimpleNamespace(singleton=lambda: manager),
             StreamRole=SimpleNamespace(Viewfinder="preview"), Size=lambda *_: SimpleNamespace(width=4, height=2),
@@ -114,7 +131,7 @@ class StartupTests(unittest.TestCase):
                     camera.release.assert_called_once()
 
     def test_cancelled_first_request_identifies_board_and_aborts_start(self):
-        for name in EXAMPLES:
+        for name in ("opencv_sync", "two_nodes_sync", "two_nodes_sync_http"):
             with self.subTest(example=name), ExitStack() as stack:
                 capture, _, requests, _, _ = self.fixture(load_example(name), stack)
                 requests[0].status = "cancelled"
@@ -127,13 +144,96 @@ class StartupTests(unittest.TestCase):
             with self.subTest(example=name), ExitStack() as stack:
                 capture, _, requests, manager, _ = self.fixture(load_example(name), stack)
                 second_frame = threading.Event()
-                manager.get_ready_requests.side_effect = lambda: requests if second_frame.is_set() else requests[:1]
+                manager.get_ready_requests.side_effect = lambda: completed(requests if second_frame.is_set() else requests[:1])
                 capture.thread = threading.Thread(target=capture.run, args=(np,))
                 capture.thread.start()
                 self.assertFalse(capture.ready.wait(0.03))
                 second_frame.set()
                 self.assertTrue(capture.ready.wait(1))
                 self.assertIsNone(capture.error)
+
+    def test_http_retries_only_failed_board_and_discards_old_cancellations(self):
+        example = load_example("opencv_sync_http")
+        with ExitStack() as stack:
+            capture, cameras, requests, manager, _ = self.fixture(example, stack)
+            old = requests[0]
+            old.status = "cancelled"
+            cancel_after_ready = threading.Event()
+
+            def ready():
+                if cancel_after_ready.is_set():
+                    requests[1].status = "cancelled"
+                current = completed(requests)
+                return [old, *current] if current[0] is not old else current
+
+            manager.get_ready_requests.side_effect = ready
+            capture.start(np)
+            self.assertEqual([camera.start.call_count for camera in cameras], [2, 1])
+            self.assertEqual(cameras[0].stop.call_count, 1)
+            self.assertNotEqual(requests[0].cookie, old.cookie)
+            self.assertGreaterEqual(cameras[0].queue_request.call_count, 4)
+            self.assertTrue(all(unit.observe.called for unit in capture.units.values()))
+            cancel_after_ready.set()
+            capture.thread.join(2)
+            self.assertRegex(str(capture.error), "cancelled: board-2")
+            self.assertEqual([camera.start.call_count for camera in cameras], [2, 1])
+
+    def test_http_persistent_cancellations_exhaust_exactly_twenty_retries(self):
+        example = load_example("opencv_sync_http")
+        with ExitStack() as stack:
+            capture, cameras, requests, manager, _ = self.fixture(example, stack)
+
+            def cancelled():
+                requests[0].status = "cancelled"
+                return completed(requests)
+
+            manager.get_ready_requests.side_effect = cancelled
+            output = io.StringIO()
+            with redirect_stdout(output), self.assertRaisesRegex(RuntimeError, "startup exhausted: board-1"):
+                capture.start(np)
+            records = [json.loads(line.removeprefix("B-CamSync startup ")) for line in output.getvalue().splitlines()]
+            self.assertEqual([record["attempt"] for record in records], list(range(1, 22)))
+            self.assertEqual([record["outcome"] for record in records], ["retry"] * 20 + ["exhausted"])
+            self.assertTrue(all(record["valid_frames"] == 0 for record in records))
+            self.assertEqual([camera.start.call_count for camera in cameras], [21, 1])
+            self.assertFalse(capture.units["board-1"].observe.called)
+
+    def test_http_no_output_restarts_camera_even_without_cancel_notification(self):
+        example = load_example("opencv_sync_http")
+        with ExitStack() as stack:
+            capture, cameras, requests, manager, _ = self.fixture(example, stack)
+            # Deliver data on the healthy board throughout the first board's initial stall.
+            manager.get_ready_requests.side_effect = lambda: completed(
+                requests if cameras[0].start.call_count > 1 else requests[1:])
+            with patch.object(example, "ATTEMPT_SECONDS", 0.04):
+                capture.start(np)
+            self.assertEqual([camera.start.call_count for camera in cameras], [2, 1])
+            self.assertIsNone(capture.error)
+
+    def test_http_revalidates_a_previously_qualified_board_that_stalls_while_waiting(self):
+        example = load_example("opencv_sync_http")
+        with ExitStack() as stack:
+            capture, cameras, requests, manager, _ = self.fixture(example, stack)
+            ticks = 0
+
+            def alternating():
+                nonlocal ticks
+                ticks += 1
+                if ticks <= 3:
+                    batch = requests[:1]
+                elif cameras[0].start.call_count == 1:
+                    batch = requests[1:]
+                else:
+                    batch = requests
+                for request in completed(batch):
+                    request.metadata["SensorTimestamp"] = ticks * 25_000_000
+                return batch
+
+            manager.get_ready_requests.side_effect = alternating
+            with patch.object(example, "ATTEMPT_SECONDS", 0.06):
+                capture.start(np)
+            self.assertEqual([camera.start.call_count for camera in cameras], [2, 1])
+            self.assertTrue(capture.units["board-1"].observe.called)
 
 
 if __name__ == "__main__":
