@@ -44,7 +44,7 @@ def identify(path, nominal):
 
 
 def limit_phase_policy(config, follower, deadband_us=None, excursion_seconds=None):
-    """Both trial modes use the same pre-lock policy within actual camera headroom."""
+    """All trial modes use the same pre-lock policy within actual camera headroom."""
     headroom = min(follower.baseline_us - follower.minimum_us,
                    follower.maximum_us - follower.baseline_us)
     if headroom <= 0:
@@ -102,10 +102,17 @@ def run(args):
             if not session.wait_ready(90):
                 raise RuntimeError("No initial lock before measurement")
             print("Stock initial lock complete", flush=True)
-            if args.mode == "adaptive":
+            if args.mode != "stock":
                 session.stop()
                 print("Stock synchronization stopped; capture continues under the experimental controller", flush=True)
-                probes[1].control = Tracker(probes, model, args.fps).request
+                if args.mode == "centered":
+                    from pi5_centered_tracker import CenteredTracker
+
+                    tracker = CenteredTracker(probes, model, args.fps, lag=args.lag_frames)
+                    print(f"Centered tracking: measured action lag {args.lag_frames} frames", flush=True)
+                else:
+                    tracker = Tracker(probes, model, args.fps)
+                probes[1].control = tracker.request
             for probe in probes:
                 probe.stage = args.mode
             start = time.monotonic()
@@ -123,7 +130,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fps", type=int, required=True)
     parser.add_argument("--seconds", type=int, required=True)
-    parser.add_argument("--mode", choices=["stock", "adaptive"], required=True)
+    parser.add_argument("--mode", choices=["stock", "adaptive", "centered"], required=True)
+    parser.add_argument("--lag-frames", type=int,
+                        help="centered mode: measured frames from request submission to changed sensor interval")
     parser.add_argument("--stock-deadband-us", type=float,
                         help="override the stock controller deadband for lock and stock tracking")
     parser.add_argument("--stock-excursion-seconds", type=float,
@@ -134,4 +143,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.fps <= 0 or args.seconds <= 0:
         parser.error("--fps and --seconds must be positive")
+    if args.mode == "centered" and (args.lag_frames is None or args.lag_frames < 1):
+        parser.error("centered mode requires a positive measured --lag-frames")
+    if args.mode != "centered" and args.lag_frames is not None:
+        parser.error("--lag-frames applies only to centered mode")
     run(args)
