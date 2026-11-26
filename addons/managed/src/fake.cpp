@@ -75,6 +75,7 @@ class FakeBackend final : public AcquisitionBackend {
                     auto packet = std::make_shared<FramePacket>();
                     packet->unit_id = config_.id;
                     packet->sequence = sequence;
+                    packet->camera_sequence = timing.camera_sequence;
                     packet->sensor_timestamp_ns = timing.sensor_timestamp_ns;
                     packet->timestamp_ns = timing.timestamp_ns;
                     packet->requested_exposure_us = packet->exposure_us = config_.exposure_us;

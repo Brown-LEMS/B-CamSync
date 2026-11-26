@@ -99,6 +99,8 @@ PYBIND11_MODULE(_native, module) {
                             "A board frame whose readonly views retain native storage.")
         .def_property_readonly("unit_id", [](const FrameHandle& f) { return f.packet->unit_id; })
         .def_property_readonly("sequence", [](const FrameHandle& f) { return f.packet->sequence; })
+        .def_property_readonly("camera_sequence", [](const FrameHandle& f) { return f.packet->camera_sequence; },
+                               "Sensor frame sequence used by UnitStatus.aligned_from_sequence.")
         .def_property_readonly("dropped_before",
                                [](const FrameHandle& f) { return f.packet->dropped_before; })
         .def_property_readonly("sensor_timestamp_ns",

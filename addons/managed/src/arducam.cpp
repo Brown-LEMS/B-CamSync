@@ -350,6 +350,7 @@ class ArducamBackend final : public AcquisitionBackend, public detail::Interrupt
             auto packet = std::make_shared<FramePacket>();
             packet->unit_id = config_.id;
             packet->sequence = sequence;
+            packet->camera_sequence = timing.camera_sequence;
             packet->sensor_timestamp_ns = timing.sensor_timestamp_ns;
             packet->timestamp_ns = timing.timestamp_ns;
             packet->width = detail::arducam_width;
