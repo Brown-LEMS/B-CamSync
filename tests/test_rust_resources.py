@@ -74,6 +74,11 @@ def resource_counts():
 
 
 class RustResourceTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if sys.platform == "linux":
+            cls.idle_resources = resource_counts()
+
     def run_session(self):
         observations = {"bindings": 0, "snapshots": 0, "cancellations": 0}
         adapter = ReferenceTiming(observations)
@@ -106,13 +111,13 @@ class RustResourceTests(unittest.TestCase):
     def test_repeated_sessions_release_native_threads_and_file_descriptors(self):
         for _ in range(5):
             self.run_session()
-        baseline = resource_counts()
+        self.assert_resources_return(self.idle_resources)
         for completed in range(1, 101):
             self.run_session()
             if completed % 25 == 0:
-                self.assert_resources_return(baseline)
+                self.assert_resources_return(self.idle_resources)
                 print(f"Session resource check: {completed}/100 cycles completed", flush=True)
-        self.assert_resources_return(baseline)
+        self.assert_resources_return(self.idle_resources)
 
     def assert_resources_return(self, baseline):
         deadline = time.monotonic() + 3
