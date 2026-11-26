@@ -42,6 +42,8 @@ py::array frame_view(const FrameHandle& frame, unsigned index) {
 PYBIND11_MODULE(_native, module) {
     py::module_::import("bcamsync._native");
     module.doc() = "B-CamSync managed capture add-on";
+    module.def("configure_camera_console", &configure_camera_console, py::arg("verbose"),
+               "Configure CLI output once before using libcamera. Explicit SDK log settings take precedence.");
     module.def("enumerate_arducam_cameras", &enumerate_arducam_cameras,
                py::arg("profile") = "arducam_b0267_pi4", py::call_guard<py::gil_scoped_release>(),
                "List exact local libcamera camera IDs before creating a session.");

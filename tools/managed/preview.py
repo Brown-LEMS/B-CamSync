@@ -23,6 +23,7 @@ from PIL import Image
 from bcamsync import Config
 from bcamsync.http_management import HttpNodeService, ManagementHandler
 from bcamsync.node import run_node
+from bcamsync_managed import camera_cli_output
 
 
 def encode_packet(packet, max_width: int, quality: int) -> bytes:
@@ -247,11 +248,13 @@ def main():
     parser.add_argument("--discovery-port", type=int, default=58082)
     parser.add_argument("--address", help="existing local IPv4 address")
     parser.add_argument("--preview-fps", type=float, default=5)
+    parser.add_argument("-v", "--verbose", action="store_true", help="show detailed camera startup diagnostics")
     args = parser.parse_args()
-    run_node(Config.from_file(args.config), args.node, address=args.address,
-             network_startup="automatic",
-             http_port=args.http_port, discovery_port=args.discovery_port,
-             server_class=PreviewService, preview_fps=args.preview_fps)
+    with camera_cli_output(args.verbose):
+        run_node(Config.from_file(args.config), args.node, address=args.address,
+                 network_startup="automatic",
+                 http_port=args.http_port, discovery_port=args.discovery_port,
+                 server_class=PreviewService, preview_fps=args.preview_fps)
 
 
 if __name__ == "__main__":

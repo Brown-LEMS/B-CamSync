@@ -18,6 +18,7 @@ from uuid import uuid4
 from bcamsync import Config
 from bcamsync.management import LIMIT
 from bcamsync.node import run_node
+from bcamsync_managed import camera_cli_output
 from preview import PreviewHandler, PreviewService, encode_packet
 
 
@@ -44,13 +45,14 @@ class RecordingHandler(PreviewHandler):
 class RecordingService(PreviewService):
     """One frame consumer per board feeds recording and sampled browser preview."""
 
-    def __init__(self, controller, address, *, output_dir, recording_quality=90, **options):
+    def __init__(self, controller, address, *, output_dir, recording_quality=90, verbose=False, **options):
         if not isinstance(recording_quality, int) or not 1 <= recording_quality <= 95:
             raise ValueError("recording_quality must be in 1..95")
         super().__init__(controller, address, **options)
         self.handler_class = RecordingHandler
         self.output_dir = Path(output_dir).resolve()
         self.recording_quality = recording_quality
+        self.verbose = verbose
         self._record_lock = threading.RLock()
         self._control_lock = threading.RLock()
         self._files = None
@@ -146,7 +148,7 @@ class RecordingService(PreviewService):
                 stats["last_sequence"] = packet.sequence
                 stats["frames"] += 1
                 stats["bytes"] += len(encoded)
-                if time.monotonic() >= self._next_report:
+                if self.verbose and time.monotonic() >= self._next_report:
                     print("Recording progress: " + json.dumps(self._recording["units"]), flush=True)
                     self._next_report = time.monotonic() + 5
             except Exception as error:
@@ -168,7 +170,8 @@ class RecordingService(PreviewService):
                 self._streams.clear()
             directory = Path(self._recording["directory"])
             (directory / "summary.json").write_text(json.dumps(self._recording, indent=2) + "\n")
-            print("Recording stopped: " + json.dumps(self._recording), flush=True)
+            summary = json.dumps(self._recording) if self.verbose else str(directory)
+            print(f"Recording stopped: {summary}", flush=True)
 
     def close(self):
         try:
@@ -193,12 +196,14 @@ def main():
     parser.add_argument("--discovery-port", type=int, default=58082)
     parser.add_argument("--preview-fps", type=float, default=5)
     parser.add_argument("--recording-quality", type=int, default=90)
+    parser.add_argument("-v", "--verbose", action="store_true", help="show camera diagnostics and recording progress")
     args = parser.parse_args()
-    run_node(Config.from_file(args.config), args.node, address=args.address,
-             network_startup="explicit", server_class=RecordingService,
-             output_dir=args.output_dir, recording_quality=args.recording_quality,
-             preview_fps=args.preview_fps, http_port=args.http_port,
-             discovery_port=args.discovery_port)
+    with camera_cli_output(args.verbose):
+        run_node(Config.from_file(args.config), args.node, address=args.address,
+                 network_startup="explicit", server_class=RecordingService,
+                 output_dir=args.output_dir, recording_quality=args.recording_quality, verbose=args.verbose,
+                 preview_fps=args.preview_fps, http_port=args.http_port,
+                 discovery_port=args.discovery_port)
 
 
 if __name__ == "__main__":

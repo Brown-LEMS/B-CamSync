@@ -2,6 +2,8 @@
 #include <stdexcept>
 
 namespace bcamsync {
+void configure_camera_console(bool) {}
+
 std::vector<std::unique_ptr<AcquisitionBackend>> make_arducam_backends(const std::vector<UnitConfig> &, unsigned) {
     throw std::runtime_error("Arducam acquisition requires a Linux build with BCAMSYNC_WITH_LIBCAMERA=ON");
 }

@@ -6,6 +6,7 @@ from pathlib import Path
 import time
 
 from bcamsync import Config, Session
+from bcamsync_managed import camera_cli_output
 
 
 def main() -> None:
@@ -13,9 +14,15 @@ def main() -> None:
     parser.add_argument("config", type=Path)
     parser.add_argument("node")
     parser.add_argument("--seconds", type=float, default=10)
+    parser.add_argument("-v", "--verbose", action="store_true", help="show camera diagnostics and frame statistics")
     args = parser.parse_args()
     if not math.isfinite(args.seconds) or args.seconds <= 0:
         parser.error("--seconds must be finite and positive")
+    with camera_cli_output(args.verbose):
+        capture(args)
+
+
+def capture(args):
     config = Config.from_file(args.config)
     units = [unit for unit in config.units if unit.node_id == args.node]
     with Session(config, args.node) as session:
@@ -30,7 +37,7 @@ def main() -> None:
                     continue
                 # Each readonly array has board stride and keeps its memory alive.
                 views = packet.views
-                if time.monotonic() >= next_report:
+                if args.verbose and time.monotonic() >= next_report:
                     print(f"{packet.unit_id}: sequence={packet.sequence}, "
                           f"views={[view.shape for view in views]}, dropped={packet.dropped_before}, "
                           f"clock_valid={packet.clock_valid}, sync={status.state}, fault={status.fault}", flush=True)

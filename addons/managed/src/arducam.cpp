@@ -40,6 +40,7 @@ namespace bcamsync {
 namespace {
 constexpr std::int64_t second_ns = 1000000000LL;
 std::mutex progress_mutex;
+std::atomic<bool> verbose_camera_console{false};
 
 std::int64_t boot_ns() {
     timespec value{};
@@ -301,7 +302,7 @@ class ArducamBackend final : public AcquisitionBackend, public detail::Interrupt
             report = gain_locked_ || completion.timing.sensor_timestamp_ns >= next_manual_progress_;
             if (report) next_manual_progress_ = completion.timing.sensor_timestamp_ns + 500000000;
         }
-        if (report) gain_progress(completion);
+        if (report && verbose_camera_console.load()) gain_progress(completion);
     }
 
     void process(const Completion &completion) {
@@ -484,6 +485,14 @@ class ArducamBackend final : public AcquisitionBackend, public detail::Interrupt
             if (config_.auto_gain) gain_warmup_ = std::make_unique<detail::GainWarmup>(gain_minimum, gain_maximum);
 
             auto report = [&](const char *outcome, const char *reason) {
+                if (!verbose_camera_console.load()) {
+                    std::lock_guard<std::mutex> lock(progress_mutex);
+                    if (std::strcmp(outcome, "retry") == 0)
+                        std::clog << config_.id << ": retry " << attempt << '/' << max_attempts - 1 << '\n' << std::flush;
+                    else if (std::strcmp(outcome, "ready") == 0)
+                        std::clog << config_.id << ": camera ready (attempt " << attempt << ")\n" << std::flush;
+                    return;
+                }
                 const auto time = Startup::Clock::now();
                 std::lock_guard<std::mutex> state_lock(state_mutex_);
                 nlohmann::json event{{"unit", config_.id}, {"camera_id", config_.camera_id}, {"attempt", attempt}, {"outcome", outcome}, {"reason", reason},
@@ -677,6 +686,12 @@ public:
         return fault_;
     }
 };
+}
+
+void configure_camera_console(bool verbose) {
+    if (!verbose && !std::getenv("LIBCAMERA_LOG_FILE") && setenv("LIBCAMERA_LOG_LEVELS", "*:FATAL", 0))
+        throw std::runtime_error("Cannot configure libcamera log levels");
+    verbose_camera_console.store(verbose);
 }
 
 std::vector<std::unique_ptr<AcquisitionBackend>> make_arducam_backends(const std::vector<UnitConfig> &units, unsigned fps) {

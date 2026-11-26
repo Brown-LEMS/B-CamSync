@@ -4,16 +4,25 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 int main(int argc, char **argv) {
-    if (argc < 3 || argc > 4) {
-        std::cerr << "Usage: bcamsync_capture CONFIG NODE [SECONDS]\n";
+    bool verbose = false;
+    std::vector<std::string> positional;
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "-v" || arg == "--verbose") verbose = true;
+        else positional.push_back(arg);
+    }
+    if (positional.size() < 2 || positional.size() > 3) {
+        std::cerr << "Usage: bcamsync_capture [-v|--verbose] CONFIG NODE [SECONDS]\n";
         return 2;
     }
     try {
-        const auto config = bcamsync::Config::from_file(argv[1]);
-        const std::string node = argv[2];
-        const double seconds = argc == 4 ? std::stod(argv[3]) : 10.0;
+        bcamsync::configure_camera_console(verbose);
+        const auto config = bcamsync::Config::from_file(positional[0]);
+        const auto &node = positional[1];
+        const double seconds = positional.size() == 3 ? std::stod(positional[2]) : 10.0;
         if (!std::isfinite(seconds) || seconds <= 0) throw std::invalid_argument("SECONDS must be finite and positive");
         bcamsync::Session session(config, node);
         session.start();
@@ -33,7 +42,7 @@ int main(int argc, char **argv) {
                     (void)pixels;
                     (void)row_stride;
                 }
-                if (std::chrono::steady_clock::now() >= next_report) {
+                if (verbose && std::chrono::steady_clock::now() >= next_report) {
                     std::cout << frame->unit_id << ": sequence=" << frame->sequence
                               << ", views=" << frame->views << " x " << frame->view_width() << "x" << frame->height
                               << ", dropped=" << frame->dropped_before

@@ -20,6 +20,8 @@ public:
 };
 /// One node factory shares its SDK manager between all local units.
 std::vector<std::unique_ptr<AcquisitionBackend>> make_arducam_backends(const std::vector<UnitConfig> &units, unsigned fps = 40);
+/// Configure CLI output once before using libcamera. Explicit SDK log levels and destinations take precedence.
+void configure_camera_console(bool verbose);
 /// Enumerate exact SDK camera IDs before creating a session; devices are not started.
 std::vector<std::string> enumerate_arducam_cameras(const std::string &profile = "arducam_b0267_pi4");
 }
