@@ -235,6 +235,7 @@ def main(argv: list[str] | None = None) -> int:
     serve.add_argument("config", type=Path)
     serve.add_argument("node")
     serve.add_argument("--socket", required=True, type=Path)
+    serve.add_argument("-v", "--verbose", action="store_true", help="show detailed camera diagnostics")
     request = sub.add_parser("request")
     request.add_argument("command", choices=sorted(COMMANDS))
     request.add_argument("--socket", required=True, type=Path)
@@ -243,8 +244,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.mode == "serve":
-            from bcamsync_managed import Config
+            from bcamsync_managed import Config, configure_camera_console
 
+            configure_camera_console(args.verbose)
             service = NodeService(Config.from_file(args.config), args.node, args.socket)
             previous = {}
 
@@ -263,6 +265,8 @@ def main(argv: list[str] | None = None) -> int:
                                    operation_id=args.operation_id)
             print(json.dumps(result, indent=2, allow_nan=False))
     except (ValueError, KeyError, RuntimeError, OSError) as error:
+        if args.mode == "serve" and args.verbose:
+            raise
         print(f"B-CamSync management: {error}", file=sys.stderr)
         return 1
     return 0

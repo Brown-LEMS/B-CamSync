@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from bcamsync import Config, NetworkSession, SyncConfig
-from bcamsync import network as network_app, node as node_app
+from bcamsync import management, network as network_app, node as node_app
 from bcamsync.management import NodeService
 
 
@@ -173,12 +173,21 @@ class NodeStartupTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "automatic or explicit"):
             node_app.run_node(self.config, "node-a", network_startup="invalid")
 
+    def test_management_server_sets_camera_verbosity(self):
+        path = str(ROOT / "tests/fixtures/configs/fake_one_node.json")
+        with patch.object(management, "NodeService"), patch("bcamsync_managed.configure_camera_console") as console:
+            for flags in ([], ["--verbose"]):
+                self.assertEqual(management.main(["serve", path, "node-a", "--socket", "node.sock", *flags]), 0)
+                console.assert_called_with(bool(flags))
+
     def test_packaged_cli_defaults_to_explicit_and_accepts_automatic_opt_in(self):
         path = str(ROOT / "tests/fixtures/configs/fake_one_node.json")
-        with patch.object(node_app, "run_node") as run:
+        with patch.object(node_app, "run_node") as run, patch("bcamsync_managed.configure_camera_console") as console:
             self.assertEqual(node_app.main([path, "node-a"]), 0)
+            console.assert_called_once_with(False)
             self.assertEqual(run.call_args.kwargs["network_startup"], "explicit")
-            self.assertEqual(node_app.main([path, "node-a", "--network-startup", "automatic"]), 0)
+            self.assertEqual(node_app.main([path, "node-a", "--network-startup", "automatic", "-v"]), 0)
+            console.assert_called_with(True)
             self.assertEqual(run.call_args.kwargs["network_startup"], "automatic")
         with patch.object(network_app, "run_network") as run:
             self.assertEqual(network_app.main([path, "node-a"]), 0)

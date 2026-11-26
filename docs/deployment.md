@@ -30,7 +30,7 @@ One launch sequence is to start the follower first, then the reference in a term
 .venv/bin/python tools/managed/capture.py group.json node-a --seconds 30
 ```
 
-Each node acquires its local board and prints frame sequences, four-view shapes, and synchronization status. Each application captures for its own requested 30 seconds. Whichever node finishes first ends group synchronization; the other application warns and continues local acquisition until its own duration ends. The default settings are 40 fps, 10000 µs exposure, and startup gain calibration. Other layouts are in [docs/configs](../docs/configs).
+Each node reports when its local board is ready. Pass `-v` or `--verbose` to see libcamera diagnostics, gain warmup, frame sequences, four-view shapes and synchronization status. The managed browser and node commands also accept `-v` for camera diagnostics. Each application captures for its own requested 30 seconds. Whichever node finishes first ends group synchronization; the other application warns and continues local acquisition until its own duration ends. The default settings are 40 fps, 10000 µs exposure, and startup gain calibration. Other layouts are in [docs/configs](../docs/configs).
 
 ## Optional network infrastructure
 

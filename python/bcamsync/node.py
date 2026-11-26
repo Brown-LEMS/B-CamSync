@@ -96,13 +96,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--http-port", type=int, default=58083)
     parser.add_argument("--discovery-port", type=int, default=58082)
     parser.add_argument("--address", help="local HTTP IPv4 address; required for explicit startup without a configured address")
+    parser.add_argument("-v", "--verbose", action="store_true", help="show detailed camera diagnostics")
     args = parser.parse_args(argv)
-    from bcamsync_managed import Config
+    from bcamsync_managed import Config, configure_camera_console
 
     try:
+        configure_camera_console(args.verbose)
         run_node(Config.from_file(args.config), args.node, network_startup=args.network_startup,
                  address=args.address, http_port=args.http_port, discovery_port=args.discovery_port)
     except (ValueError, KeyError, RuntimeError, OSError) as error:
+        if args.verbose:
+            raise
         print(f"B-CamSync node: {error}", file=sys.stderr)
         return 1
     return 0
