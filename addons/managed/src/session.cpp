@@ -1,5 +1,6 @@
 #include "bcamsync/session.hpp"
 #include "bcamsync/fake.hpp"
+#include "arducam_startup.hpp"
 #include "bcamsync/detail/sync_runtime.hpp"
 #include <algorithm>
 #include <mutex>
@@ -108,6 +109,10 @@ public:
         std::lock_guard<std::mutex> lock(lifecycle);
         sync->request_stop();
         if (worker.joinable()) {
+            for (const auto& backend : backends) {
+                if (auto* startup = dynamic_cast<detail::InterruptibleStartup*>(backend.get()))
+                    startup->interrupt_startup();
+            }
             worker.join();
             cleanup_capture();
         }

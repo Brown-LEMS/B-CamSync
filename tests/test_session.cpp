@@ -1,5 +1,6 @@
 #include "bcamsync/session.hpp"
 #include "session_test_access.hpp"
+#include "arducam_startup.hpp"
 #include "bcamsync/phase.hpp"
 #include <algorithm>
 #include <arpa/inet.h>
@@ -29,12 +30,13 @@ template <class F> void rejects(F action) {
 }
 struct Probe {
     std::atomic<bool> running{false}, fail_cancel{false}, fail_stop{false},
-        empty_timing{false}, capture_failure{false}, pause_read{false}, read_entered{false};
+        empty_timing{false}, capture_failure{false}, pause_read{false}, read_entered{false},
+        pause_startup{false};
     std::atomic<unsigned> starts{0}, stops{0}, snapshots{0}, snapshot_delay_ms{0};
     std::int64_t sensor_offset_ns = 0;
 };
 /// Software fixture generates complete timing history independently of frame reads.
-class SyntheticBackend final : public AcquisitionBackend {
+class SyntheticBackend final : public AcquisitionBackend, public detail::InterruptibleStartup {
   public:
     SyntheticBackend(UnitConfig unit, std::shared_ptr<Probe> probe, unsigned fps = 40)
         : fps_(fps), unit_(std::move(unit)), probe_(std::move(probe)) {}
@@ -42,7 +44,11 @@ class SyntheticBackend final : public AcquisitionBackend {
         require(!session.empty() && round != 0, "backend must receive a synchronization identity");
         probe_->running = true;
         ++probe_->starts;
+        const auto limit = std::chrono::steady_clock::now() + 2s;
+        while (probe_->pause_startup && std::chrono::steady_clock::now() < limit)
+            std::this_thread::sleep_for(1ms);
     }
+    void interrupt_startup() override { probe_->pause_startup = false; }
     void stop() override {
         probe_->running = false;
         ++probe_->stops;
@@ -423,6 +429,20 @@ void startup_deadline() {
     session.stop();
     require(!probe->running, "explicit stop releases the acquisition backend");
 }
+void stop_during_startup() {
+    auto config = configuration(false);
+    config.units.resize(1);
+    auto probe = std::make_shared<Probe>();
+    probe->pause_startup = true;
+    auto session = detail::SessionTestAccess::create(config, "a", backends(config, "a", {probe}));
+    session.start();
+    const auto limit = std::chrono::steady_clock::now() + 1s;
+    while (!probe->running && std::chrono::steady_clock::now() < limit)
+        std::this_thread::sleep_for(1ms);
+    require(probe->running, "backend must be waiting for camera startup");
+    session.stop();
+    require(!probe->pause_startup && !probe->running, "stop must interrupt startup before joining the capture worker");
+}
 void retained_read_during_address_refresh() {
     auto config = configuration(true);
     auto probe = std::make_shared<Probe>();
@@ -531,6 +551,7 @@ int main() {
         cleanup_failures();
         local_capture_failures();
         startup_deadline();
+        stop_during_startup();
         acquisition_without_common_clock();
         cached_clock_expiry();
         retained_read_during_address_refresh();
