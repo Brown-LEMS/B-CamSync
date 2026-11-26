@@ -157,7 +157,7 @@ class PreviewTests(unittest.TestCase):
         board = dual.CameraStream(self.camera, {}, self.stream, timing, [self.buffer])
         board.requests = {0: self.request}
         capture.owners = {0: board}
-        capture.submitted, capture.images = {}, {}
+        capture.submitted, capture.images, capture.image_timing = {}, {}, {}
         capture.error, capture.done, capture.lock = None, threading.Event(), threading.Lock()
         capture.ready, capture.cameras = threading.Event(), [board]
         self.camera.start.return_value = 0
@@ -179,6 +179,7 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(self.request.set_control.call_args_list[0].args, ("limits", (25200, 25200)))
         self.assertEqual(self.request.set_control.call_args_list[1].args, ("limits", (25000, 25000)))
         self.assertTrue(capture.submitted[0].restoration)
+        self.assertEqual(capture.image_timing["board-1"], (17, self.request.metadata["sensor"]))
         np.testing.assert_array_equal(capture.images["board-1"], [[1, 2, 3, 4], [5, 6, 7, 8]])
         # Images own their memory after mmap closes and the SDK reuses its buffer.
         self.file.seek(7)
@@ -258,6 +259,46 @@ class PreviewTests(unittest.TestCase):
                     dual.main()
                 self.assertEqual(cv2.imshow.call_count, 3)
                 self.assertEqual(events, ["capture-start", "sync-start", "sync-stop", "capture-close"])
+
+    def test_dual_start_at_filters_cached_images_and_continues_after_sync_exit(self):
+        units = [SimpleNamespace(unit_id="board-1", aligned_from_sequence=0),
+                 SimpleNamespace(unit_id="board-2", aligned_from_sequence=71)]
+        for mode, first_observed, expected in (
+            ("aligned", "aligned", [(1, "board-1"), (2, "board-1"), (2, "board-2"),
+                                    (3, "board-1"), (3, "board-2")]),
+            ("aligned", "tracking", [(1, "board-1"), (2, "board-1"), (2, "board-2"),
+                                     (3, "board-1"), (3, "board-2")]),
+            ("ready", "tracking", [(2, "board-1"), (3, "board-1"), (3, "board-2")]),
+        ):
+            with self.subTest(mode=mode, first_observed=first_observed):
+                capture = Mock(images={}, image_timing={}, lock=threading.Lock(), error=None)
+                session = Mock()
+                states = ("calibrating", first_observed, "tracking", "fault")
+                metadata = (((0, 80), (69, 81)), ((0, 94), (70, 95)),
+                            ((1, 100), (71, 99)), ((2, 125), (72, 124)))
+
+                def updates():
+                    for index, (state, timings) in enumerate(zip(states, metadata)):
+                        for unit, timing in zip(units, timings):
+                            capture.images[unit.unit_id] = (index, unit.unit_id)
+                            capture.image_timing[unit.unit_id] = timing
+                        yield SimpleNamespace(state=state, ready=state == "tracking",
+                                              fault="disconnected" if state == "fault" else "",
+                                              units=units if state in ("aligned", "tracking") else [])
+
+                session.status.side_effect = updates()
+                cv2 = Mock()
+                cv2.waitKey.side_effect = [-1, -1, -1, ord("q")]
+                with patch.dict(sys.modules, {"cv2": cv2}), \
+                        patch.object(sys, "argv", ["opencv_sync.py", "--start-at", mode, "cam1", "cam2"]), \
+                        patch.object(dual, "Capture", return_value=capture), \
+                        patch.object(dual, "SyncSession", return_value=session), \
+                        patch.object(dual, "boot_time_ns", return_value=100) as clock, \
+                        redirect_stdout(io.StringIO()):
+                    dual.main()
+                self.assertEqual([call.args[1] for call in cv2.imshow.call_args_list], expected)
+                if mode == "ready":
+                    clock.assert_called_once_with()
 
     def test_config_is_single_node_and_distinct_board_ids_are_required(self):
         config = dual.sync_config()
