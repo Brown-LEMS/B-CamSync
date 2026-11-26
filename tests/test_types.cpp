@@ -79,7 +79,7 @@ void topology() {
     invalid([](Config& x) { x.network_mode = "unknown"; });
     invalid([](Config& x) { x.clock_mode = "unknown"; });
     invalid([](Config& x) { x.phase_policy.startup_delta_us = 1001; });
-    invalid([](Config& x) { x.phase_policy.gain = std::numeric_limits<double>::quiet_NaN(); });
+    invalid([](Config& x) { x.phase_policy.ready_max_ms = std::numeric_limits<double>::quiet_NaN(); });
     invalid([](Config& x) { x.clock_port = 0; });
     invalid([](Config& x) { x.network_mode = "auto"; x.nodes[0].interface.clear(); });
     invalid([](Config& x) { x.backend = "fake"; x.units[0].fake.width = 15; });
@@ -279,7 +279,6 @@ void synchronization_types() {
     sync.units = {{"sensor-a", "node-a"}, {"sensor-b", "node-a"}};
     sync.fps = 1000000;
     sync.phase_policy.startup_delta_us = 100;
-    sync.phase_policy.tracking_frames = 4;
     sync.phase_policy.ready_windows = 3;
     sync.phase_policy.window_seconds = 1.5;
     sync.phase_policy.max_mapping_span_ns = 50000;
@@ -363,7 +362,7 @@ void configuration_files() {
     fake.clock_mode = "host";
     fake.phase_policy.startup_delta_us = 100;
     fake.phase_policy.tracking_delta_us = 50;
-    fake.phase_policy.deadband_ms = .1;
+    fake.phase_policy.ready_p95_ms = .1;
     fake.phase_policy.max_samples = 256;
     fake.fps = 80;
     fake.network_mode = "existing";
@@ -374,7 +373,7 @@ void configuration_files() {
     require(restored_fake.to_json() == fake.to_json() && restored_fake.clock_mode == "host" &&
                 restored_fake.phase_policy.startup_delta_us == 100 &&
                 restored_fake.phase_policy.tracking_delta_us == 50 &&
-                restored_fake.phase_policy.deadband_ms == .1 && restored_fake.phase_policy.max_samples == 256 &&
+                restored_fake.phase_policy.ready_p95_ms == .1 && restored_fake.phase_policy.max_samples == 256 &&
                 restored_fake.fps == 80 && restored_fake.network_mode == "existing" &&
                 restored_fake.clock_port == 12346 && restored_fake.units[0].fake.width == 32 &&
                 restored_fake.units[0].fake.height == 8 && restored_fake.units[0].fake.initial_phase_us == 1234 &&

@@ -27,12 +27,10 @@ Json policy_json(const PhasePolicy& p) {
     Json j;
 #define FIELD(name) j[#name] = p.name
     FIELD(window_seconds); FIELD(evaluation_seconds); FIELD(freshness_seconds);
-    FIELD(deadband_ms); FIELD(ready_p95_ms); FIELD(ready_max_ms);
-    FIELD(ready_windows); FIELD(startup_delta_us); FIELD(startup_frames);
-    FIELD(tracking_delta_us); FIELD(tracking_frames); FIELD(correction_interval_seconds);
-    FIELD(settling_seconds); FIELD(application_delay_seconds); FIELD(startup_max_corrections);
+    FIELD(ready_p95_ms); FIELD(ready_max_ms); FIELD(ready_windows);
+    FIELD(startup_delta_us); FIELD(startup_frames); FIELD(tracking_delta_us);
     FIELD(excursion_ms); FIELD(excursion_timeout_seconds); FIELD(no_progress_corrections);
-    FIELD(progress_ms); FIELD(gain); FIELD(max_mapping_span_ns); FIELD(max_samples);
+    FIELD(max_mapping_span_ns); FIELD(max_samples);
 #undef FIELD
     return j;
 }

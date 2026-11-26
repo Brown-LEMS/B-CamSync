@@ -31,6 +31,7 @@ class HostClientTests(unittest.TestCase):
                         for node in ("node-a", "node-b")}
         self.client = GroupClient(self.config, self.targets)
         self.contract = {"group_id": "lab", "reference_unit": "board-a", "clock_mode": "network",
+                         "phase_control": "queue-aware-v1",
                          "fps": 40, "clock_domain": "common", "nodes": ["node-a", "node-b"],
                          "units": [{"id": "board-a", "node_id": "node-a"},
                                    {"id": "board-b", "node_id": "node-b"}],

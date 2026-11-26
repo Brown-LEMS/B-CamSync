@@ -113,8 +113,7 @@ class CameraTimingTests(unittest.TestCase):
         config.units = members
         policy = PhasePolicy()
         policy.window_seconds, policy.evaluation_seconds = 0.15, 0.05
-        policy.settling_seconds, policy.application_delay_seconds = 0.025, 0.025
-        policy.correction_interval_seconds, policy.startup_frames = 0.1, 4
+        policy.startup_frames = 4
         config.phase_policy, config.startup_timeout_seconds = policy, 8
         units = {name: CameraTiming(name, 40, 20000, 30000)
                  for name in ("reference", "follower")}
