@@ -76,7 +76,7 @@ def score(path, mode, fps, skip_seconds, seconds):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("csv", type=Path)
-    parser.add_argument("--mode", choices=["stock", "adaptive", "centered"], required=True)
+    parser.add_argument("--mode", choices=["stock", "adaptive", "centered", "tracking"], required=True)
     parser.add_argument("--fps", type=int, required=True)
     parser.add_argument("--skip-seconds", type=float, required=True)
     parser.add_argument("--seconds", type=float, required=True)

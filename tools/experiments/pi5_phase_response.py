@@ -45,7 +45,8 @@ class ProbeTiming:
     def observe(self, sequence, sensor_ns, reported_us, submitted):
         self.latest = sensor_ns
         self.writer.writerow((self.unit_id, sequence, sensor_ns, reported_us, submitted.duration_us,
-                              submitted.stage, submitted.queued_ns, time.clock_gettime_ns(time.CLOCK_BOOTTIME)))
+                              submitted.stage, submitted.queued_ns, time.clock_gettime_ns(time.CLOCK_BOOTTIME),
+                              submitted.source.correction_id))
         self.adapter.observe(sequence, sensor_ns, reported_us, submitted.source)
 
 
@@ -72,7 +73,7 @@ def capture_pair(fps, output):
     with output.open("x", newline="") as stream, ExitStack() as stack:
         writer = csv.writer(stream)
         writer.writerow(("unit", "sequence", "sensor_ns", "reported_us", "requested_us", "stage",
-                         "queued_ns", "received_ns"))
+                         "queued_ns", "received_ns", "correction_id"))
         capture = Capture(ids, config, stack, verbose=True)
         stack.callback(capture.close)
         probes = []
