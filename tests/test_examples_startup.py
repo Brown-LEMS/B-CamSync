@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def load_example(name):
     # These application lifecycle tests do not exercise the native sync engine.
     core, adapter = ModuleType("bcamsync"), ModuleType("bcamsync.adapters.libcamera")
-    for symbol in ("NodeConfig", "SyncConfig", "SyncSession", "SyncUnitConfig"):
+    for symbol in ("NodeConfig", "SyncConfig", "SyncSession", "SyncUnitConfig", "boot_time_ns"):
         setattr(core, symbol, Mock())
     adapter.CameraTiming = lambda unit, fps, low, high: Mock(
         unit_id=unit, baseline_us=25000,
