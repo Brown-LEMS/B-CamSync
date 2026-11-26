@@ -187,6 +187,7 @@ class Capture:
             raise RuntimeError(f"Cannot queue camera request: {camera.id}")
 
     def start(self, np):
+        """Start both boards; pass None to collect timing without copying pixels."""
         self.thread = threading.Thread(target=self.run, args=(np,), name="capture")
         self.thread.start()
         # Each board's attempts have their own deadline inside the capture thread.
@@ -248,7 +249,7 @@ class Capture:
                                     board.observe_startup(observation)
                                 else:
                                     timing.observe(*observation)
-                                if not starting or board.qualified is not None:
+                                if np is not None and (not starting or board.qualified is not None):
                                     plane = buffer.planes[0]
                                     offset = plane.offset % mmap.PAGESIZE
                                     with mmap.mmap(plane.fd, offset + stream.stride * stream.size.height,

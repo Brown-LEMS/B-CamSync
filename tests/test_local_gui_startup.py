@@ -15,6 +15,17 @@ import test_examples_startup as startup
 
 
 class LocalGuiStartupTests(unittest.TestCase):
+    def test_timing_only_qualifies_and_observes_both_boards_without_copying_pixels(self):
+        example = startup.load_example("opencv_sync")
+        with ExitStack() as stack:
+            capture, _, _, _, _ = startup.StartupTests().fixture(example, stack)
+            capture.start(None)
+            self.assertTrue(capture.ready.is_set())
+            self.assertIsNone(capture.error)
+            self.assertFalse(capture.images)
+            for timing in capture.units.values():
+                self.assertGreater(timing.observe.call_count, 0)
+
     def test_dual_restarts_only_the_silent_board(self):
         example = startup.load_example("opencv_sync")
         with ExitStack() as stack:
