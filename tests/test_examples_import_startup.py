@@ -166,7 +166,7 @@ class ImportStartupTests(unittest.TestCase):
                 if failures:
                     raise failures[0]
                 self.assertTrue(requested and not deadline.expired.is_set(), list(sdk.events))
-                for _ in range(3 if name in ("single_board_http", "opencv_sync_http") else 1):
+                for _ in range(1 if two_nodes else 3):
                     for camera in cameras:
                         sdk.complete(camera)
                 self.assertTrue(shown.wait(2), "No frames reached the preview")

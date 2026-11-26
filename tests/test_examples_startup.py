@@ -131,7 +131,7 @@ class StartupTests(unittest.TestCase):
                     camera.release.assert_called_once()
 
     def test_cancelled_first_request_identifies_board_and_aborts_start(self):
-        for name in ("opencv_sync", "two_nodes_sync", "two_nodes_sync_http"):
+        for name in ("two_nodes_sync", "two_nodes_sync_http"):
             with self.subTest(example=name), ExitStack() as stack:
                 capture, _, requests, _, _ = self.fixture(load_example(name), stack)
                 requests[0].status = "cancelled"

@@ -2,6 +2,8 @@
 
 import argparse
 from contextlib import ExitStack
+from itertools import count
+import json
 import mmap
 import selectors
 import threading
@@ -9,6 +11,11 @@ import time
 
 from bcamsync import NodeConfig, SyncConfig, SyncSession, SyncUnitConfig
 from bcamsync.adapters.libcamera import CameraTiming
+
+
+STARTUP_RETRIES = 20
+STARTUP_FRAMES = 3
+ATTEMPT_SECONDS = 2.0
 
 
 def sync_config():
@@ -30,6 +37,75 @@ def sync_config():
     return config
 
 
+class CameraStream:
+    """Own a board's requests and the evidence for its current startup attempt."""
+
+    def __init__(self, camera, controls, stream, timing, buffers):
+        self.camera, self.controls, self.stream, self.timing = camera, controls, stream, timing
+        self.buffers = buffers
+        self.requests = {}
+        self.running = False
+        self.attempt = 0
+
+    def prepare(self, cookies):
+        self.requests.clear()
+        for buffer in self.buffers:
+            request = self.camera.create_request(next(cookies))
+            if request.add_buffer(self.stream.stream, buffer):
+                raise RuntimeError("Cannot attach camera buffer")
+            self.requests[request.cookie] = request
+
+    def start(self):
+        self.started = time.monotonic()
+        self.attempt += 1
+        if self.attempt == 1:
+            self.began = self.started
+        self.window_started = self.started
+        self.valid_frames = self.streak = 0
+        self.expected = self.first = self.last = self.qualified = None
+        self.observation = None
+        if self.camera.start(self.controls):
+            raise RuntimeError(f"Cannot start camera: {self.camera.id}")
+        self.running = True
+
+    def stop(self):
+        if self.running:
+            self.camera.stop()
+            self.running = False
+
+    def break_streak(self):
+        if self.qualified is not None:
+            self.window_started = time.monotonic()
+        self.expected = self.qualified = None
+        self.streak = 0
+
+    def observe_startup(self, observation):
+        now = time.monotonic()
+        sequence = observation[0]
+        self.valid_frames += 1
+        if self.first is None:
+            self.first = now
+        if sequence != self.expected:
+            self.break_streak()
+        self.streak += 1
+        self.expected = (sequence + 1) % (1 << 32)
+        self.last = now
+        self.observation = observation
+        if self.streak == STARTUP_FRAMES:
+            self.qualified = now
+            self.qualified_count = self.valid_frames
+
+    def report(self, outcome, reason):
+        now = self.qualified if outcome == "ready" else time.monotonic()
+        print("B-CamSync startup " + json.dumps({
+            "unit": self.timing.unit_id, "camera_id": self.camera.id, "attempt": self.attempt,
+            "outcome": outcome, "reason": reason,
+            "valid_frames": self.qualified_count if outcome == "ready" else self.valid_frames,
+            "first_frame_ms": None if self.first is None else round((self.first - self.started) * 1000, 2),
+            "elapsed_ms": round((now - self.started) * 1000, 2),
+            "total_ms": round((now - self.began) * 1000, 2)}), flush=True)
+
+
 class Capture:
     """Application capture; only timing and frame-period controls enter this library."""
 
@@ -37,7 +113,8 @@ class Capture:
         import libcamera
         self.sdk = libcamera
         self.manager = libcamera.CameraManager.singleton()
-        self.units, self.requests, self.submitted = {}, {}, {}
+        self.units, self.owners, self.submitted = {}, {}, {}
+        self.cookies = count()
         self.allocators, self.configurations = [], []
         self.images = {}
         self.lock = threading.Lock()
@@ -83,17 +160,17 @@ class Capture:
                         libcamera.controls.AnalogueGainMode: 1,
                         libcamera.controls.ExposureTime: 10000,
                         libcamera.controls.AnalogueGain: 1.0}
-            requests = []
-            self.cameras.append((camera, controls, requests))
-            for buffer in allocator.buffers(stream.stream):
-                request = camera.create_request(len(self.requests))
-                if request.add_buffer(stream.stream, buffer):
-                    raise RuntimeError("Cannot attach camera buffer")
-                self.requests[request.cookie] = camera, stream, timing, request
-                requests.append(request)
+            board = CameraStream(camera, controls, stream, timing, allocator.buffers(stream.stream))
+            self.cameras.append(board)
+            self.stops.callback(board.stop)
+            self.prepare(board)
 
-    def queue(self, request):
-        camera, _, timing, _ = self.requests[request.cookie]
+    def prepare(self, board):
+        board.prepare(self.cookies)
+        self.owners.update(dict.fromkeys(board.requests, board))
+
+    def queue(self, board, request):
+        camera, timing = board.camera, board.timing
         submitted = timing.next_submission()
         request.set_control(self.sdk.controls.FrameDurationLimits,
                             (submitted.duration_us, submitted.duration_us))
@@ -104,52 +181,101 @@ class Capture:
     def start(self, np):
         self.thread = threading.Thread(target=self.run, args=(np,), name="capture")
         self.thread.start()
-        if not self.ready.wait(10):
-            with self.lock:
-                missing = sorted(set(self.units) - self.images.keys())
-            raise RuntimeError(f"Timed out waiting for first camera frames: {missing}")
+        # Each board's attempts have their own deadline inside the capture thread.
+        if not self.ready.wait((ATTEMPT_SECONDS + 1) * (STARTUP_RETRIES + 1) * len(self.cameras)):
+            raise RuntimeError("Camera startup deadline expired")
         if self.error is not None:
             raise self.error
+
+    def start_board(self, board):
+        try:
+            board.start()
+            for request in board.requests.values():
+                self.queue(board, request)
+        except Exception as error:
+            board.report("error", str(error))
+            raise
+
+    def retry(self, board, reason):
+        exhausted = board.attempt == STARTUP_RETRIES + 1
+        board.report("exhausted" if exhausted else "retry", reason)
+        if exhausted:
+            raise RuntimeError(f"Camera startup exhausted: {board.timing.unit_id} ({board.camera.id}), {reason}")
+        board.stop()
+        for cookie in board.requests:
+            del self.owners[cookie]
+            self.submitted.pop(cookie, None)
+        with self.lock:
+            self.images.pop(board.timing.unit_id, None)
+        self.prepare(board)
+        self.start_board(board)
 
     def run(self, np):
         try:
             with selectors.DefaultSelector() as selector:
                 selector.register(self.manager.event_fd, selectors.EVENT_READ)
                 # All cameras and requests are prepared before any camera starts.
-                for camera, controls, requests in self.cameras:
-                    if camera.start(controls):
-                        raise RuntimeError(f"Cannot start camera: {camera.id}")
-                    self.stops.callback(camera.stop)
-                    for request in requests:
-                        self.queue(request)
+                for board in self.cameras:
+                    self.start_board(board)
+                starting = True
                 while not self.done.is_set():
-                    if not selector.select(0.05):
+                    failures = {}
+                    if selector.select(0.05):
+                        for request in self.manager.get_ready_requests():
+                            board = self.owners.get(request.cookie)
+                            if board is None or board in failures:
+                                continue
+                            timing, stream = board.timing, board.stream
+                            if request.status != self.sdk.Request.Status.Complete:
+                                if not starting:
+                                    raise RuntimeError(f"Camera request was cancelled: {timing.unit_id} ({board.camera.id})")
+                                failures[board] = "cancelled"
+                                continue
+                            buffer = request.buffers[stream.stream]
+                            if buffer.metadata.status == self.sdk.FrameMetadata.Status.Success:
+                                metadata = request.metadata
+                                observation = (buffer.metadata.sequence, metadata[self.sdk.controls.SensorTimestamp],
+                                               metadata[self.sdk.controls.FrameDuration], self.submitted[request.cookie])
+                                if starting:
+                                    board.observe_startup(observation)
+                                else:
+                                    timing.observe(*observation)
+                                if not starting or board.qualified is not None:
+                                    plane = buffer.planes[0]
+                                    offset = plane.offset % mmap.PAGESIZE
+                                    with mmap.mmap(plane.fd, offset + stream.stride * stream.size.height,
+                                                   flags=mmap.MAP_SHARED, prot=mmap.PROT_READ,
+                                                   offset=plane.offset - offset) as pixels:
+                                        image = np.ndarray((stream.size.height, stream.stride),
+                                                           dtype=np.uint8, buffer=pixels, offset=offset)
+                                        image = image[:, :stream.size.width].copy()
+                                    with self.lock:
+                                        self.images[timing.unit_id] = image
+                            elif starting:
+                                board.break_streak()
+                            request.reuse()
+                            self.queue(board, request)
+                    if not starting:
                         continue
-                    for request in self.manager.get_ready_requests():
-                        camera, stream, timing, _ = self.requests[request.cookie]
-                        if request.status != self.sdk.Request.Status.Complete:
-                            raise RuntimeError(f"Camera request was cancelled: {timing.unit_id} ({camera.id})")
-                        buffer = request.buffers[stream.stream]
-                        if buffer.metadata.status == self.sdk.FrameMetadata.Status.Success:
-                            metadata = request.metadata
-                            timing.observe(buffer.metadata.sequence,
-                                           metadata[self.sdk.controls.SensorTimestamp],
-                                           metadata[self.sdk.controls.FrameDuration],
-                                           self.submitted[request.cookie])
-                            plane = buffer.planes[0]
-                            offset = plane.offset % mmap.PAGESIZE
-                            with mmap.mmap(plane.fd, offset + stream.stride * stream.size.height,
-                                           flags=mmap.MAP_SHARED, prot=mmap.PROT_READ,
-                                           offset=plane.offset - offset) as pixels:
-                                image = np.ndarray((stream.size.height, stream.stride),
-                                                   dtype=np.uint8, buffer=pixels, offset=offset)
-                                image = image[:, :stream.size.width].copy()
-                            with self.lock:
-                                self.images[timing.unit_id] = image
-                        request.reuse()
-                        self.queue(request)
-                        if len(self.images) == len(self.units):
-                            self.ready.set()
+                    now = time.monotonic()
+                    for board in self.cameras:
+                        since = board.window_started if board.qualified is None else board.last
+                        if now - since >= ATTEMPT_SECONDS:
+                            failures.setdefault(board, "insufficient_frames" if board.valid_frames else "no_frames")
+                    for board, reason in failures.items():
+                        self.retry(board, reason)
+                    if not all(board.qualified is not None for board in self.cameras):
+                        continue
+                    # A board can stall while its peer is restarting. Compare sensor
+                    # timestamps before committing both generations to the sync session.
+                    timestamps = [board.observation[1] for board in self.cameras]
+                    if max(timestamps) - min(timestamps) > 2 * self.cameras[0].timing.baseline_us * 1000:
+                        continue
+                    for board in self.cameras:
+                        board.timing.observe(*board.observation)
+                        board.report("ready", "continuous_frames")
+                    starting = False
+                    self.ready.set()
         except Exception as error:
             self.error = error
             for timing in self.units.values():

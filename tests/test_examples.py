@@ -152,13 +152,20 @@ class PreviewTests(unittest.TestCase):
         capture = dual.Capture.__new__(dual.Capture)
         capture.sdk, capture.manager = self.sdk, self.manager
         capture.units = {"board-1": timing}
-        capture.requests = {0: (self.camera, self.stream, timing, self.request)}
+        board = dual.CameraStream(self.camera, {}, self.stream, timing, [self.buffer])
+        board.requests = {0: self.request}
+        capture.owners = {0: board}
         capture.submitted, capture.images = {}, {}
         capture.error, capture.done, capture.lock = None, threading.Event(), threading.Lock()
-        capture.ready, capture.cameras = threading.Event(), []
-        capture.queue(self.request)
-        self.camera.queue_request.side_effect = lambda _: capture.done.set() or 0
-        with patch.object(dual.selectors, "DefaultSelector", return_value=self.selector):
+        capture.ready, capture.cameras = threading.Event(), [board]
+        self.camera.start.return_value = 0
+        def queue(_):
+            if self.camera.queue_request.call_count == 2:
+                capture.done.set()
+            return 0
+        self.camera.queue_request.side_effect = queue
+        with patch.object(dual.selectors, "DefaultSelector", return_value=self.selector), \
+                patch.object(dual, "STARTUP_FRAMES", 1), redirect_stdout(io.StringIO()):
             capture.run(np)
         self.assertIsNone(capture.error)
         frame = timing.snapshot().frames[0]
@@ -186,7 +193,14 @@ class PreviewTests(unittest.TestCase):
         self.camera.generate_configuration.return_value = configuration
         for operation in (self.camera.acquire, self.camera.configure, self.camera.start):
             operation.return_value = 0
-        self.camera.create_request.return_value = self.request
+        def create(cookie):
+            self.request.cookie = cookie
+            return self.request
+        self.camera.create_request.side_effect = create
+        def completed():
+            self.buffer.metadata.sequence += 1
+            return [self.request]
+        self.manager.get_ready_requests.side_effect = completed
         self.manager.get.return_value = self.camera
         allocator = Mock()
         allocator.allocate.return_value = 0
@@ -201,7 +215,7 @@ class PreviewTests(unittest.TestCase):
         for control in ("AeEnable", "ExposureTimeMode", "AnalogueGainMode", "ExposureTime", "AnalogueGain"):
             setattr(self.sdk.controls, control, control)
         cv2 = Mock()
-        cv2.waitKey.return_value = ord("q")
+        cv2.waitKey.side_effect = [-1, -1, ord("q")]
         with patch.dict(sys.modules, {"cv2": cv2, "libcamera": self.sdk}), \
                 patch.object(sys, "argv", ["single_board.py", "camera-1"]), \
                 patch.object(single.selectors, "DefaultSelector", return_value=self.selector), \
@@ -209,7 +223,7 @@ class PreviewTests(unittest.TestCase):
                 redirect_stdout(io.StringIO()):
             single.main()
         np.testing.assert_array_equal(cv2.imshow.call_args.args[1], [[1, 2, 3, 4], [5, 6, 7, 8]])
-        self.assertEqual(self.camera.queue_request.call_count, 2)
+        self.assertEqual(self.camera.queue_request.call_count, 4)
         self.camera.stop.assert_called_once()
         self.camera.release.assert_called_once()
         cv2.destroyAllWindows.assert_called_once()

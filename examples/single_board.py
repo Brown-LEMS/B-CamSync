@@ -2,8 +2,15 @@
 
 import argparse
 from contextlib import ExitStack
+import json
 import mmap
 import selectors
+import time
+
+
+STARTUP_RETRIES = 20
+STARTUP_FRAMES = 3
+ATTEMPT_SECONDS = 2.0
 
 
 def main():
@@ -66,44 +73,95 @@ def main():
                     libcamera.controls.ExposureTime: 10000,
                     libcamera.controls.AnalogueGain: 1.0}
         stack.callback(cv2.destroyAllWindows)
-        requests = []
-        for buffer in allocator.buffers(stream.stream):
-            request = camera.create_request()
-            if request.add_buffer(stream.stream, buffer):
-                raise RuntimeError("Cannot attach camera buffer")
-            requests.append(request)
-        if camera.start(controls):
-            raise RuntimeError("Cannot start camera")
-        stack.callback(camera.stop)
-        for request in requests:
-            if camera.queue_request(request):
-                raise RuntimeError("Cannot queue camera request")
-
-        print("Previewing one board; press q or Esc in the window, or Ctrl+C, to exit.")
+        print("Previewing one board; press q or Esc in the window, or Ctrl+C, to exit.", flush=True)
+        began = time.monotonic()
         with selectors.DefaultSelector() as selector:
             selector.register(manager.event_fd, selectors.EVENT_READ)
             try:
-                while True:
-                    if selector.select(0.05):
-                        for request in manager.get_ready_requests():
-                            if request.status != libcamera.Request.Status.Complete:
-                                raise RuntimeError("Camera request was cancelled")
-                            buffer = request.buffers[stream.stream]
-                            if buffer.metadata.status == libcamera.FrameMetadata.Status.Success:
-                                plane = buffer.planes[0]
-                                offset = plane.offset % mmap.PAGESIZE
-                                with mmap.mmap(plane.fd, offset + stream.stride * stream.size.height,
-                                               flags=mmap.MAP_SHARED, prot=mmap.PROT_READ,
-                                               offset=plane.offset - offset) as pixels:
-                                    image = np.ndarray((stream.size.height, stream.stride),
-                                                       dtype=np.uint8, buffer=pixels, offset=offset)
-                                    image = image[:, :stream.size.width].copy()
-                                cv2.imshow("B0267", image)
-                            request.reuse()
-                            if camera.queue_request(request):
-                                raise RuntimeError("Cannot queue camera request")
-                    if cv2.waitKey(1) & 0xff in (ord("q"), 27):
-                        break
+                for attempt in range(1, STARTUP_RETRIES + 2):
+                    requests = []
+                    for buffer in allocator.buffers(stream.stream):
+                        request = camera.create_request(attempt)
+                        if request.add_buffer(stream.stream, buffer):
+                            raise RuntimeError("Cannot attach camera buffer")
+                        requests.append(request)
+
+                    started = time.monotonic()
+                    first = None
+                    frames = streak = 0
+                    previous = None
+                    ready = False
+
+                    def report(outcome, reason):
+                        now = time.monotonic()
+                        print("B-CamSync startup " + json.dumps({
+                            "unit": "board-1", "camera_id": camera.id, "attempt": attempt,
+                            "outcome": outcome, "reason": reason, "valid_frames": frames,
+                            "first_frame_ms": None if first is None else round((first - started) * 1000, 2),
+                            "elapsed_ms": round((now - started) * 1000, 2),
+                            "total_ms": round((now - began) * 1000, 2)}), flush=True)
+
+                    reason = ""
+                    try:
+                        if camera.start(controls):
+                            raise RuntimeError("Cannot start camera")
+                        try:
+                            for request in requests:
+                                if camera.queue_request(request):
+                                    raise RuntimeError("Cannot queue camera request")
+                            while not reason:
+                                if selector.select(0.05):
+                                    for request in manager.get_ready_requests():
+                                        if request.cookie != attempt:
+                                            continue  # A stopped generation can still have completions in the manager.
+                                        if request.status != libcamera.Request.Status.Complete:
+                                            if ready:
+                                                raise RuntimeError("Camera request was cancelled")
+                                            reason = "cancelled"
+                                            break
+                                        buffer = request.buffers[stream.stream]
+                                        now = time.monotonic()
+                                        if buffer.metadata.status == libcamera.FrameMetadata.Status.Success:
+                                            if not ready:
+                                                if first is None:
+                                                    first = now
+                                                frames += 1
+                                                sequence = buffer.metadata.sequence
+                                                streak = streak + 1 if sequence == previous else 1
+                                                previous = (sequence + 1) % (1 << 32)
+                                                if streak == STARTUP_FRAMES:
+                                                    ready = True
+                                                    report("ready", "continuous_frames")
+                                            if ready:
+                                                plane = buffer.planes[0]
+                                                offset = plane.offset % mmap.PAGESIZE
+                                                with mmap.mmap(plane.fd, offset + stream.stride * stream.size.height,
+                                                               flags=mmap.MAP_SHARED, prot=mmap.PROT_READ,
+                                                               offset=plane.offset - offset) as pixels:
+                                                    image = np.ndarray((stream.size.height, stream.stride),
+                                                                       dtype=np.uint8, buffer=pixels, offset=offset)
+                                                    image = image[:, :stream.size.width].copy()
+                                                cv2.imshow("B0267", image)
+                                        elif not ready:
+                                            streak = 0
+                                            previous = None
+                                        request.reuse()
+                                        if camera.queue_request(request):
+                                            raise RuntimeError("Cannot queue camera request")
+                                if cv2.waitKey(1) & 0xff in (ord("q"), 27):
+                                    return
+                                if not ready and not reason and time.monotonic() - started >= ATTEMPT_SECONDS:
+                                    reason = "insufficient_frames" if frames else "no_frames"
+                        finally:
+                            camera.stop()
+                    except Exception as error:
+                        if not ready:
+                            report("error", str(error))
+                        raise
+                    exhausted = attempt == STARTUP_RETRIES + 1
+                    report("exhausted" if exhausted else "retry", reason)
+                    if exhausted:
+                        raise RuntimeError(f"Camera startup exhausted after {attempt} attempts: {reason}")
             except KeyboardInterrupt:
                 pass
 
