@@ -337,7 +337,7 @@ class ArducamBackend final : public AcquisitionBackend, public detail::Interrupt
             std::abs(completion.exposure_us - config_.exposure_us) > 100)
             throw std::runtime_error("Camera exposure or gain changed after startup readiness");
         const auto sequence = sequence_++;
-        actuator_->completed(completion.submission.phase, sequence, timing.timestamp_ns);
+        actuator_->observe_duration(completion.submission.phase, timing.camera_sequence, timing.timestamp_ns, timing.reported_duration_us);
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
             timing_.push_back(timing);

@@ -146,6 +146,7 @@ class PreviewTests(unittest.TestCase):
     def test_dual_preview_preserves_sensor_timing_applies_pulse_and_copies_pixels(self):
         timing = CameraTiming("board-1", 40, 20000, 30000)
         timing.bind("preview-test", 1)
+        timing.observe(16, boot_time_ns(), 25000, timing.next_submission())
         pulse = Pulse()
         pulse.correction_id, pulse.delta_us, pulse.count = 1, 200, 1
         pulse.expires_ns = boot_time_ns() + 1_000_000_000
@@ -169,7 +170,7 @@ class PreviewTests(unittest.TestCase):
                 patch.object(dual, "STARTUP_FRAMES", 1), redirect_stdout(io.StringIO()):
             capture.run(np)
         self.assertIsNone(capture.error)
-        frame = timing.snapshot().frames[0]
+        frame = timing.snapshot().frames[-1]
         self.assertEqual(frame.sensor_timestamp_ns, self.request.metadata["sensor"])
         self.assertEqual(frame.camera_sequence, 17)
         self.assertEqual(frame.requested_duration_us, 25200)

@@ -20,6 +20,7 @@ typedef struct BcamsyncSubmission {
 } BcamsyncSubmission;
 int bcamsync_actuator_next(void* handle, int64_t baseline, int64_t mono, BcamsyncSubmission* output);
 int bcamsync_actuator_completed(void* handle, BcamsyncSubmission submitted, uint64_t sequence, int64_t timestamp);
+int bcamsync_actuator_observe_duration(void* handle, BcamsyncSubmission submitted, uint64_t sequence, int64_t timestamp, int64_t reported_us);
 int bcamsync_actuator_cancel_active(void* handle);
 #ifdef __cplusplus
 }

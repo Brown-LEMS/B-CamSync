@@ -241,6 +241,24 @@ pub unsafe extern "C" fn bcamsync_actuator_next(
 /// # Safety
 /// `handle` must be null or a live actuator handle that cannot be freed during this call.
 #[no_mangle]
+pub unsafe extern "C" fn bcamsync_actuator_observe_duration(
+    handle: *mut c_void,
+    submitted: Submission,
+    sequence: u64,
+    timestamp: i64,
+    reported_us: i64,
+) -> i32 {
+    actuator_fast(|| {
+        let a = (handle as *mut Mutex<PhaseActuator>).as_ref().ok_or(())?;
+        a.lock()
+            .map_err(|_| ())?
+            .observe_duration(submitted, sequence, timestamp, reported_us);
+        Ok(())
+    })
+}
+/// # Safety
+/// `handle` must be null or a live actuator handle that cannot be freed during this call.
+#[no_mangle]
 pub unsafe extern "C" fn bcamsync_actuator_completed(
     handle: *mut c_void,
     submitted: Submission,

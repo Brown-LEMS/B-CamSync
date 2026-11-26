@@ -37,31 +37,36 @@ class CameraTimingTests(unittest.TestCase):
         self.assertEqual(unit.snapshot().frames[0].sensor_timestamp_ns, sensor_ns)
         self.assertEqual(unit.snapshot().correction.state, "idle")
 
-    def test_metadata_confirms_restoration_at_the_libcamera_tolerance(self):
+    def test_restoration_uses_measured_baseline_after_delayed_small_effect(self):
+        now = boot_time_ns()
+        self.unit.observe(0, now - 25000000, 24990, self.unit.next_submission())
+        pulse = self.pulse()
+        pulse.delta_us = 4
         output = StringIO()
         with redirect_stdout(output):
-            self.unit.adjust(self.pulse())
+            self.unit.adjust(pulse)
         self.assertEqual(output.getvalue(), "", "The adapter leaves application logging to its caller")
         self.assertEqual(self.unit.corrections, 1)
         submitted = [self.unit.next_submission() for _ in range(3)]
-        self.assertEqual([item.duration_us for item in submitted], [25200, 25200, 25000])
-        now = boot_time_ns()
-        self.unit.observe(1, now, 25051, submitted[-1])
+        self.assertEqual([item.duration_us for item in submitted], [25004, 25004, 25000])
+        self.unit.observe(1, now, 24990, submitted[-1])
         self.assertEqual(self.unit.snapshot().correction.state, "settling")
-        self.unit.observe(2, now + 25050000, 25050, self.unit.next_submission())
+        self.unit.observe(2, now + 25000000, 24994, self.unit.next_submission())
+        self.assertEqual(self.unit.snapshot().correction.state, "settling")
+        self.unit.observe(3, now + 50000000, 24990, self.unit.next_submission())
         snapshot = self.unit.snapshot()
         self.assertEqual(snapshot.correction.state, "restored")
-        self.assertEqual(snapshot.correction.restored_timestamp_ns, now + 25050000)
-        self.assertEqual(snapshot.frames[-1].sensor_timestamp_ns, now + 25050000)
-        self.assertEqual(snapshot.frames[-1].timestamp_ns, now + 25050000)
+        self.assertEqual(snapshot.correction.restored_timestamp_ns, now + 50000000)
+        self.assertEqual(snapshot.frames[-1].sensor_timestamp_ns, now + 50000000)
+        self.assertEqual(snapshot.frames[-1].timestamp_ns, now + 50000000)
 
     def test_cancel_and_rebind_keep_capture_observations(self):
+        self.unit.observe(0, boot_time_ns(), 24990, self.unit.next_submission())
         self.unit.adjust(self.pulse())
-        self.unit.next_submission()
         self.unit.cancel()
         restore = self.unit.next_submission()
         self.assertTrue(restore.restoration)
-        self.unit.observe(1, boot_time_ns(), 25000, restore)
+        self.unit.observe(1, boot_time_ns(), 24990, restore)
         self.assertEqual(self.unit.snapshot().correction.state, "restored")
         self.unit.bind("adapter-test", 2)
         snapshot = self.unit.snapshot()
@@ -70,7 +75,19 @@ class CameraTimingTests(unittest.TestCase):
         self.assertEqual(snapshot.frames[-1].camera_sequence, 1)
         self.assertEqual(self.unit.next_submission().round_id, 2)
 
+    def test_quantized_probe_without_reported_change_finishes_after_observation(self):
+        now = boot_time_ns()
+        self.unit.observe(0, now, 24990, self.unit.next_submission())
+        pulse = self.pulse()
+        pulse.delta_us, pulse.count = 4, 1
+        self.unit.adjust(pulse)
+        for sequence in range(1, 15):
+            self.unit.observe(sequence, now + sequence * 25000000, 24990, self.unit.next_submission())
+            expected = "restored" if sequence == 14 else ("submitting" if sequence == 1 else "settling")
+            self.assertEqual(self.unit.snapshot().correction.state, expected)
+
     def test_expired_or_out_of_range_controls_do_not_change_the_baseline(self):
+        self.unit.observe(0, boot_time_ns(), 24990, self.unit.next_submission())
         expired = self.pulse(expires_ns=boot_time_ns() - 1)
         out_of_range = self.pulse()
         out_of_range.delta_us = 1001

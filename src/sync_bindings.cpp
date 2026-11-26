@@ -153,6 +153,8 @@ void bind_sync(py::module_& module) {
             return correction(actuator.cancel(session, round));
         }, py::arg("session_id"), py::arg("round_id"))
         .def("next", &PhaseActuator::next, py::arg("baseline_us"), py::arg("monotonic_ns"))
+        .def("observe_duration", &PhaseActuator::observe_duration, py::arg("submitted"), py::arg("sequence"),
+             py::arg("timestamp_ns"), py::arg("reported_us"))
         .def("completed", &PhaseActuator::completed, py::arg("submitted"), py::arg("sequence"), py::arg("timestamp_ns"));
     py::class_<SyncSession>(module, "SyncSession", py::release_gil_before_calling_cpp_dtor())
         .def(py::init<SyncConfig, std::string, LocalSyncUnits>(),

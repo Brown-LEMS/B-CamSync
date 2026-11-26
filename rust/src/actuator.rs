@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+pub(crate) const INITIAL_RESPONSE_SPAN: usize = 12;
 #[repr(C)]
 #[derive(Clone, Copy, Default, Serialize, Deserialize)]
 pub struct Submission {
@@ -44,6 +45,9 @@ impl Default for State {
 pub struct PhaseActuator {
     pub state: State,
     restoration_submitted: bool,
+    reported_baseline_us: Option<i64>,
+    saw_duration_change: bool,
+    restore_observation: Option<(Submission, u64)>,
 }
 impl PhaseActuator {
     fn identity(&self, session: &str, round: u64) -> Result<(), String> {
@@ -143,6 +147,8 @@ impl PhaseActuator {
         v.cancelled = false;
         v.state = "submitting".into();
         self.restoration_submitted = false;
+        self.saw_duration_change = false;
+        self.restore_observation = None;
         Ok(v.clone())
     }
     pub fn cancel(&mut self, session: &str, round: u64) -> Result<State, String> {
@@ -188,6 +194,38 @@ impl PhaseActuator {
             correction_id: 0,
             restoration: false,
             round_id: v.round_id,
+        }
+    }
+    /// Follow libcamera's reported (sensor-quantized) period, which can lag the
+    /// request carrying it. A probe below a sensor step may have no effect.
+    pub fn observe_duration(
+        &mut self,
+        s: Submission,
+        sequence: u64,
+        timestamp: i64,
+        reported_us: i64,
+    ) {
+        if !self.active() {
+            self.reported_baseline_us = Some(reported_us);
+            return;
+        }
+        if s.restoration
+            && s.round_id == self.state.round_id
+            && s.correction_id == self.state.correction_id
+        {
+            self.restore_observation = Some((s, sequence));
+        }
+        if self.reported_baseline_us != Some(reported_us) {
+            self.saw_duration_change = true;
+            return;
+        }
+        if let Some((restore, first)) = self.restore_observation {
+            if self.saw_duration_change
+                || self.state.submitted_frames == 0
+                || sequence.saturating_sub(first) >= INITIAL_RESPONSE_SPAN as u64
+            {
+                self.completed(restore, sequence, timestamp);
+            }
         }
     }
     pub fn completed(&mut self, s: Submission, sequence: u64, timestamp: i64) {

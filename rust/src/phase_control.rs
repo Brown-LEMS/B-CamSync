@@ -3,10 +3,10 @@ use super::{
     check_frames, estimate_phase, invalid, median, ns, Measurement, PhaseDecision, PhaseError,
     PhasePolicy,
 };
+use crate::actuator::INITIAL_RESPONSE_SPAN;
 use crate::timing::{FrameTiming, Pulse, TimingSnapshot};
 
 const PROBE_FRAMES: i32 = 6;
-const INITIAL_RESPONSE_SPAN: usize = 12;
 const GUARD_FRAMES: u64 = 3;
 
 #[derive(Clone, Copy, Debug)]

@@ -174,6 +174,11 @@ class CameraSimulationTests(unittest.TestCase):
             self.assertEqual(sdk.complete(CAMERAS[0]), BASELINE_US)
             restored = timing.snapshot().correction
             self.assertEqual((restored.state, restored.correction_id), ("restored", correction_id))
+            # Cold calibration also pulses the other local board. Capture keeps
+            # delivering its pending requests until that board returns to baseline.
+            other = follower.units["board-b2"]
+            while other.snapshot().correction.state in {"submitting", "settling"}:
+                sdk.complete(CAMERAS[1])
 
         for session in (follower.session, coordinator):
             status = session.status()

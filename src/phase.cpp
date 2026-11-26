@@ -152,4 +152,7 @@ PhaseActuator::Submission PhaseActuator::next(int64_t baseline, int64_t mono) {
 void PhaseActuator::completed(const Submission& s, uint64_t sequence, int64_t timestamp) {
     check_actuator(bcamsync_actuator_completed(handle_, {s.duration_us, s.correction_id, s.restoration, s.round_id}, sequence, timestamp));
 }
+void PhaseActuator::observe_duration(const Submission& s, uint64_t sequence, int64_t timestamp, int64_t reported_us) {
+    check_actuator(bcamsync_actuator_observe_duration(handle_, {s.duration_us, s.correction_id, s.restoration, s.round_id}, sequence, timestamp, reported_us));
+}
 } // namespace bcamsync
