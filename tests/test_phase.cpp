@@ -23,11 +23,14 @@ template <class F> void rejects(F action) {
 }
 TimingSnapshot snapshot(std::int64_t end, std::int64_t phase = 0, std::uint64_t last = 200) {
     TimingSnapshot value;
+    value.minimum_duration_us = 20000;
+    value.maximum_duration_us = 30000;
     value.unit_id = phase ? "follower" : "reference";
     value.snapshot_timestamp_ns = end + 1000000;
     for (std::uint64_t i = 0; i < 121; ++i) {
         FrameTiming f;
         f.camera_sequence = last - 120 + i;
+        f.requested_duration_us = f.reported_duration_us = 25000;
         f.sensor_timestamp_ns =
             100000000000LL + static_cast<std::int64_t>(f.camera_sequence) * 25000000 + phase;
         f.timestamp_ns = end - static_cast<std::int64_t>(120 - i) * 25000000 + phase;
@@ -101,34 +104,17 @@ void reference_timing() {
 void controller() {
     PhaseController c;
     auto d = c.tick(snapshot(epoch), snapshot(epoch, 100000), epoch + 1000000, 1000000000);
-    require(!d.ready && d.measurement && !d.action, "first good window cannot grant readiness");
-    d = c.tick(snapshot(epoch + 1000000000, 0, 240), snapshot(epoch + 1000000000, 100000, 240),
-               epoch + 1001000000, 2000000000);
-    require(!d.ready, "overlapping windows cannot grant readiness");
-    d = c.tick(snapshot(epoch + 2025000000, 0, 281), snapshot(epoch + 2025000000, 100000, 281),
-               epoch + 2026000000, 3025000000);
-    require(d.ready && d.state == "tracking", "disjoint good windows grant readiness");
-    d = c.tick(snapshot(epoch + 2025000000, 0, 281), snapshot(epoch + 2025000000, 100000, 281),
-               epoch + 2026000000, 4126000000);
-    require(d.state == "fault" && d.fault.find("stalled") != std::string::npos,
-            "monotonic stalled evidence deadline");
-    c.reset();
-    d = c.tick(snapshot(epoch), snapshot(epoch, 4000000), epoch + 5000000, 0);
-    require(d.action && d.action->delta_us < 0 && std::abs(d.action->delta_us) <= 1000 &&
-                d.action->count == 16,
-            "bounded startup correction");
+    require(!d.ready && d.action && d.state == "identifying_negative",
+            "cold start measures actuator response before declaring readiness");
     const auto id = d.action->correction_id;
-    auto follower = snapshot(epoch + 1000000000, 0, 240);
-    follower.correction = {"restored", id, epoch + 500000000};
-    d = c.tick(snapshot(epoch + 1000000000, 0, 240), follower, epoch + 1001000000, 1000000000);
-    require(d.state == "settling" && !d.action, "restoration starts settled-window wait");
-    follower = snapshot(epoch + 3000000000, 0, 320);
+    d = c.tick(snapshot(epoch), snapshot(epoch, 100000), epoch + 1000000, 1100000000);
+    require(!d.ready && !d.action && d.fault.empty(), "await the tagged pulse before issuing another");
+    auto follower = snapshot(epoch + 3000000000, 0, 320);
     follower.correction = {"restored", id, epoch + 500000000};
     d = c.tick(snapshot(epoch + 3000000000, 0, 320), follower, epoch + 3001000000, 3000000000);
-    require(d.measurement && d.measurement->drift_ns_per_second == 0,
-            "actuation step is not oscillator drift");
-    d = c.tick(snapshot(epoch + 3000000000, 0, 320), follower, epoch + 3001000000, 4000000000,
-               false);
+    require(!d.ready && !d.fault.empty(), "restoration without tagged action data cannot establish response");
+    c.reset();
+    d = c.tick(snapshot(epoch), snapshot(epoch, 100000), epoch + 1000000, 0, false);
     require(d.fault == "clock health lost" && !d.ready, "clock loss faults controller");
     c.reset();
     c.tick(snapshot(epoch), snapshot(epoch), epoch + 1000000, 0);
@@ -150,7 +136,7 @@ void controller() {
                epoch + 6005000000, 6000000000);
     require(d.fault == "correction acknowledgement timeout", "unacknowledged correction times out");
     PhasePolicy p;
-    p.gain = 2;
+    p.startup_frames = 17;
     rejects([&] { PhaseController invalid(p); });
 }
 void actuator() {

@@ -31,6 +31,7 @@ struct Model {
     phase_us: f64,
     rng: u64,
     commands: VecDeque<i32>,
+    last_shift_us: f64,
 }
 
 impl Model {
@@ -38,6 +39,7 @@ impl Model {
         Self {
             rig,
             frame: 0,
+            last_shift_us: 0.,
             phase_us: 1300.0,
             rng: seed,
             commands: VecDeque::from(vec![0; rig.delay]),
@@ -67,6 +69,7 @@ impl Model {
         self.commands.push_back(0);
         let shift = (requested / self.rig.quantum_us + self.rig.quantizer_offset).round()
             * self.rig.quantum_us;
+        self.last_shift_us = shift;
         let drift = self.rig.drift_ppm + self.rig.drift_change_ppm * (sec / 45.0).sin();
         self.phase_us += drift / self.rig.fps as f64 + shift;
         let physical_phase = self.phase_us + 1.5 * self.noise();
@@ -224,21 +227,18 @@ fn p99(values: &mut [f64]) -> f64 {
 fn trial(
     rig: Rig,
     initial_phase_us: f64,
-    deadband_us: Option<f64>,
+    production: bool,
     calibration: &(usize, Vec<(i32, f64)>, usize),
 ) -> Value {
     let mut model = Model::new(rig, 739);
     model.phase_us = initial_phase_us;
-    let mut baseline = PhaseController::new(
-        PhasePolicy {
-            deadband_ms: deadband_us.unwrap_or(250.0) / 1000.0,
-            ..Default::default()
-        },
-        1_000_000_000 / rig.fps as i64,
-    )
-    .unwrap();
+    let baseline_us = 1_000_000 / rig.fps as i64;
+    let mut baseline = PhaseController::new(PhasePolicy::default(), baseline_us * 1000).unwrap();
+    let mut tags: VecDeque<(u64, i64)> = VecDeque::new();
     let mut predictive = Predictive::new();
     let (mut master, mut follower) = (TimingSnapshot::default(), TimingSnapshot::default());
+    follower.minimum_duration_us = baseline_us - 1000;
+    follower.maximum_duration_us = baseline_us + 1000;
     let mut restoration = None;
     let (mut commands, mut changed_frames) = (0, 0);
     let (mut physical, mut observed) = (Vec::new(), Vec::new());
@@ -250,7 +250,7 @@ fn trial(
             physical.push(phase.abs());
             observed.push(measured.abs());
         }
-        let (delta, frames) = if deadband_us.is_none() {
+        let (delta, frames) = if !production {
             (
                 predictive.command(measured, k, rig.fps, calibration.0, &calibration.1),
                 1,
@@ -258,6 +258,14 @@ fn trial(
         } else {
             append_frame(&mut master, k, m, now, 3 * rig.fps);
             append_frame(&mut follower, k, s, now, 3 * rig.fps);
+            let reference = master.frames.last_mut().unwrap();
+            reference.requested_duration_us = baseline_us;
+            reference.reported_duration_us = baseline_us;
+            let observed = follower.frames.last_mut().unwrap();
+            let (id, delta) = tags.pop_front().unwrap_or((0, 0));
+            observed.correction_id = id;
+            observed.requested_duration_us = baseline_us + delta;
+            observed.reported_duration_us = baseline_us + model.last_shift_us.round() as i64;
             if let Some((due, id)) = restoration {
                 if k == due {
                     follower.correction = CorrectionStatus {
@@ -270,7 +278,7 @@ fn trial(
             }
             let d = baseline.tick(&master, &follower, now, now, true);
             if !d.fault.is_empty() {
-                return json!({"policy":"production","deadband_us":deadband_us,"fault":d.fault,"fault_frame":k});
+                return json!({"policy":"production","fault":d.fault,"fault_frame":k});
             }
             if let Some(p) = d.action {
                 follower.correction = CorrectionStatus {
@@ -278,6 +286,10 @@ fn trial(
                     correction_id: p.correction_id,
                     restored_timestamp_ns: 0,
                 };
+                tags.extend(std::iter::repeat_n(
+                    (p.correction_id, p.delta_us as i64),
+                    p.count as usize,
+                ));
                 restoration = Some((k + rig.delay + p.count as usize, p.correction_id));
                 (p.delta_us, p.count as usize)
             } else {
@@ -293,8 +305,7 @@ fn trial(
         }
     }
     let physical_mean = mean(&physical);
-    json!({"policy":if deadband_us.is_none() {"predictive"} else {"production"},
-        "deadband_us":deadband_us,
+    json!({"policy":if !production {"predictive"} else {"production"},
         "scored_frames":physical.len(),"physical_mae_us":physical_mean,
         "physical_p99_us":p99(&mut physical),"physical_max_us":physical.last(),
         "timestamp_p99_us":p99(&mut observed),"requests":commands,
@@ -341,8 +352,7 @@ fn main() {
                 "rate_variation_ppm":warm,"timestamp_noise_halfwidth_us":noise,
                 "calibration_frames":calibration.2,"identified_delay_frames":calibration.0,
                 "identified_actions":calibration.1,"scored_seconds":TRIAL_SECONDS-SCORE_START_SECONDS,
-                "results":[trial(rig,initial_phase,Some(250.0),&calibration),trial(rig,initial_phase,Some(25.0),&calibration),
-                           trial(rig,initial_phase,None,&calibration)]})
+                "results":[trial(rig,initial_phase,true,&calibration), trial(rig,initial_phase,false,&calibration)]})
                 );
             }
         }
@@ -382,6 +392,12 @@ mod tests {
                 let affected = (0..2).filter(|i| k >= rig.delay + i).count();
                 assert!((a - b - effective * affected as f64).abs() < 1e-7);
             }
+        }
+        for fps in [24, 30, 40, 44] {
+            let camera = Rig { fps, ..rig };
+            let cold = trial(camera, -0.35e6 / fps as f64, true, &(0, vec![], 0));
+            assert!(cold.get("fault").is_none(), "{cold}");
+            assert!(cold["physical_p99_us"].as_f64().unwrap() < 50., "{cold}");
         }
         let (delay, actions, _) = calibrate(rig);
         assert_eq!(delay, rig.delay);
