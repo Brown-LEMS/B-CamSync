@@ -280,6 +280,12 @@ impl PhaseController {
         };
         headroom.clamp(0, i64::from(limit)) as i32
     }
+    fn burst_limit(&self) -> i32 {
+        // The actuator accepts commands for at most five seconds. Reserve a second
+        // for dispatch and request scheduling even on slow acquisition modes.
+        (4_000_000_000 / self.nominal).clamp(1, i64::from(self.policy.startup_frames)) as i32
+    }
+
     fn issue(
         &mut self,
         purpose: Purpose,
@@ -327,7 +333,23 @@ impl PhaseController {
             return Err("phase correction cancelled during acquisition".into());
         }
         if c.state != "restored" {
-            if mono - p.started > 5_000_000_000 {
+            if !matches!(c.state.as_str(), "submitting" | "settling") {
+                return Err(format!(
+                    "invalid correction acknowledgement state: {}",
+                    c.state
+                ));
+            }
+            // The submission lifetime does not bound when those exposures can be
+            // observed through a device queue, particularly at low frame rates.
+            let lag = self
+                .model
+                .as_ref()
+                .unwrap()
+                .lag()
+                .max(INITIAL_RESPONSE_SPAN as u64);
+            let frames = i128::from(lag) + i128::from(p.pulse.count) + i128::from(GUARD_FRAMES);
+            let limit = (frames * i128::from(self.nominal)).max(5_000_000_000);
+            if i128::from(mono - p.started) > limit {
                 return Err("correction restoration timeout".into());
             }
             return Ok(false);
@@ -335,16 +357,22 @@ impl PhaseController {
         if c.restored_timestamp_ns <= 0 || c.restored_timestamp_ns > now {
             return Err("invalid restoration boundary".into());
         }
+        let search_limit = self.bound(
+            slave,
+            p.pulse.delta_us.signum(),
+            self.policy.tracking_delta_us,
+        );
         let model = self.model.as_mut().unwrap();
         let tag = slave.frames.iter().position(|f| {
-            f.correction_id == p.pulse.correction_id
+            f.camera_sequence > p.issued_seq
+                && f.correction_id == p.pulse.correction_id
                 && f.requested_duration_us != model.baseline_request
         });
         let Some(tag) = tag else {
             return Err("restored correction has no tagged camera request".into());
         };
         let tagged = slave.frames[tag].camera_sequence;
-        if tagged <= p.issued_seq || tag == 0 {
+        if tag == 0 {
             return Err("invalid tagged correction sequence".into());
         }
         let n = p.pulse.count as usize;
@@ -368,7 +396,8 @@ impl PhaseController {
             let available = slave.frames.len() - tag - n;
             let response = model.response(&slave.frames, tag, p.pulse, available.min(search));
             // An effective burst can finish early once its trailing edge is observed.
-            if available < search && response.is_none_or(|s| seq < s.lag + n as u64 + GUARD_FRAMES)
+            if available < search
+                && response.is_none_or(|s| seq < s.lag.saturating_add(n as u64 + GUARD_FRAMES))
             {
                 return Ok(false);
             }
@@ -377,6 +406,16 @@ impl PhaseController {
                 model.steps[usize::from(p.pulse.delta_us > 0)] = Some(step);
                 model.probe_us = 4;
             } else {
+                if p.pulse.delta_us.abs() >= search_limit {
+                    return Err(format!(
+                        "no measurable {} frame-period response within {search_limit} us",
+                        if p.pulse.delta_us < 0 {
+                            "negative"
+                        } else {
+                            "positive"
+                        }
+                    ));
+                }
                 model.probe_us = p.pulse.delta_us.abs() * 2;
             }
         } else {
@@ -455,12 +494,6 @@ impl PhaseController {
         if let Some(index) = model.steps.iter().position(Option::is_none) {
             let sign = if index == 0 { -1 } else { 1 };
             let limit = self.bound(slave, sign, self.policy.tracking_delta_us);
-            if model.probe_us > limit && (model.probe_us / 2 >= limit || limit < 1) {
-                return Err(format!(
-                    "no measurable {} frame-period response within {limit} us",
-                    if sign < 0 { "negative" } else { "positive" }
-                ));
-            }
             self.state = if sign < 0 {
                 "identifying_negative"
             } else {
@@ -468,7 +501,7 @@ impl PhaseController {
             }
             .into();
             let cmd = sign * model.probe_us.min(limit);
-            let cnt = PROBE_FRAMES.min(self.policy.startup_frames);
+            let cnt = PROBE_FRAMES.min(self.burst_limit());
             return self
                 .issue(Purpose::Identify, slave, now, mono, cmd, cnt)
                 .map(Some);
@@ -501,8 +534,7 @@ impl PhaseController {
                         step.command_us,
                         (target / step.shift_us.abs())
                             .round()
-                            .clamp(1., self.policy.startup_frames as f64)
-                            as i32,
+                            .clamp(1., self.burst_limit() as f64) as i32,
                     )
                 } else {
                     if limit == 0 {
@@ -510,7 +542,7 @@ impl PhaseController {
                     }
                     let count = (target / limit as f64)
                         .ceil()
-                        .clamp(1., self.policy.startup_frames as f64)
+                        .clamp(1., self.burst_limit() as f64)
                         as i32;
                     let amount = (target / count as f64).round().clamp(1., limit as f64) as i32;
                     (sign * amount, count)

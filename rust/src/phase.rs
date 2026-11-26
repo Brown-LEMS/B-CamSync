@@ -421,6 +421,51 @@ mod tests {
     }
 
     #[test]
+    fn restart_uses_the_current_epoch_even_if_history_contains_the_same_pulse_id() {
+        let mut controller = PhaseController::new(PhasePolicy::default(), 25_000_000).unwrap();
+        let mut first = snapshot(EPOCH, 0, 200);
+        first.minimum_duration_us = 24998;
+        let pulse = controller
+            .tick(&snapshot(EPOCH, 0, 200), &first, EPOCH + 1_000_000, 0, true)
+            .action
+            .unwrap();
+        assert_eq!(
+            pulse.delta_us, -2,
+            "use the available tested camera headroom"
+        );
+        let end = EPOCH + 800_000_000;
+        let mut observed = snapshot(end, 0, 232);
+        observed.minimum_duration_us = first.minimum_duration_us;
+        for f in &mut observed.frames {
+            let seq = f.camera_sequence;
+            if (185..191).contains(&seq) || (205..211).contains(&seq) {
+                f.correction_id = pulse.correction_id;
+                f.requested_duration_us += i64::from(pulse.delta_us);
+            }
+            if (208..214).contains(&seq) {
+                f.reported_duration_us += i64::from(pulse.delta_us);
+            }
+            let shift = (seq.saturating_sub(207).min(6) as i64) * 2000;
+            f.timestamp_ns -= shift;
+            f.sensor_timestamp_ns -= shift;
+        }
+        observed.correction = CorrectionStatus {
+            state: "restored".into(),
+            correction_id: pulse.correction_id,
+            restored_timestamp_ns: end,
+        };
+        let next = controller.tick(
+            &snapshot(end, 0, 232),
+            &observed,
+            end + 1_000_000,
+            800_000_000,
+            true,
+        );
+        assert!(next.fault.is_empty(), "{}", next.fault);
+        assert!(next.action.unwrap().delta_us > 0);
+    }
+
+    #[test]
     fn malformed_timestamps_and_policy_fail_without_overflow() {
         let p = PhasePolicy::default();
         let s = snapshot(EPOCH, 0, 200);
