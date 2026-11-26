@@ -43,6 +43,7 @@ pub struct UnitStatus {
     pub max_ms: f64,
     #[serde(rename = "measured_at")]
     pub measurement_end_ns: i64,
+    pub aligned_from_sequence: Option<u64>,
 }
 impl Default for UnitStatus {
     fn default() -> Self {
@@ -55,6 +56,7 @@ impl Default for UnitStatus {
             p95_ms: 0.0,
             max_ms: 0.0,
             measurement_end_ns: 0,
+            aligned_from_sequence: None,
         }
     }
 }
@@ -78,6 +80,15 @@ impl Default for GroupStatus {
             waiting_nodes: Vec::new(),
             stop_node: String::new(),
             stop_reason: String::new(),
+        }
+    }
+}
+impl GroupStatus {
+    fn invalidate_alignment(&mut self) {
+        self.ready = false;
+        for unit in &mut self.units {
+            unit.ready = false;
+            unit.aligned_from_sequence = None;
         }
     }
 }
@@ -180,6 +191,39 @@ fn map_observations(mut result: TimingSnapshot, clock: &ClockEstimate) -> Result
     }
     Ok(result)
 }
+
+/// Find the earliest observed reference exposure with an eligible frame on every unit.
+/// A peer may be a few requests ahead or behind the reference when its snapshot is read.
+fn aligned_boundary(
+    reference: &str,
+    snapshots: &BTreeMap<String, TimingSnapshot>,
+    eligible_from: &BTreeMap<String, u64>,
+    period_ns: u64,
+) -> Option<BTreeMap<String, u64>> {
+    let mut eligible = BTreeMap::new();
+    for (id, snapshot) in snapshots {
+        let first = *eligible_from.get(id)?;
+        let frames = &snapshot.frames;
+        eligible.insert(
+            id.as_str(),
+            &frames[frames.partition_point(|f| f.camera_sequence < first)..],
+        );
+    }
+    eligible[reference].iter().find_map(|anchor| {
+        eligible
+            .iter()
+            .map(|(&id, frames)| {
+                let right = frames.partition_point(|f| f.timestamp_ns < anchor.timestamp_ns);
+                let nearest = frames[right.saturating_sub(1)..(right + 1).min(frames.len())]
+                    .iter()
+                    .min_by_key(|f| f.timestamp_ns.abs_diff(anchor.timestamp_ns))?;
+                (nearest.timestamp_ns.abs_diff(anchor.timestamp_ns) * 2 < period_ns)
+                    .then(|| (id.to_string(), nearest.camera_sequence))
+            })
+            .collect()
+    })
+}
+
 impl Runtime {
     pub fn new(
         config: SyncConfig,
@@ -324,7 +368,7 @@ impl Runtime {
     pub fn fail(&self, reason: &str) {
         let mut p = self.published.lock().unwrap();
         p.group.state = "fault".into();
-        p.group.ready = false;
+        p.group.invalidate_alignment();
         if p.group.stop_reason.is_empty() {
             p.group.stop_node = self.local.clone();
             p.group.stop_reason = "fault".into();
@@ -335,9 +379,6 @@ impl Runtime {
         } else {
             p.group.fault.push_str("; ");
             p.group.fault.push_str(reason);
-        }
-        for unit in &mut p.group.units {
-            unit.ready = false;
         }
         self.changed.notify_all();
     }
@@ -356,12 +397,9 @@ impl Runtime {
             p.group.stop_node = node.into();
             p.group.stop_reason = reason.into();
         }
-        p.group.ready = false;
+        p.group.invalidate_alignment();
         if p.group.fault.is_empty() {
             p.group.state = "stopping".into();
-        }
-        for unit in &mut p.group.units {
-            unit.ready = false;
         }
         self.stopping.store(true, Ordering::Release);
         self.changed.notify_all();
@@ -635,10 +673,7 @@ impl Runtime {
         }
         self.published.lock().unwrap().clock.valid = false;
         let mut status = self.status();
-        status.ready = false;
-        for unit in &mut status.units {
-            unit.ready = false;
-        }
+        status.invalidate_alignment();
         if status.fault.is_empty() {
             status.state = "stopped".into();
         }
@@ -1033,13 +1068,14 @@ impl Runtime {
             .max_mapping_span_ns
             .min((s.config.clock_max_offset_ms * 1e6).ceil() as i64);
         let mut controllers = BTreeMap::new();
+        let active_since = self.common_now()?;
+        let period_ns = 1_000_000_000 / i64::from(s.config.fps);
         for unit in &s.config.units {
             if unit.id != s.config.reference_unit {
                 let mut controller =
-                    PhaseController::new(policy.clone(), 1_000_000_000 / s.config.fps as i64)
-                        .map_err(|e| e.to_string())?;
+                    PhaseController::new(policy.clone(), period_ns).map_err(|e| e.to_string())?;
                 controller
-                    .reset(Some(monotonic_ns()), self.common_now()?)
+                    .reset(Some(monotonic_ns()), active_since)
                     .map_err(|e| e.to_string())?;
                 controllers.insert(unit.id.clone(), controller);
             }
@@ -1052,6 +1088,8 @@ impl Runtime {
         let mut next_peer_status = 0;
         let mut history: BTreeMap<String, Vec<FrameTiming>> = BTreeMap::new();
         let mut last_metrics: BTreeMap<String, UnitStatus> = BTreeMap::new();
+        let mut eligible_from = BTreeMap::new();
+        let mut aligned_from = None;
         while !self.stopping() {
             let now = monotonic_ns();
             if now < next {
@@ -1126,7 +1164,18 @@ impl Runtime {
                     us.state = "reference".into();
                     us.ready = false;
                     match validate_timing(&snapshots[&unit.id], self.common_now()?, &policy) {
-                        Ok(_) => us.ready = true,
+                        Ok(_) => {
+                            us.ready = true;
+                            if !eligible_from.contains_key(&unit.id) {
+                                if let Some(frame) = snapshots[&unit.id]
+                                    .frames
+                                    .iter()
+                                    .find(|f| f.timestamp_ns >= active_since)
+                                {
+                                    eligible_from.insert(unit.id.clone(), frame.camera_sequence);
+                                }
+                            }
+                        }
                         Err(error) if error.kind == 3 => {
                             if self.status().ready {
                                 return Err("reference timing missing".into());
@@ -1146,6 +1195,11 @@ impl Runtime {
                     us.state = decision.state;
                     us.ready = decision.ready;
                     us.fault = decision.fault.clone();
+                    if us.state == "qualifying" && !eligible_from.contains_key(&unit.id) {
+                        // The controller enters qualification using this exact completed frame.
+                        let frame = snapshots[&unit.id].frames.last().unwrap();
+                        eligible_from.insert(unit.id.clone(), frame.camera_sequence);
+                    }
                     if let Some(measurement) = decision.measurement {
                         us.phase_ms = measurement.phase_ns / 1e6;
                         us.p95_ms = measurement.absolute_p95_ns / 1e6;
@@ -1170,14 +1224,28 @@ impl Runtime {
                 last_metrics.insert(unit.id, us.clone());
                 status.units.push(us);
             }
-            if status.ready {
-                status.state = "tracking".into();
-            } else if monotonic_ns() > s.startup_deadline {
+            if aligned_from.is_none() && eligible_from.len() == snapshots.len() {
+                aligned_from = aligned_boundary(
+                    &s.config.reference_unit,
+                    &snapshots,
+                    &eligible_from,
+                    period_ns as u64,
+                );
+            }
+            if let Some(boundary) = &aligned_from {
+                for unit in &mut status.units {
+                    unit.aligned_from_sequence = Some(boundary[&unit.unit_id]);
+                }
+                status.state = if status.ready { "tracking" } else { "aligned" }.into();
+            } else {
+                status.ready = false;
+            }
+            if !status.ready && monotonic_ns() > s.startup_deadline {
                 return Err("group startup calibration deadline exceeded".into());
             }
-            let ready_changed = status.ready != self.status().ready;
+            let state_changed = status.state != self.status().state;
             self.publish(status.clone());
-            if ready_changed || now >= next_peer_status {
+            if state_changed || now >= next_peer_status {
                 for node in s.config.nodes.clone() {
                     if node.id != s.local {
                         self.rpc(s, &node.id, json!({"command": "status", "status": status}))?;
@@ -1407,6 +1475,55 @@ mod tests {
         assert!(extend_observations(&mut history, &mut next, 4).is_err());
     }
 
+    #[test]
+    fn alignment_pairs_the_earliest_eligible_group_exposure_across_asynchronous_snapshots() {
+        let frames = |observations: &[(u64, i64)], clock_offset| TimingSnapshot {
+            frames: observations
+                .iter()
+                .map(|&(seq, ts)| FrameTiming {
+                    camera_sequence: seq,
+                    timestamp_ns: ts,
+                    sensor_timestamp_ns: ts - clock_offset,
+                    ..FrameTiming::default()
+                })
+                .collect(),
+            ..TimingSnapshot::default()
+        };
+        let mut snapshots = BTreeMap::from([
+            ("ref".into(), frames(&[(0, 1000), (1, 1025)], 0)),
+            (
+                "fast".into(),
+                frames(&[(10, 999), (11, 1024), (12, 1049), (13, 1074)], 250),
+            ),
+            (
+                "late".into(),
+                frames(&[(40, 1026), (41, 1051), (42, 1076)], -100),
+            ),
+        ]);
+        let mut eligible = BTreeMap::from([("ref".into(), 0), ("fast".into(), 10)]);
+        assert!(aligned_boundary("ref", &snapshots, &eligible, 25).is_none());
+        eligible.insert("late".into(), 41);
+        // The late camera has a frame near ref 1, but it precedes qualification.
+        assert!(aligned_boundary("ref", &snapshots, &eligible, 25).is_none());
+        snapshots.insert(
+            "ref".into(),
+            frames(&[(0, 1000), (1, 1025), (2, 1050), (3, 1075)], 0),
+        );
+        assert_eq!(
+            aligned_boundary("ref", &snapshots, &eligible, 25),
+            Some(BTreeMap::from([
+                ("ref".into(), 2),
+                ("fast".into(), 12),
+                ("late".into(), 41)
+            ]))
+        );
+        let single = BTreeMap::from([("ref".into(), snapshots["ref"].clone())]);
+        assert_eq!(
+            aligned_boundary("ref", &single, &eligible, 25).unwrap()["ref"],
+            0
+        );
+    }
+
     #[derive(Default)]
     struct Counters {
         binds: AtomicUsize,
@@ -1503,6 +1620,7 @@ mod tests {
         let runtime = runtime(counters.clone(), false);
         for round in 1..=8 {
             let binding = runtime.begin().unwrap();
+            assert!(runtime.status().units.is_empty());
             assert_eq!(binding["identity"], "test-identity");
             assert_eq!(binding["round"], round);
             let worker_runtime = runtime.clone();
@@ -1511,10 +1629,13 @@ mod tests {
                 worker_runtime.finish();
             });
             assert!(runtime.wait_ready(Duration::from_secs(1)).unwrap());
+            assert!(runtime.status().units[0].aligned_from_sequence.is_some());
             assert!(runtime.clock().valid);
             runtime.request_stop();
+            assert!(runtime.status().units[0].aligned_from_sequence.is_none());
             worker.join().unwrap();
             assert_eq!(runtime.status().state, "stopped");
+            assert!(runtime.status().units[0].aligned_from_sequence.is_none());
             assert!(runtime.status().fault.is_empty());
             assert!(!runtime.clock().valid);
             assert_eq!(counters.binds.load(Ordering::Relaxed), round as usize);
