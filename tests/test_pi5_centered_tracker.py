@@ -1,9 +1,6 @@
 """Regression checks for the experimental centered tracker on a simulated delayed camera."""
 
 from collections import deque
-from pathlib import Path
-import subprocess
-import sys
 from types import SimpleNamespace
 import unittest
 
@@ -37,16 +34,6 @@ class CenteredTrackerTests(unittest.TestCase):
         self.assertEqual({d for i, d in issued if 60 * fps <= i}, {16})
         for (before, _), (after, _) in zip(issued, issued[1:]):
             self.assertGreater(after - before, lag)
-
-    def test_centered_mode_rejects_missing_or_zero_measured_lag_before_capture(self):
-        program = Path(__file__).resolve().parents[1] / "tools/experiments/pi5_phase_tracking.py"
-        args = ["--mode", "centered", "--fps", "24", "--seconds", "10",
-                "--calibration", "unused.csv", "--output", "unused-output.csv"]
-        for option in ([], ["--lag-frames", "0"]):
-            result = subprocess.run([sys.executable, str(program), *args, *option],
-                                    capture_output=True, text=True)
-            self.assertEqual(result.returncode, 2)
-            self.assertIn("positive measured --lag-frames", result.stderr)
 
 
 if __name__ == "__main__":

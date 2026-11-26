@@ -1,13 +1,9 @@
-"""Compare the stock controller to calibrated rate/phase control after stock initial lock."""
+"""Offline baseline identification and feedback model used to reproduce the earlier Pi trials."""
 
-import argparse
 import csv
 from collections import defaultdict
 import math
-import os
-from pathlib import Path
 from statistics import mean
-import time
 
 
 def identify(path, nominal):
@@ -43,25 +39,6 @@ def identify(path, nominal):
     return reference, base - reference, (minus, shifts[minus]), (plus, shifts[plus])
 
 
-def limit_phase_policy(config, follower, deadband_us=None, excursion_seconds=None):
-    """All trial modes use the same pre-lock policy within actual camera headroom."""
-    headroom = min(follower.baseline_us - follower.minimum_us,
-                   follower.maximum_us - follower.baseline_us)
-    if headroom <= 0:
-        raise ValueError("Selected nominal period lacks bidirectional adjustment headroom")
-    policy = config.phase_policy
-    policy.startup_delta_us = min(policy.startup_delta_us, headroom)
-    policy.tracking_delta_us = min(policy.tracking_delta_us, headroom)
-    if deadband_us is not None:
-        policy.deadband_ms = deadband_us / 1000
-    if excursion_seconds is not None:
-        policy.excursion_timeout_seconds = excursion_seconds
-    config.phase_policy = policy
-    config.validate()
-    print(f"Shared stock lock: startup amplitude ≤{policy.startup_delta_us} us, "
-          f"tracking amplitude ≤{policy.tracking_delta_us} us, deadband {policy.deadband_ms} ms, "
-          f"excursion timeout {policy.excursion_timeout_seconds} s", flush=True)
-
 
 class Tracker:
     """Accumulate sub-step desired movement and dispatch calibrated one-frame requests."""
@@ -84,67 +61,3 @@ class Tracker:
             self.debt -= shift
             return self.follower.baseline_us + command
         return self.follower.baseline_us
-
-
-def run(args):
-    from bcamsync import SyncSession
-    from pi5_phase_response import capture_pair, check_progress
-
-    model = identify(args.calibration, 1_000_000 // args.fps)
-    print(f"{args.fps} Hz calibration (reference_us, drift_us/frame, command/response_us): {model}", flush=True)
-    with capture_pair(args.fps, args.output) as (config, capture, probes):
-        limit_phase_policy(config, probes[1], args.stock_deadband_us, args.stock_excursion_seconds)
-        for probe in probes:
-            probe.stage = "initial_lock"
-        session = SyncSession(config, config.nodes[0].id, capture.units)
-        session.start()
-        try:
-            if not session.wait_ready(90):
-                raise RuntimeError("No initial lock before measurement")
-            print("Stock initial lock complete", flush=True)
-            if args.mode != "stock":
-                session.stop()
-                print("Stock synchronization stopped; capture continues under the experimental controller", flush=True)
-                if args.mode == "centered":
-                    from pi5_centered_tracker import CenteredTracker
-
-                    tracker = CenteredTracker(probes, model, args.fps, lag=args.lag_frames)
-                    print(f"Centered tracking: measured action lag {args.lag_frames} frames", flush=True)
-                else:
-                    tracker = Tracker(probes, model, args.fps)
-                probes[1].control = tracker.request
-            for probe in probes:
-                probe.stage = args.mode
-            start = time.monotonic()
-            while time.monotonic() - start < args.seconds:
-                time.sleep(min(5, max(0, args.seconds - (time.monotonic() - start))))
-                check_progress(capture, probes)
-                if args.mode == "stock" and not session.status().ready:
-                    raise RuntimeError(f"Stock tracking lost readiness: {session.status().fault}")
-                print(f"{args.mode}: {time.monotonic() - start:.1f}/{args.seconds}s", flush=True)
-        finally:
-            session.stop()
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--fps", type=int, required=True)
-    parser.add_argument("--seconds", type=int, required=True)
-    parser.add_argument("--mode", choices=["stock", "adaptive", "centered"], required=True)
-    parser.add_argument("--lag-frames", type=int,
-                        help="centered mode: measured frames from request submission to changed sensor interval")
-    parser.add_argument("--stock-deadband-us", type=float,
-                        help="override the stock controller deadband for lock and stock tracking")
-    parser.add_argument("--stock-excursion-seconds", type=float,
-                        help="override the stock persistent excursion watchdog for an entire trial")
-    parser.add_argument("--calibration", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    os.environ.setdefault("LIBCAMERA_LOG_LEVELS", "*:ERROR")
-    args = parser.parse_args()
-    if args.fps <= 0 or args.seconds <= 0:
-        parser.error("--fps and --seconds must be positive")
-    if args.mode == "centered" and (args.lag_frames is None or args.lag_frames < 1):
-        parser.error("centered mode requires a positive measured --lag-frames")
-    if args.mode != "centered" and args.lag_frames is not None:
-        parser.error("--lag-frames applies only to centered mode")
-    run(args)
