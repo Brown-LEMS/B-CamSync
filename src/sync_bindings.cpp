@@ -21,6 +21,9 @@ public:
     TimingSnapshot snapshot() const override {
         PYBIND11_OVERRIDE_PURE(TimingSnapshot, SyncUnit, snapshot,);
     }
+    TimingSnapshot snapshot_from(std::uint64_t sequence) const override {
+        PYBIND11_OVERRIDE(TimingSnapshot, SyncUnit, snapshot_from, sequence);
+    }
     CorrectionStatus adjust(const Pulse& pulse) override {
         PYBIND11_OVERRIDE_PURE(CorrectionStatus, SyncUnit, adjust, pulse);
     }
@@ -59,6 +62,8 @@ void bind_sync(py::module_& module) {
         .def(py::init<>())
         .def_readwrite("unit_id", &TimingSnapshot::unit_id)
         .def_readwrite("snapshot_timestamp_ns", &TimingSnapshot::snapshot_timestamp_ns)
+        .def_readwrite("minimum_duration_us", &TimingSnapshot::minimum_duration_us)
+        .def_readwrite("maximum_duration_us", &TimingSnapshot::maximum_duration_us)
         .def_readwrite("frames", &TimingSnapshot::frames)
         .def_readwrite("correction", &TimingSnapshot::correction);
     py::class_<Pulse>(module, "Pulse")
@@ -76,23 +81,15 @@ void bind_sync(py::module_& module) {
         .def_readwrite("window_seconds", &PhasePolicy::window_seconds)
         .def_readwrite("evaluation_seconds", &PhasePolicy::evaluation_seconds)
         .def_readwrite("freshness_seconds", &PhasePolicy::freshness_seconds)
-        .def_readwrite("deadband_ms", &PhasePolicy::deadband_ms)
         .def_readwrite("ready_p95_ms", &PhasePolicy::ready_p95_ms)
         .def_readwrite("ready_max_ms", &PhasePolicy::ready_max_ms)
         .def_readwrite("ready_windows", &PhasePolicy::ready_windows)
         .def_readwrite("startup_delta_us", &PhasePolicy::startup_delta_us)
         .def_readwrite("startup_frames", &PhasePolicy::startup_frames)
         .def_readwrite("tracking_delta_us", &PhasePolicy::tracking_delta_us)
-        .def_readwrite("tracking_frames", &PhasePolicy::tracking_frames)
-        .def_readwrite("correction_interval_seconds", &PhasePolicy::correction_interval_seconds)
-        .def_readwrite("settling_seconds", &PhasePolicy::settling_seconds)
-        .def_readwrite("application_delay_seconds", &PhasePolicy::application_delay_seconds)
-        .def_readwrite("startup_max_corrections", &PhasePolicy::startup_max_corrections)
         .def_readwrite("excursion_ms", &PhasePolicy::excursion_ms)
         .def_readwrite("excursion_timeout_seconds", &PhasePolicy::excursion_timeout_seconds)
         .def_readwrite("no_progress_corrections", &PhasePolicy::no_progress_corrections)
-        .def_readwrite("progress_ms", &PhasePolicy::progress_ms)
-        .def_readwrite("gain", &PhasePolicy::gain)
         .def_readwrite("max_mapping_span_ns", &PhasePolicy::max_mapping_span_ns)
         .def_readwrite("max_samples", &PhasePolicy::max_samples)
         .def("validate", &PhasePolicy::validate);
@@ -130,6 +127,7 @@ void bind_sync(py::module_& module) {
         .def(py::init<>())
         .def("bind", &SyncUnit::bind, py::arg("session_id"), py::arg("round_id"))
         .def("snapshot", &SyncUnit::snapshot)
+        .def("snapshot_from", &SyncUnit::snapshot_from, py::arg("sequence"))
         .def("adjust", &SyncUnit::adjust, py::arg("pulse"))
         .def("cancel", &SyncUnit::cancel)
         .def("fault", &SyncUnit::fault);
@@ -155,6 +153,8 @@ void bind_sync(py::module_& module) {
             return correction(actuator.cancel(session, round));
         }, py::arg("session_id"), py::arg("round_id"))
         .def("next", &PhaseActuator::next, py::arg("baseline_us"), py::arg("monotonic_ns"))
+        .def("observe_duration", &PhaseActuator::observe_duration, py::arg("submitted"), py::arg("sequence"),
+             py::arg("timestamp_ns"), py::arg("reported_us"))
         .def("completed", &PhaseActuator::completed, py::arg("submitted"), py::arg("sequence"), py::arg("timestamp_ns"));
     py::class_<SyncSession>(module, "SyncSession", py::release_gil_before_calling_cpp_dtor())
         .def(py::init<SyncConfig, std::string, LocalSyncUnits>(),

@@ -337,7 +337,7 @@ class ArducamBackend final : public AcquisitionBackend, public detail::Interrupt
             std::abs(completion.exposure_us - config_.exposure_us) > 100)
             throw std::runtime_error("Camera exposure or gain changed after startup readiness");
         const auto sequence = sequence_++;
-        actuator_->completed(completion.submission.phase, sequence, timing.timestamp_ns);
+        actuator_->observe_duration(completion.submission.phase, timing.camera_sequence, timing.timestamp_ns, timing.reported_duration_us);
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
             timing_.push_back(timing);
@@ -350,6 +350,7 @@ class ArducamBackend final : public AcquisitionBackend, public detail::Interrupt
             auto packet = std::make_shared<FramePacket>();
             packet->unit_id = config_.id;
             packet->sequence = sequence;
+            packet->camera_sequence = timing.camera_sequence;
             packet->sensor_timestamp_ns = timing.sensor_timestamp_ns;
             packet->timestamp_ns = timing.timestamp_ns;
             packet->width = detail::arducam_width;
@@ -660,6 +661,8 @@ public:
         std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
         TimingSnapshot result;
         result.unit_id = config_.id;
+        result.minimum_duration_us = minimum_duration_;
+        result.maximum_duration_us = maximum_duration_;
         result.snapshot_timestamp_ns = boot_ns();
         {
             std::lock_guard<std::mutex> lock(state_mutex_);

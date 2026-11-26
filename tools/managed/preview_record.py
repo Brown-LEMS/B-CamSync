@@ -134,7 +134,8 @@ class RecordingService(PreviewService):
                 offset = video.tell()
                 video.write(encoded)
                 metadata.write(json.dumps({
-                    "sequence": packet.sequence, "sensor_timestamp_ns": packet.sensor_timestamp_ns,
+                    "sequence": packet.sequence, "camera_sequence": packet.camera_sequence,
+                    "sensor_timestamp_ns": packet.sensor_timestamp_ns,
                     "timestamp_ns": packet.timestamp_ns, "clock_valid": packet.clock_valid,
                     "dropped_before": packet.dropped_before,
                     "exposure_us": packet.exposure_us, "analogue_gain": packet.analogue_gain,

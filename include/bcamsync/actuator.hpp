@@ -35,6 +35,8 @@ class PhaseActuator {
     void cancel_active();
     Submission next(int64_t baseline, int64_t mono);
     void completed(const Submission& submitted, uint64_t sequence, int64_t timestamp);
+    /// For libcamera-style delayed period metadata, call on every completed frame.
+    void observe_duration(const Submission& submitted, uint64_t sequence, int64_t timestamp, int64_t reported_us);
   private:
     void* handle_;
 };

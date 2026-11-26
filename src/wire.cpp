@@ -145,6 +145,8 @@ Json snapshot_json(const TimingSnapshot& s) {
                         {"correction_id", f.correction_id}});
     return {{"unit", s.unit_id},
             {"boundary", s.snapshot_timestamp_ns},
+            {"minimum_duration_us", s.minimum_duration_us},
+            {"maximum_duration_us", s.maximum_duration_us},
             {"frames", rows},
             {"correction",
              {{"state", s.correction.state},
@@ -155,6 +157,8 @@ TimingSnapshot snapshot_from_json(const Json& j) {
     TimingSnapshot s;
     s.unit_id = j.at("unit");
     s.snapshot_timestamp_ns = j.at("boundary");
+    s.minimum_duration_us = j.at("minimum_duration_us");
+    s.maximum_duration_us = j.at("maximum_duration_us");
     const auto& rows = j.at("frames");
     if (!rows.is_array() || rows.size() > 512)
         throw std::runtime_error("invalid timing window size");
@@ -187,7 +191,8 @@ Json status_json(const GroupStatus& s) {
                       {"phase", u.phase_ms},
                       {"p95", u.p95_ms},
                       {"max", u.max_ms},
-                      {"measured_at", u.measurement_end_ns}});
+                      {"measured_at", u.measurement_end_ns},
+                      {"aligned_from_sequence", u.aligned_from_sequence ? Json(*u.aligned_from_sequence) : Json(nullptr)}});
     return {{"state", s.state}, {"ready", s.ready}, {"fault", s.fault}, {"units", us},
             {"waiting_nodes", s.waiting_nodes}, {"stop_node", s.stop_node}, {"stop_reason", s.stop_reason}};
 }
@@ -212,6 +217,12 @@ GroupStatus status_from_json(const Json& j) {
         u.p95_ms = v.at("p95");
         u.max_ms = v.at("max");
         u.measurement_end_ns = v.at("measured_at");
+        const auto sequence = v.find("aligned_from_sequence");
+        if (sequence != v.end() && !sequence->is_null()) {
+            if (!sequence->is_number_unsigned())
+                throw std::runtime_error("aligned_from_sequence must be an unsigned frame sequence");
+            u.aligned_from_sequence = sequence->get<std::uint64_t>();
+        }
         s.units.push_back(u);
     }
     return s;

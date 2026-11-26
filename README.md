@@ -1,6 +1,6 @@
 # B-CamSync
 
-B-CamSync is a camera synchronization library with a Rust core and interfaces for C++ and Python. This library measures frame-phase differences, applies bounded frame-period corrections through camera adapters, and reports synchronization quality within one node or across multiple nodes.
+B-CamSync is a camera synchronization library with a Rust core and interfaces for C++ and Python. At startup it measures each follower's free-running frame period, tests how its sensor responds to shorter and longer requests, and learns the delay until a request changes frame timing. It then aligns the frames and tracks drift with individual frame-period corrections. Applications supply the target frame rate and receive synchronization quality within one node or across multiple nodes.
 
 **Use `SyncSession` to add synchronization to your existing capture pipeline.** Your application configures cameras, acquires frames, owns image buffers, displays images, and records video. This library consumes sensor timing and requests corrections through device adapters. The separately installed C++ managed capture add-on can take over camera operations when that is useful to your application.
 
@@ -48,6 +48,8 @@ For two Pi 5 nodes, use the [multi-node examples](examples/README.md#two-pi-5-no
 | Let the optional add-on configure cameras and deliver frames | `bcamsync_managed.Config` + `Session` | [Managed capture](docs/integration.md#optional-managed-capture-session) |
 
 Application code controls session lifetime and inspects quality. Device adapters translate sensor metadata and library-generated corrections into camera SDK calls. Phase estimation, correction decisions, synchronization transport, and clock mapping are internal to this library; applications do not schedule pulses themselves.
+
+Choose when to start using frames. Capture is available immediately. The `aligned` group state identifies the first provisionally aligned frame from each camera. `wait_ready()` waits for the configured quality windows to pass. See [how to select buffered frames by sequence](docs/integration.md#choose-the-first-frames-to-use).
 
 Nodes may start independently and wait for configured peers. Calling `stop()` on any participating node ends group synchronization, restores baseline controls, and warns while application capture continues. A new synchronization round requires explicit startup. The single-Pi examples use the Pi's shared local clock and need neither NetworkManager nor chrony.
 

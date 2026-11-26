@@ -38,6 +38,8 @@ int main() {
     SyncSession synchronization(config, "local", {{"sensor", capture}});
     synchronization.start();
     if (!synchronization.wait_ready(std::chrono::seconds(1))) return 1;
+    const auto status = synchronization.status();
+    if (status.units.size() != 1 || status.units[0].aligned_from_sequence != 1) return 1;
     if (!capture->attached || !synchronization.clock().valid) return 1;
     synchronization.stop();
     return capture->attached || !synchronization.status().fault.empty() ? 1 : 0;

@@ -42,22 +42,22 @@ std::int64_t clock(int kind) {
 namespace detail {
 nlohmann::json phase_policy_json(const PhasePolicy& p) {
 #define FIELD(name) {#name, p.name}
-    return {FIELD(window_seconds),FIELD(evaluation_seconds),FIELD(freshness_seconds),FIELD(deadband_ms),
-        FIELD(ready_p95_ms),FIELD(ready_max_ms),FIELD(ready_windows),FIELD(startup_delta_us),FIELD(startup_frames),
-        FIELD(tracking_delta_us),FIELD(tracking_frames),FIELD(correction_interval_seconds),FIELD(settling_seconds),
-        FIELD(application_delay_seconds),FIELD(startup_max_corrections),FIELD(excursion_ms),FIELD(excursion_timeout_seconds),
-        FIELD(no_progress_corrections),FIELD(progress_ms),FIELD(gain),FIELD(max_mapping_span_ns),FIELD(max_samples)};
+    return {FIELD(window_seconds), FIELD(evaluation_seconds), FIELD(freshness_seconds),
+        FIELD(ready_p95_ms), FIELD(ready_max_ms), FIELD(ready_windows),
+        FIELD(startup_delta_us), FIELD(startup_frames), FIELD(tracking_delta_us),
+        FIELD(excursion_ms), FIELD(excursion_timeout_seconds), FIELD(no_progress_corrections),
+        FIELD(max_mapping_span_ns), FIELD(max_samples)};
 #undef FIELD
 }
 PhasePolicy phase_policy_from_json(const nlohmann::json& input) {
     const auto value = checked(bcamsync_rust_config(input.dump().c_str(), 2));
     PhasePolicy p;
 #define READ(name) p.name = value.at(#name).get<decltype(p.name)>()
-    READ(window_seconds);READ(evaluation_seconds);READ(freshness_seconds);READ(deadband_ms);READ(ready_p95_ms);
-    READ(ready_max_ms);READ(ready_windows);READ(startup_delta_us);READ(startup_frames);READ(tracking_delta_us);
-    READ(tracking_frames);READ(correction_interval_seconds);READ(settling_seconds);READ(application_delay_seconds);
-    READ(startup_max_corrections);READ(excursion_ms);READ(excursion_timeout_seconds);READ(no_progress_corrections);
-    READ(progress_ms);READ(gain);READ(max_mapping_span_ns);READ(max_samples);
+    READ(window_seconds); READ(evaluation_seconds); READ(freshness_seconds);
+    READ(ready_p95_ms); READ(ready_max_ms); READ(ready_windows);
+    READ(startup_delta_us); READ(startup_frames); READ(tracking_delta_us);
+    READ(excursion_ms); READ(excursion_timeout_seconds); READ(no_progress_corrections);
+    READ(max_mapping_span_ns); READ(max_samples);
 #undef READ
     return p;
 }

@@ -47,7 +47,8 @@ def _status(session, local_node: str, active: bool, operation_id: str | None) ->
             "stop_reason": status.stop_reason,
             "units": [{"unit_id": unit.unit_id, "state": unit.state, "ready": unit.ready,
                        "fault": unit.fault, "phase_ms": unit.phase_ms, "p95_ms": unit.p95_ms,
-                       "max_ms": unit.max_ms, "measurement_end_ns": unit.measurement_end_ns}
+                       "max_ms": unit.max_ms, "measurement_end_ns": unit.measurement_end_ns,
+                       "aligned_from_sequence": unit.aligned_from_sequence}
                       for unit in status.units]}
 
 

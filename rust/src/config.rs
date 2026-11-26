@@ -219,6 +219,7 @@ impl SyncConfig {
         let mut units: Vec<&SyncUnitConfig> = self.units.iter().collect();
         units.sort_by(|a, b| a.id.cmp(&b.id));
         json!({"group_id":self.group_id,"reference_unit":self.reference_unit,"fps":self.fps,
+            "phase_control":"queue-aware-v1",
             "clock_mode":self.clock_mode,"clock_domain":if self.nodes.len() == 1 {"local"} else {"common"},
             "nodes":nodes,"units":units,"phase_policy":self.phase_policy})
     }

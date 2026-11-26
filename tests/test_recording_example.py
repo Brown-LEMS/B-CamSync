@@ -92,6 +92,7 @@ class RecordingExampleTests(unittest.TestCase):
             offset = 0
             for index, frame in enumerate(metadata):
                 self.assertEqual(frame["offset"], offset)
+                self.assertEqual(frame["camera_sequence"], frame["sequence"])  # Fake sensor starts at sequence zero.
                 self.assertGreater(frame["sensor_timestamp_ns"], 0)
                 if frame["clock_valid"]:
                     self.assertGreater(frame["timestamp_ns"], 0)

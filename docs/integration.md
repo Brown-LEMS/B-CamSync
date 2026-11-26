@@ -37,7 +37,7 @@ config = SyncConfig.from_file("group.json")
 capture.start()
 try:
     with SyncSession(config, "node-a", adapters) as sync:
-        # Inspect sync.status().ready to label synchronized intervals.
+        # Inspect group status to choose when to start using frames.
         # Group synchronization may stop while this application loop keeps running.
         capture.run_application_loop(sync)
     # Capture is still running here, with baseline frame-period controls restored.
@@ -54,6 +54,23 @@ Calling `stop()` on any participating node ends the current synchronization roun
 `wait_ready(timeout_seconds)` returns `False` when its caller timeout expires or the group stops normally; caller timeout does not cancel startup. Synchronization faults still raise `RuntimeError`. Applications that continue processing through synchronization faults can inspect the nonthrowing `status()` instead of propagating the waiting exception. Keep recording independently and mark subsequent frames as unsynchronized when readiness is false. `clock().valid` becomes false when synchronization cleanup completes.
 
 Synchronization never automatically rejoins after a group exit. Once the core session has completed (`stopped` or `fault`), explicitly call `start()` on each node for a new round; an intervening `stop()` remains safe and joins cleanup. Adapter state must honor the new control round. Membership and reference selection stay fixed by configuration.
+
+### Choose the first frames to use
+
+An application can consume frames as soon as capture starts. During `calibrating`, the library measures and adjusts frame timing. Group state `aligned` means all followers have finished initial phase acquisition and entered fine tracking with a valid reference. At this stage `status.ready` is still false and startup frame quality is provisional. Once the configured quality windows pass, group state becomes `tracking` and `wait_ready()` succeeds. A reference-only group proceeds directly to `tracking` using the latest valid reference frame observed at attachment, including when capture is already running.
+
+For early aligned capture, keep the original camera sequences with buffered frames. Each `UnitStatus.aligned_from_sequence` gives the inclusive sequence of that camera's frame in the first matched group. The markers appear together and remain available through `tracking`, including for applications that first read status after the transition. Sequence numbers are local to each camera, and zero is a valid marker. Stop or fault clears the markers. Read fresh markers when starting another synchronization round.
+
+```python
+# A managed FramePacket carries the original SDK sequence in camera_sequence.
+status = session.status()
+if status.state in ("aligned", "tracking"):
+    start = next(u.aligned_from_sequence for u in status.units if u.unit_id == packet.unit_id)
+    if start is not None and packet.camera_sequence >= start:
+        consume(packet)
+```
+
+With application-owned libcamera capture, compare against `buffer.metadata.sequence`, the same value passed to `CameraTiming.observe()`. To require qualified synchronization, keep the capture callbacks running and wait for `wait_ready()` before starting your output. An already-buffered frame retains the synchronization conditions at its own exposure, even if it is delivered later.
 
 ### Reuse the libcamera timing adapter
 
@@ -82,7 +99,7 @@ Methods can run on the synchronization thread concurrently with your capture cal
 | Method | Required behavior |
 | --- | --- |
 | `bind(session_id, round_id)` | Bind the control namespace for this synchronization run, without starting or stopping cameras. |
-| `snapshot()` | Return a consistent `TimingSnapshot`: unit ID, current local boot time, ordered frame history, and correction feedback. |
+| `snapshot()` | Return the unit ID, current local boot time, ordered frame history and correction feedback. A follower also supplies its legal `minimum_duration_us` and `maximum_duration_us` for the active mode and exposure. |
 | `adjust(pulse)` | Accept or reject the bounded frame-period correction and return its current `CorrectionStatus`. Acceptance and submission are separate from observed completion. |
 | `cancel()` | Request restoration of the baseline frame period while capture continues; report its observed completion in subsequent snapshots. |
 | `fault()` | Return an empty string when healthy, or a capture/control error description. |
@@ -93,11 +110,13 @@ Preserve `FrameTiming.sensor_timestamp_ns` as the original sensor timestamp, nev
 
 Supply monotonic camera sequences and ordered, fresh timing history. Record requested and device-reported frame durations in microseconds, plus the correction ID associated with the submitted request. `TimingSnapshot.snapshot_timestamp_ns` and correction restoration timestamps use local boot-time nanoseconds. Use `boot_time_ns()` for local observations and `monotonic_ns()` for the actuator's submission deadline argument, as the examples do.
 
+The runtime can request the suffix of the observation history beginning at an inclusive sequence cursor using `snapshot_from(sequence)`. The standard libcamera adapter provides this operation. A custom adapter can use the default implementation derived from its complete snapshot.
+
 ### Frame-period corrections
 
 Adapter implementers can import `PhaseActuator` from `bcamsync.adapters` to track bounded pulses, expiry, cancellation, and restoration. This library's controller generates a `Pulse` and its runtime calls `SyncUnit.adjust(pulse)` locally or through the synchronization protocol. The adapter registers that request with `PhaseActuator.adjust()`; it does not choose the correction. Bind the actuator in `bind()` and use actual device duration limits. Call `next(baseline_us, monotonic_ns())` when submitting each request, apply the returned `duration_us` through your SDK, and retain the `Submission` alongside that request.
 
-Call `completed()` for a restoration submission only when device completion metadata confirms that the baseline duration has taken effect. Queueing a request or accepting a pulse does not confirm restoration. The OpenCV adapter retains pending restoration feedback across requests until the reported duration returns to baseline; use that real-device example for this distinction. Export the actuator's current `snapshot()` as `TimingSnapshot.correction`.
+An adapter with a hardware restoration acknowledgement can pass the corresponding submission to `completed()`. For libcamera, the built-in adapters record the stable device-reported baseline before a command and call `observe_duration()` on completed requests. They confirm the observed return to baseline after an effective command. A request too small to produce a measurable change is observed for 12 frames after restoration. When setting `request_timeout_seconds` for slow modes, allow time for the camera queue and this observation window. Export the actuator state as `TimingSnapshot.correction`.
 
 ## Optional managed capture: `Session`
 
@@ -136,6 +155,8 @@ Reads continue while synchronization is starting or faulted. Inspect `status().r
 The minimal Pi 5 `SyncSession` example constructs configuration in `sync_config()` and needs no JSON file. The extended capture tool uses [`external_one_node_pi5.json`](configs/external_one_node_pi5.json). For a timing-only multi-node configuration, see [`external_two_nodes.json`](configs/external_two_nodes.json). All nodes in a group must agree on membership, reference unit, frame rate, clock mode, and phase policy. The reference is explicitly configured; node discovery resolves known members rather than electing a topology.
 
 A single-node group uses its local clock without networking. Physical multi-node sessions additionally use transport and private clock estimation, even for application-owned capture; automatic networking also prepares links and discovers the configured members. See [deployment](deployment.md) for address policy and optional persistent services. `SyncSession` changes acquisition ownership; it uses the same multi-node runtime facilities as `Session`.
+
+Start capture at the configured frame rate and keep it running while `wait_ready()` waits for camera-response identification, initial phase acquisition and quality qualification. The library obtains the effective period changes and request delay from the current stream. Configure readiness through `ready_p95_ms`, `ready_max_ms` and `ready_windows`. The earlier fixed deadband, assumed application delay, tracking burst size and fixed correction interval have been retired. Rebuild C++ adapters against the current headers and upgrade all nodes of a synchronization group together.
 
 Default readiness targets are p95 ≤ 0.5 ms and max ≤ 1 ms across two settled windows. Continue observing status during acquisition; applications choose whether to stop recording, mark intervals, or continue when quality changes. The minimal OpenCV example keeps preview running after synchronization exits. The extended capture tool also continues recording and marks its measurement report as failed if readiness is lost. Managed browser recording writes immediately when requested and retains metadata for downstream selection.
 

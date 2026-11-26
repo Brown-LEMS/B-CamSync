@@ -24,6 +24,29 @@ NETWORK = ["--node", "node-b", "--address-a", "192.168.0.105", "--address-b", "1
 
 
 class TwoNodeExamplesTests(unittest.TestCase):
+    def test_http_exposes_alignment_sequence_on_the_other_node(self):
+        unit = SimpleNamespace(unit_id="board-a1", state="qualifying", ready=False, phase_ms=0.,
+                               p95_ms=0., max_ms=0., fault="", aligned_from_sequence=1 << 43)
+        state = SimpleNamespace(state="aligned", ready=False, fault="", waiting_nodes=[],
+                                stop_node="", stop_reason="", units=[unit])
+        status = http.status_record(state, SimpleNamespace(valid=True, uncertainty_ns=100), "node-b")
+        self.assertEqual(status["state"], "aligned")
+        self.assertFalse(status["ready"])
+        self.assertEqual(status["units"][0]["aligned_from_sequence"], 1 << 43)
+
+    def test_console_reports_provisional_alignment_and_inclusive_first_sequence(self):
+        unit = SimpleNamespace(unit_id="board-a1", phase_ms=0., p95_ms=0., max_ms=0.)
+        status = SimpleNamespace(ready=False, fault="", waiting_nodes=[], units=[unit])
+        clock = SimpleNamespace(valid=True, uncertainty_ns=100)
+        for example in EXAMPLES:
+            for state, marker, label, value in (("calibrating", None, "calibrating", "unavailable"),
+                                                ("aligned", 0, "aligned (provisional)", "0")):
+                with self.subTest(example=example.__name__, state=state), redirect_stdout(StringIO()) as output:
+                    status.state, unit.aligned_from_sequence = state, marker
+                    example.report(status, clock, "node-b")
+                    self.assertIn(f"sync={label}, ready=False", output.getvalue())
+                    self.assertIn(f"board-a1: aligned_from_sequence={value},", output.getvalue())
+
     def test_both_scripts_build_the_same_four_board_network_topology(self):
         configs = [example.sync_config("192.168.0.105", "192.168.0.106") for example in EXAMPLES]
         self.assertEqual(configs[0].to_json(), configs[1].to_json())
@@ -213,6 +236,7 @@ class TwoNodeExamplesTests(unittest.TestCase):
             self.assertIn(b'data-src="/board-b2.jpg"', page)
             self.assertNotIn(b'data-src="/board-a1.jpg"', page)
             self.assertLess(page.index(b'data-src="/board-b2.jpg"'), page.index(b"<details>"))
+            self.assertLess(page.index(b"First aligned camera sequence"), page.index(b"<details>"))
             self.assertNotIn(b"<details open", page)
             self.assertEqual(request(preview, "/board-b1.jpg")[0], 204)
             self.assertEqual(request(preview, "/board-a1.jpg")[0], 404)

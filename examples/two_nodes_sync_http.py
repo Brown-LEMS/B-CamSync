@@ -107,14 +107,16 @@ class WebPreview:
         self.lock = threading.Lock()
         self.images = {}
         self.status = json.dumps({"local_node": local_node, "state": "starting",
-                                  "ready": False, "fault": "", "waiting_nodes": []}).encode()
+                                  "ready": False, "fault": "", "waiting_nodes": [], "units": []}).encode()
         preview = self
         routes = {f"/{board}.jpg": board for board in boards}
         images = "".join(f'<h2>{board}</h2><img data-src="/{board}.jpg" hidden>' for board in boards)
         page = ("""<!doctype html><meta charset="utf-8"><title>B0267 preview</title>
-<style>body{font:16px system-ui;margin:2rem}img{max-width:100%}</style>
+<style>body{font:16px system-ui;margin:2rem}img{max-width:100%}td,th{text-align:left;padding-right:1em}</style>
 <h1>B0267 local preview</h1><p>This page shows only this Pi's detected boards. Use Ctrl+C on the Pi to stop capture.</p>
 <p id="summary">Starting...</p>""" + images + """
+<table><thead><tr><th>Board</th><th>First aligned camera sequence</th></tr></thead>
+<tbody id="alignment"></tbody></table>
 <details><summary>Group timing status (all detected boards)</summary><pre id="status">Starting...</pre></details>
 <script>
 async function refreshFrame(img) {
@@ -130,12 +132,21 @@ async function refreshFrame(img) {
   finally { setTimeout(() => refreshFrame(img), 100); }
 }
 async function refreshStatus() {
+  const alignment = document.querySelector('#alignment');
   try {
     const response = await fetch('/status', {cache: 'no-store'});
     const status = await response.json();
-    document.querySelector('#summary').textContent = `${status.local_node}: ${status.state}; ready=${status.ready}; waiting=${status.waiting_nodes.join(", ")}; ${status.fault}`;
+    const state = status.state === 'aligned' ? 'aligned (provisional)' : status.state;
+    document.querySelector('#summary').textContent = `${status.local_node}: ${state}; ready=${status.ready}; waiting=${status.waiting_nodes.join(", ")}; ${status.fault}`;
+    alignment.replaceChildren();
+    for (const unit of status.units) {
+      const row = alignment.insertRow();
+      row.insertCell().textContent = unit.id;
+      row.insertCell().textContent = unit.aligned_from_sequence ?? 'unavailable';
+    }
     document.querySelector('#status').textContent = JSON.stringify(status, null, 2);
   } catch {
+    alignment.replaceChildren();
     document.querySelector('#summary').textContent = 'Preview unavailable';
     document.querySelector('#status').textContent = 'Preview unavailable';
   }
@@ -345,15 +356,19 @@ def status_record(status, clock, local_node):
             "clock": {"valid": clock.valid, "uncertainty_ns": clock.uncertainty_ns},
             "units": [{"id": unit.unit_id, "state": unit.state, "ready": unit.ready,
                        "phase_ms": unit.phase_ms, "p95_ms": unit.p95_ms,
-                       "max_ms": unit.max_ms, "fault": unit.fault} for unit in status.units]}
+                       "max_ms": unit.max_ms, "fault": unit.fault,
+                       "aligned_from_sequence": unit.aligned_from_sequence} for unit in status.units]}
 
 
 def report(status, clock, local_node):
-    print(f"{local_node}: sync={status.state}, ready={status.ready}, fault={status.fault}, "
+    state = "aligned (provisional)" if status.state == "aligned" else status.state
+    print(f"{local_node}: sync={state}, ready={status.ready}, fault={status.fault}, "
           f"waiting={status.waiting_nodes}, clock_valid={clock.valid}, "
           f"clock_uncertainty={clock.uncertainty_ns / 1000:.1f} us", flush=True)
     for unit in status.units:
-        print(f"  {unit.unit_id}: phase={unit.phase_ms:.3f} ms, "
+        start = unit.aligned_from_sequence
+        print(f"  {unit.unit_id}: aligned_from_sequence={start if start is not None else 'unavailable'}, "
+              f"phase={unit.phase_ms:.3f} ms, "
               f"p95={unit.p95_ms:.3f} ms, max={unit.max_ms:.3f} ms", flush=True)
 
 

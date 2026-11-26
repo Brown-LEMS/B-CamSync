@@ -21,10 +21,8 @@ class CameraTiming(SyncUnit):
     On completion, call observe() with the sensor timestamp (CLOCK_BOOTTIME),
     camera sequence, reported FrameDuration, and the retained Submission.
 
-    The adapter keeps 240 recent observations. Restoration is confirmed only
-    when device metadata is within 50 microseconds of the baseline, including
-    metadata arriving after the restoration request. These are the existing
-    Pi libcamera integration rules, not synchronization readiness thresholds.
+    The adapter keeps 240 recent observations. Restoration uses the reported
+    pre-pulse period, including effects delayed beyond the restoration request.
     """
     def __init__(self, unit_id: str, fps: int, minimum_us: int, maximum_us: int):
         super().__init__()
@@ -36,7 +34,6 @@ class CameraTiming(SyncUnit):
         self.lock = threading.Lock()
         self.binding = None
         self.error = ""
-        self.restoration = None
         self.corrections = 0
 
     def bind(self, session_id: str, round_id: int) -> None:
@@ -59,24 +56,36 @@ class CameraTiming(SyncUnit):
             frame.reported_duration_us = reported_us
             frame.correction_id = submitted.correction_id
             self.frames.append(frame)
-            if submitted.restoration:
-                self.restoration = submitted
-            if self.restoration is not None and abs(reported_us - self.baseline_us) <= 50:
-                self.actuator.completed(self.restoration, sequence, sensor_ns)
-                self.restoration = None
+            self.actuator.observe_duration(submitted, sequence, sensor_ns, reported_us)
 
     def snapshot(self) -> TimingSnapshot:
+        return self.snapshot_from(None)
+
+    def snapshot_from(self, sequence) -> TimingSnapshot:
+        """Return available observations starting at the inclusive sequence cursor."""
         with self.lock:
             result = TimingSnapshot()
             result.unit_id = self.unit_id
+            result.minimum_duration_us = self.minimum_us
+            result.maximum_duration_us = self.maximum_us
             result.snapshot_timestamp_ns = boot_time_ns()
-            result.frames = list(self.frames)
+            if sequence is None:
+                result.frames = list(self.frames)
+            else:
+                rows = []
+                for frame in reversed(self.frames):
+                    rows.append(frame)
+                    if frame.camera_sequence == sequence:
+                        break
+                result.frames = rows[::-1]
             result.correction = self.actuator.snapshot()
             return result
 
     def adjust(self, pulse: Pulse) -> CorrectionStatus:
         """SyncSession callback: accept a correction chosen by the library."""
         with self.lock:
+            if not self.frames:
+                raise RuntimeError("A completed baseline frame is required before adjusting the camera period")
             result = self.actuator.adjust(*self.binding, pulse, boot_time_ns(), monotonic_ns(),
                                           self.baseline_us, self.minimum_us, self.maximum_us)
             self.corrections += 1

@@ -120,11 +120,13 @@ class HttpPreviewTests(unittest.TestCase):
         for camera in cameras:
             camera.acquire.assert_not_called()
 
-    def test_dual_sync_fault_keeps_http_capture_alive_and_ctrl_c_cleans_up(self):
+    def test_dual_http_serves_frames_through_alignment_and_sync_fault(self):
         capture = Mock(units={}, images={"board-1": np.full((2, 4), 128, dtype=np.uint8)},
                        lock=threading.Lock(), error=None)
         session = Mock()
-        session.status.return_value = SimpleNamespace(state="fault", ready=False, fault="clock fault", units=[])
+        unit = SimpleNamespace(unit_id="board-1", phase_ms=0., p95_ms=0., max_ms=0., aligned_from_sequence=0)
+        session.status.side_effect = [SimpleNamespace(state="aligned", ready=False, fault="", units=[unit]),
+                                      SimpleNamespace(state="fault", ready=False, fault="clock fault", units=[])]
         events, previews = [], []
         preview_class = dual.WebPreview
         capture.start.side_effect = lambda _: events.append("capture-start")
@@ -141,7 +143,11 @@ class HttpPreviewTests(unittest.TestCase):
         def pause(_seconds):
             status = json.loads(request(previews[0], "/status")[2])
             self.assertFalse(status["ready"])
-            self.assertEqual(status["fault"], "clock fault")
+            if not iterations:
+                self.assertEqual(status["state"], "aligned")
+                self.assertEqual(status["units"][0]["aligned_from_sequence"], 0)
+            else:
+                self.assertEqual(status["fault"], "clock fault")
             self.assertEqual(request(previews[0], "/board-1.jpg")[0], 200)
             capture.close.assert_not_called()
             session.stop.assert_not_called()
@@ -194,6 +200,60 @@ class HttpPreviewTests(unittest.TestCase):
                         patch.object(dual, "Capture", side_effect=capture), \
                         redirect_stdout(io.StringIO()), self.assertRaisesRegex(RuntimeError, "capture reached"):
                     example.main()
+
+    def test_dual_http_preview_starts_at_the_selected_exposures(self):
+        boards = ("board-1", "board-2")
+        units = [SimpleNamespace(unit_id=board, phase_ms=0., p95_ms=0., max_ms=0.,
+                                 aligned_from_sequence=boundary)
+                 for board, boundary in zip(boards, (18, 0))]
+        states = ("calibrating", "aligned", "tracking", "tracking", "fault")
+        frames = (((17, 90), (0, 91)), ((17, 100), (0, 101)), ((18, 198), (1, 199)),
+                  ((19, 200), (2, 201)), ((20, 202), (3, 203)))
+        for mode, visible in (("aligned", ((), (1,), (0, 1), (0, 1), (0, 1))),
+                              ("ready", ((), (), (), (0, 1), (0, 1)))):
+            with self.subTest(mode=mode):
+                cv2 = encoder()
+                preview = dual.WebPreview("127.0.0.1", 0, boards, cv2=cv2)
+                self.addCleanup(preview.close)
+                capture = Mock(units={}, images={}, image_timing={}, lock=threading.Lock(), error=None)
+                session = Mock()
+                step = 0
+
+                def status():
+                    for i, board in enumerate(boards):
+                        capture.images[board] = np.full((2, 8), 40 * step + i, dtype=np.uint8)
+                        capture.image_timing[board] = frames[step][i]
+                    state = states[step]
+                    return SimpleNamespace(state=state, ready=state == "tracking",
+                                           fault="clock fault" if state == "fault" else "",
+                                           units=units if state in ("aligned", "tracking") else [])
+
+                def poll(_):
+                    nonlocal step
+                    self.assertEqual(json.loads(request(preview, "/status")[2])["state"], states[step])
+                    for i, board in enumerate(boards):
+                        code, _, jpeg = request(preview, f"/{board}.jpg")
+                        if i in visible[step]:
+                            self.assertEqual(code, 200)
+                            with Image.open(BytesIO(jpeg)) as image:
+                                self.assertEqual(image.getpixel((0, 0)), 40 * step + i)
+                        else:
+                            self.assertEqual(code, 204)
+                    step += 1
+                    if step == len(states):
+                        raise KeyboardInterrupt
+
+                session.status.side_effect = status
+                with patch.dict(sys.modules, {"cv2": cv2}), \
+                        patch.object(sys, "argv", ["opencv_sync_http.py", "--start-at", mode, *boards]), \
+                        patch.object(dual, "boot_time_ns", return_value=200) as clock, \
+                        patch.object(dual, "Capture", return_value=capture), \
+                        patch.object(dual, "SyncSession", return_value=session), \
+                        patch.object(dual, "WebPreview", return_value=preview), \
+                        patch.object(dual.time, "sleep", side_effect=poll), redirect_stdout(io.StringIO()):
+                    dual.main()
+                self.assertEqual(cv2.imencode.call_count, sum(map(len, visible)))
+                self.assertEqual(clock.call_count, int(mode == "ready"))
 
     def test_single_camera_retries_then_requeues_and_stops_without_gui_calls(self):
         with tempfile.TemporaryFile() as storage:

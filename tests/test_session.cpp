@@ -2,6 +2,7 @@
 #include "session_test_access.hpp"
 #include "arducam_startup.hpp"
 #include "bcamsync/phase.hpp"
+#include "bcamsync/fake.hpp"
 #include <algorithm>
 #include <arpa/inet.h>
 #include <atomic>
@@ -39,7 +40,8 @@ struct Probe {
 class SyntheticBackend final : public AcquisitionBackend, public detail::InterruptibleStartup {
   public:
     SyntheticBackend(UnitConfig unit, std::shared_ptr<Probe> probe, unsigned fps = 40)
-        : fps_(fps), unit_(std::move(unit)), probe_(std::move(probe)) {}
+        : fps_(fps), unit_(std::move(unit)), probe_(std::move(probe)),
+          timing_(std::move(make_fake_backends({unit_}, fps_).front())) {}
     void start(const std::string& session, std::uint64_t round) override {
         require(!session.empty() && round != 0, "backend must receive a synchronization identity");
         probe_->running = true;
@@ -47,11 +49,13 @@ class SyntheticBackend final : public AcquisitionBackend, public detail::Interru
         const auto limit = std::chrono::steady_clock::now() + 2s;
         while (probe_->pause_startup && std::chrono::steady_clock::now() < limit)
             std::this_thread::sleep_for(1ms);
+        timing_->start(session, round);
     }
     void interrupt_startup() override { probe_->pause_startup = false; }
     void stop() override {
         probe_->running = false;
         ++probe_->stops;
+        timing_->stop();
         if (probe_->fail_stop)
             throw std::runtime_error("injected backend stop failure");
     }
@@ -59,7 +63,12 @@ class SyntheticBackend final : public AcquisitionBackend, public detail::Interru
         require(probe_->running, "stopped backend cannot supply timing");
         ++probe_->snapshots;
         std::this_thread::sleep_for(std::chrono::milliseconds(probe_->snapshot_delay_ms.load()));
-        return snapshot_at(timestamp());
+        auto observed = timing_->snapshot();
+        if (probe_->empty_timing)
+            observed.frames.clear();
+        for (auto& frame : observed.frames)
+            frame.sensor_timestamp_ns += probe_->sensor_offset_ns;
+        return observed;
     }
     TimingSnapshot snapshot_at(std::int64_t now) const {
         const auto period = 1000000000LL / fps_;
@@ -81,12 +90,11 @@ class SyntheticBackend final : public AcquisitionBackend, public detail::Interru
         }
         return result;
     }
-    CorrectionStatus adjust(const Pulse&) override {
-        throw std::logic_error("aligned timing fixture needs no correction");
-    }
+    CorrectionStatus adjust(const Pulse& pulse) override { return timing_->adjust(pulse); }
     void cancel() override {
         if (probe_->fail_cancel)
             throw std::runtime_error("injected backend cancel failure");
+        timing_->cancel();
     }
     std::shared_ptr<const FramePacket> read(std::chrono::milliseconds) override {
         if (!probe_->running)
@@ -124,6 +132,7 @@ class SyntheticBackend final : public AcquisitionBackend, public detail::Interru
     unsigned fps_;
     UnitConfig unit_;
     std::shared_ptr<Probe> probe_;
+    std::unique_ptr<AcquisitionBackend> timing_;
 };
 std::uint16_t free_port() {
     static unsigned candidate = 59300;

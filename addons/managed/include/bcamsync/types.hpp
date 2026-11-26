@@ -63,6 +63,8 @@ struct FramePacket {
     std::string gain_state;
     unsigned width = 0, height = 0, views = 0;
     std::shared_ptr<const FrameStorage> storage;
+    /// Original SDK sequence, equal to FrameTiming.camera_sequence for this exposure.
+    std::uint64_t camera_sequence = 0;
     unsigned view_width() const;
     const std::uint8_t* view_data(unsigned index) const;
 };

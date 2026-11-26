@@ -48,6 +48,9 @@ struct UnitStatus {
     double phase_ms = 0, p95_ms = 0, max_ms = 0;
     /// Zero until a settled phase window has been measured.
     std::int64_t measurement_end_ns = 0;
+    /// First camera sequence in this run's aligned group of frames, inclusive.
+    /// Available in aligned and tracking states. Zero is a valid sequence.
+    std::optional<std::uint64_t> aligned_from_sequence;
 };
 struct GroupStatus {
     std::string state = "stopped", fault;

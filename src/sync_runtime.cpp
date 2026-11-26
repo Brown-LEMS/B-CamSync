@@ -100,7 +100,11 @@ public:
             return nullptr;
         }
         if (op == "fault") return unit.fault();
-        if (op == "snapshot") return snapshot_json(unit.snapshot());
+        if (op == "snapshot") {
+            if (input.contains("from") && !input.at("from").is_null())
+                return snapshot_json(unit.snapshot_from(input.at("from").get<std::uint64_t>()));
+            return snapshot_json(unit.snapshot());
+        }
         if (op == "cancel") { unit.cancel(); return nullptr; }
         if (op == "adjust") {
             const auto& value = input.at("pulse");

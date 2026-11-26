@@ -30,6 +30,7 @@ class CameraTimingTests(unittest.TestCase):
         self.pulse = pulse
 
     def test_restore_requires_observed_baseline_and_preserves_sensor_timestamp(self):
+        self.unit.observe(9, boot_time_ns(), 25016, self.unit.next_submission())
         self.unit.adjust(self.pulse)
         first, second, restore = [self.unit.next_submission() for _ in range(3)]
         self.assertEqual([first.duration_us, second.duration_us, restore.duration_us],
@@ -47,15 +48,18 @@ class CameraTimingTests(unittest.TestCase):
         self.assertEqual(restored.state, "restored")
         self.assertEqual(restored.restored_timestamp_ns, sensor_ns + 25_016_000)
         self.unit.bind("camera-test", 2)
-        self.assertEqual(len(self.unit.snapshot().frames), 2)
+        self.assertEqual(len(self.unit.snapshot().frames), 3)
 
     def test_cancel_restores_baseline_without_owning_capture(self):
+        self.unit.observe(0, boot_time_ns(), 25000, self.unit.next_submission())
         self.unit.adjust(self.pulse)
-        self.assertEqual(self.unit.next_submission().duration_us, 25200)
+        first = self.unit.next_submission()
+        self.assertEqual(first.duration_us, 25200)
         self.unit.cancel()
         restore = self.unit.next_submission()
         self.assertTrue(restore.restoration)
-        self.unit.observe(1, boot_time_ns(), 25000, restore)
+        self.unit.observe(1, boot_time_ns(), 25200, first)
+        self.unit.observe(2, boot_time_ns(), 25000, restore)
         self.assertEqual(self.unit.snapshot().correction.state, "restored")
         self.assertEqual(self.unit.next_submission().duration_us, 25000)
         self.assertEqual(self.unit.fault(), "")

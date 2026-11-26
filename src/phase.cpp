@@ -27,12 +27,10 @@ Json policy_json(const PhasePolicy& p) {
     Json j;
 #define FIELD(name) j[#name] = p.name
     FIELD(window_seconds); FIELD(evaluation_seconds); FIELD(freshness_seconds);
-    FIELD(deadband_ms); FIELD(ready_p95_ms); FIELD(ready_max_ms);
-    FIELD(ready_windows); FIELD(startup_delta_us); FIELD(startup_frames);
-    FIELD(tracking_delta_us); FIELD(tracking_frames); FIELD(correction_interval_seconds);
-    FIELD(settling_seconds); FIELD(application_delay_seconds); FIELD(startup_max_corrections);
+    FIELD(ready_p95_ms); FIELD(ready_max_ms); FIELD(ready_windows);
+    FIELD(startup_delta_us); FIELD(startup_frames); FIELD(tracking_delta_us);
     FIELD(excursion_ms); FIELD(excursion_timeout_seconds); FIELD(no_progress_corrections);
-    FIELD(progress_ms); FIELD(gain); FIELD(max_mapping_span_ns); FIELD(max_samples);
+    FIELD(max_mapping_span_ns); FIELD(max_samples);
 #undef FIELD
     return j;
 }
@@ -44,6 +42,7 @@ Json snapshot_json(const TimingSnapshot& s) {
             {"requested", f.requested_duration_us}, {"reported", f.reported_duration_us},
             {"correction_id", f.correction_id}});
     return {{"unit", s.unit_id}, {"boundary", s.snapshot_timestamp_ns}, {"frames", frames},
+        {"minimum_duration_us", s.minimum_duration_us}, {"maximum_duration_us", s.maximum_duration_us},
         {"correction", {{"state", s.correction.state}, {"id", s.correction.correction_id},
                         {"restored", s.correction.restored_timestamp_ns}}}};
 }
@@ -152,5 +151,8 @@ PhaseActuator::Submission PhaseActuator::next(int64_t baseline, int64_t mono) {
 }
 void PhaseActuator::completed(const Submission& s, uint64_t sequence, int64_t timestamp) {
     check_actuator(bcamsync_actuator_completed(handle_, {s.duration_us, s.correction_id, s.restoration, s.round_id}, sequence, timestamp));
+}
+void PhaseActuator::observe_duration(const Submission& s, uint64_t sequence, int64_t timestamp, int64_t reported_us) {
+    check_actuator(bcamsync_actuator_observe_duration(handle_, {s.duration_us, s.correction_id, s.restoration, s.round_id}, sequence, timestamp, reported_us));
 }
 } // namespace bcamsync

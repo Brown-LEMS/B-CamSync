@@ -283,7 +283,8 @@ def status_record(status, captures):
                if len(frames) > 1 else 0)
         units.append({"unit_id": state.unit_id, "phase_ms": state.phase_ms,
                       "p95_ms": state.p95_ms, "max_ms": state.max_ms,
-                      "fps": fps, "corrections": timing.corrections, "fault": state.fault})
+                      "fps": fps, "corrections": timing.corrections, "fault": state.fault,
+                      "aligned_from_sequence": state.aligned_from_sequence})
     return {"state": status.state, "ready": status.ready, "fault": status.fault, "units": units,
             "waiting_nodes": status.waiting_nodes, "stop_node": status.stop_node,
             "stop_reason": status.stop_reason}

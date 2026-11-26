@@ -23,7 +23,9 @@ PYBIND11_MODULE(_native, module) {
         .def_readonly("phase_ms", &UnitStatus::phase_ms)
         .def_readonly("p95_ms", &UnitStatus::p95_ms)
         .def_readonly("max_ms", &UnitStatus::max_ms)
-        .def_readonly("measurement_end_ns", &UnitStatus::measurement_end_ns);
+        .def_readonly("measurement_end_ns", &UnitStatus::measurement_end_ns)
+        .def_readonly("aligned_from_sequence", &UnitStatus::aligned_from_sequence,
+                      "Inclusive first camera sequence for group alignment, or None before alignment.");
     py::class_<GroupStatus>(module, "GroupStatus")
         .def_readonly("state", &GroupStatus::state)
         .def_readonly("fault", &GroupStatus::fault)

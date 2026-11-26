@@ -233,11 +233,14 @@ class Capture:
 
 
 def report(status, clock, local_node):
-    print(f"{local_node}: sync={status.state}, ready={status.ready}, fault={status.fault}, "
+    state = "aligned (provisional)" if status.state == "aligned" else status.state
+    print(f"{local_node}: sync={state}, ready={status.ready}, fault={status.fault}, "
           f"waiting={status.waiting_nodes}, clock_valid={clock.valid}, "
           f"clock_uncertainty={clock.uncertainty_ns / 1000:.1f} us", flush=True)
     for unit in status.units:
-        print(f"  {unit.unit_id}: phase={unit.phase_ms:.3f} ms, "
+        start = unit.aligned_from_sequence
+        print(f"  {unit.unit_id}: aligned_from_sequence={start if start is not None else 'unavailable'}, "
+              f"phase={unit.phase_ms:.3f} ms, "
               f"p95={unit.p95_ms:.3f} ms, max={unit.max_ms:.3f} ms", flush=True)
 
 

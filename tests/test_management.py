@@ -7,8 +7,9 @@ import socket
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
 import numpy as np
@@ -44,6 +45,21 @@ def configuration(name: str):
 
 
 class LocalServiceTests(unittest.TestCase):
+    def test_alignment_boundary_in_node_status(self):
+        session = Mock()
+        service = NodeService(configuration("fake_one_node.json"), "node-a", session=session, active=True)
+        for state, boundary in (("calibrating", None), ("aligned", 0), ("aligned", 1 << 43)):
+            with self.subTest(state=state, boundary=boundary):
+                unit = SimpleNamespace(unit_id="board-a1", state="reference", ready=True, fault="",
+                                       phase_ms=0., p95_ms=0., max_ms=0., measurement_end_ns=0,
+                                       aligned_from_sequence=boundary)
+                session.status.return_value = SimpleNamespace(state=state, ready=False, fault="",
+                                                              units=[unit], waiting_nodes=[], stop_node="", stop_reason="")
+                status = service.request("status")
+                self.assertEqual(status["state"], state)
+                self.assertFalse(status["ready"])
+                self.assertEqual(status["units"][0]["aligned_from_sequence"], boundary)
+
     def test_explicit_acquisition_outlives_clients_and_reuses_session_on_restart(self):
         config = configuration("fake_one_node.json")
         with tempfile.TemporaryDirectory(prefix="bcamsync-management-") as directory:
