@@ -466,6 +466,62 @@ mod tests {
     }
 
     #[test]
+    fn cadence_gap_with_contiguous_sequence_is_excluded_from_identification() {
+        let mut controller = PhaseController::new(PhasePolicy::default(), 25_000_000).unwrap();
+        let reference = snapshot(EPOCH, 0, 200);
+        let mut follower = reference.clone();
+        for f in follower
+            .frames
+            .iter_mut()
+            .filter(|f| f.camera_sequence >= 195)
+        {
+            f.sensor_timestamp_ns += 50_000_000;
+        }
+        let warming = controller.tick(&reference, &follower, EPOCH + 1_000_000, 0, true);
+        assert!(warming.action.is_none() && warming.fault.is_empty());
+        let end = EPOCH + 750_000_000;
+        let reference = snapshot(end, 0, 230);
+        let pulse = controller
+            .tick(
+                &reference,
+                &snapshot(end, 0, 230),
+                end + 1_000_000,
+                750_000_000,
+                true,
+            )
+            .action
+            .unwrap();
+        let end = end + 1_000_000_000;
+        let reference = snapshot(end, 0, 270);
+        let mut follower = reference.clone();
+        for f in &mut follower.frames {
+            if (235..241).contains(&f.camera_sequence) {
+                f.correction_id = pulse.correction_id;
+                f.requested_duration_us += i64::from(pulse.delta_us);
+            }
+            if (238..244).contains(&f.camera_sequence) {
+                f.reported_duration_us += i64::from(pulse.delta_us);
+            }
+            if f.camera_sequence >= 239 {
+                f.sensor_timestamp_ns += 50_000_000;
+            }
+        }
+        follower.correction = CorrectionStatus {
+            state: "restored".into(),
+            correction_id: pulse.correction_id,
+            restored_timestamp_ns: end,
+        };
+        let retried = controller.tick(&reference, &follower, end + 1_000_000, 1_750_000_000, true);
+        assert!(retried.fault.is_empty(), "{}", retried.fault);
+        let repeated = retried.action.unwrap();
+        assert_eq!(
+            (repeated.delta_us, repeated.count),
+            (pulse.delta_us, pulse.count)
+        );
+        assert_eq!(repeated.correction_id, pulse.correction_id + 1);
+    }
+
+    #[test]
     fn malformed_timestamps_and_policy_fail_without_overflow() {
         let p = PhasePolicy::default();
         let s = snapshot(EPOCH, 0, 200);

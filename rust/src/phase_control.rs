@@ -86,6 +86,14 @@ fn interval_us(a: &FrameTiming, b: &FrameTiming) -> f64 {
     (b.sensor_timestamp_ns - a.sensor_timestamp_ns) as f64 / 1000.0
 }
 
+/// Estimate camera response only from uninterrupted sensor intervals. Sequence
+/// numbers alone cannot identify simultaneous cadence stalls on both ports.
+fn cadence_gap(frames: &[FrameTiming], period_us: f64, pulse_us: f64) -> bool {
+    frames.windows(2).any(|pair| {
+        (interval_us(&pair[0], &pair[1]) - period_us).abs() > 0.2 * period_us + pulse_us.abs()
+    })
+}
+
 impl Model {
     fn baseline(
         master: &TimingSnapshot,
@@ -100,7 +108,7 @@ impl Model {
                 return None;
             }
             let f = &s.frames[s.frames.len() - length - 1..];
-            if f[0].timestamp_ns < after {
+            if f[0].timestamp_ns < after || cadence_gap(f, nominal as f64 / 1000., 0.) {
                 return None;
             }
             let period = interval_us(&f[0], f.last()?) / length as f64;
@@ -394,6 +402,21 @@ impl PhaseController {
                 INITIAL_RESPONSE_SPAN
             };
             let available = slave.frames.len() - tag - n;
+            let end = (tag + n + search).min(slave.frames.len());
+            if cadence_gap(
+                &slave.frames[tag - 1..end],
+                model.follower_us,
+                f64::from(p.pulse.delta_us),
+            ) {
+                if available < search {
+                    return Ok(false);
+                }
+                // This trial cannot distinguish a missed exposure from commanded
+                // movement. Repeat this exact signed probe on a fresh sequence.
+                model.probe_us = p.pulse.delta_us.abs();
+                self.pending = None;
+                return Ok(true);
+            }
             let response = model.response(&slave.frames, tag, p.pulse, available.min(search));
             // An effective burst can finish early once its trailing edge is observed.
             if available < search
