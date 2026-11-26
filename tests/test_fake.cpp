@@ -82,6 +82,10 @@ void phase_and_packets() {
             "slow consumption drops old packets and retains four camera views");
     require(held->timestamp_ns == held->sensor_timestamp_ns,
             "backend image packets retain node-local sensor time");
+    const auto history = reference.snapshot();
+    require(std::any_of(history.frames.begin(), history.frames.end(), [&](const FrameTiming& f) {
+                return f.camera_sequence == held->camera_sequence && f.sensor_timestamp_ns == held->sensor_timestamp_ns;
+            }), "a delivered packet identifies its original camera timing observation");
     const auto pixel = held->view_data(0)[0];
     require(pixel == static_cast<std::uint8_t>(held->sequence),
             "synthetic pixel identity follows capture sequence");

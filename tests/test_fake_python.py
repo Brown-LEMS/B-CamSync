@@ -84,10 +84,12 @@ class FakePublicApiTests(unittest.TestCase):
             session.start()
             self.assertTrue(session.wait_ready(45))
             self.assert_ready_metrics(session)
+            aligned = {u.unit_id: u.aligned_from_sequence for u in session.status().units}
             previous = {}
             for unit_id in ("board-a1", "board-a2"):
                 packet = session.read(unit_id, 1)
                 self.assert_packet(packet, unit_id)
+                self.assertGreaterEqual(packet.camera_sequence, aligned[unit_id])
                 views = packet.views
                 retained[unit_id] = (views, tuple(view.copy() for view in views))
                 previous[unit_id] = packet.sequence
