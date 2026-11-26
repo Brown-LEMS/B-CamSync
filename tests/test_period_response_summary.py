@@ -8,6 +8,23 @@ from tools.experiments.summarize_tracking import score
 
 
 class PeriodResponseSummaryTest(unittest.TestCase):
+    def test_detects_shared_timing_gap_despite_complete_sequence_pairing(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "tracking.csv"
+            with path.open("w", newline="") as stream:
+                writer = csv.writer(stream)
+                writer.writerow(["unit", "sequence", "sensor_ns", "requested_us", "stage"])
+                for seq in range(12):
+                    t = (seq + (2 if seq >= 4 else 0)) * 25_000_000
+                    for unit in ("board-1", "board-2"):
+                        writer.writerow([unit, seq, t, 25000, "stock"])
+            result = score(path, "stock", 40, 0, .25)
+            self.assertEqual(result["pairs"], result["expected_by_sequence"])
+            self.assertEqual(result["max_us"], 0)
+            for key in ("reference_cadence", "follower_cadence"):
+                self.assertEqual(result[key], {"intervals_over_1_5_periods": 1,
+                                               "max_interval_us": 75000})
+
     def test_fixed_pairing_counts_missing_frames_and_preserves_phase_excursion(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "tracking.csv"

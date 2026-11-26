@@ -29,6 +29,15 @@ def read_boards(path, mode):
     return boards["board-1"], boards["board-2"]
 
 
+def cadence(frames, start, stop, fps):
+    timestamps = [t for _, t, _ in frames if start <= t < stop]
+    intervals = [(b - a) / 1000 for a, b in zip(timestamps, timestamps[1:])]
+    return {
+        "intervals_over_1_5_periods": sum(dt > 1_500_000 / fps for dt in intervals),
+        "max_interval_us": max(intervals, default=None),
+    }
+
+
 def score(path, mode, fps, skip_seconds, seconds):
     reference, follower = read_boards(path, mode)
     follower_times = [f[1] for f in follower]
@@ -59,6 +68,8 @@ def score(path, mode, fps, skip_seconds, seconds):
         "signed_median_us": median(diffs), "mae_us": mean(absolute), "p95_us": nearest_rank(absolute, .95),
         "p99_us": nearest_rank(absolute, .99), "max_us": max(absolute),
         "follower_nonbaseline_requests_in_pairs": sum(b[2] != 1_000_000//fps for _, b in pairs),
+        "reference_cadence": cadence(reference, start, stop, fps),
+        "follower_cadence": cadence(follower, start, stop, fps),
     }
 
 
