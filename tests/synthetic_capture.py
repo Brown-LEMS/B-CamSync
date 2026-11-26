@@ -72,6 +72,8 @@ class SyntheticCapture(SyncUnit):
         with self.lock:
             snapshot = TimingSnapshot()
             snapshot.unit_id = self.unit_id
+            snapshot.minimum_duration_us = self.baseline_us - 1000
+            snapshot.maximum_duration_us = self.baseline_us + 1000
             snapshot.snapshot_timestamp_ns = boot_time_ns()
             snapshot.frames = list(self.frames)
             snapshot.correction = self.actuator.snapshot()

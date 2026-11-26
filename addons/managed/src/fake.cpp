@@ -197,6 +197,8 @@ class FakeBackend final : public AcquisitionBackend {
         std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
         TimingSnapshot result;
         result.unit_id = config_.id;
+        result.minimum_duration_us = std::max<std::int64_t>(1, baseline_us() - 1000);
+        result.maximum_duration_us = baseline_us() + 1000;
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
             result.frames.assign(timing_.begin(), timing_.end());

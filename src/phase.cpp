@@ -44,6 +44,7 @@ Json snapshot_json(const TimingSnapshot& s) {
             {"requested", f.requested_duration_us}, {"reported", f.reported_duration_us},
             {"correction_id", f.correction_id}});
     return {{"unit", s.unit_id}, {"boundary", s.snapshot_timestamp_ns}, {"frames", frames},
+        {"minimum_duration_us", s.minimum_duration_us}, {"maximum_duration_us", s.maximum_duration_us},
         {"correction", {{"state", s.correction.state}, {"id", s.correction.correction_id},
                         {"restored", s.correction.restored_timestamp_ns}}}};
 }

@@ -88,6 +88,10 @@ class CameraTimingTests(unittest.TestCase):
         snapshot = self.unit.snapshot()
         self.assertEqual(len(snapshot.frames), 240)
         self.assertEqual(snapshot.frames[0].camera_sequence, 60)
+        self.assertEqual((snapshot.minimum_duration_us, snapshot.maximum_duration_us), (20000, 30000))
+        suffix = self.unit.snapshot_from(297)
+        self.assertEqual([f.camera_sequence for f in suffix.frames], [297, 298, 299])
+        self.assertEqual(len(self.unit.snapshot_from(59).frames), 240)
         frames = snapshot.frames
         frames[-1].sensor_timestamp_ns = 1
         self.assertEqual(self.unit.snapshot().frames[-1].sensor_timestamp_ns,

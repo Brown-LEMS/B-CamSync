@@ -116,6 +116,8 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         TimingSnapshot result;
         result.unit_id = id;
+        result.minimum_duration_us = 25000 - control_margin_us;
+        result.maximum_duration_us = 25000 + control_margin_us;
         result.snapshot_timestamp_ns = boot_time_ns();
         result.frames.assign(frames_.begin(), frames_.end());
         for (auto& frame : result.frames) frame.mapping_span_ns = mapping_span_ns;

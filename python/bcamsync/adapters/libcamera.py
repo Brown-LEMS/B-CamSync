@@ -66,11 +66,25 @@ class CameraTiming(SyncUnit):
                 self.restoration = None
 
     def snapshot(self) -> TimingSnapshot:
+        return self.snapshot_from(None)
+
+    def snapshot_from(self, sequence) -> TimingSnapshot:
+        """Return available observations starting at the inclusive sequence cursor."""
         with self.lock:
             result = TimingSnapshot()
             result.unit_id = self.unit_id
+            result.minimum_duration_us = self.minimum_us
+            result.maximum_duration_us = self.maximum_us
             result.snapshot_timestamp_ns = boot_time_ns()
-            result.frames = list(self.frames)
+            if sequence is None:
+                result.frames = list(self.frames)
+            else:
+                rows = []
+                for frame in reversed(self.frames):
+                    rows.append(frame)
+                    if frame.camera_sequence == sequence:
+                        break
+                result.frames = rows[::-1]
             result.correction = self.actuator.snapshot()
             return result
 

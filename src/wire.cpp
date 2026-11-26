@@ -145,6 +145,8 @@ Json snapshot_json(const TimingSnapshot& s) {
                         {"correction_id", f.correction_id}});
     return {{"unit", s.unit_id},
             {"boundary", s.snapshot_timestamp_ns},
+            {"minimum_duration_us", s.minimum_duration_us},
+            {"maximum_duration_us", s.maximum_duration_us},
             {"frames", rows},
             {"correction",
              {{"state", s.correction.state},
@@ -155,6 +157,8 @@ TimingSnapshot snapshot_from_json(const Json& j) {
     TimingSnapshot s;
     s.unit_id = j.at("unit");
     s.snapshot_timestamp_ns = j.at("boundary");
+    s.minimum_duration_us = j.at("minimum_duration_us");
+    s.maximum_duration_us = j.at("maximum_duration_us");
     const auto& rows = j.at("frames");
     if (!rows.is_array() || rows.size() > 512)
         throw std::runtime_error("invalid timing window size");

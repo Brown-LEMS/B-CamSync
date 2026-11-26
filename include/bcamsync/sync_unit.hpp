@@ -1,5 +1,6 @@
 #pragma once
 #include "sync_types.hpp"
+#include <algorithm>
 #include <map>
 #include <memory>
 
@@ -13,6 +14,15 @@ public:
     virtual void bind(const std::string& session_id, std::uint64_t round_id) = 0;
     /// Preserve sensor_timestamp_ns; frame timestamp_ns and restoration boundaries use local boot time.
     virtual TimingSnapshot snapshot() const = 0;
+    /// Inclusive suffix, retaining the cursor frame to verify capture continuity.
+    virtual TimingSnapshot snapshot_from(std::uint64_t sequence) const {
+        auto result = snapshot();
+        auto cursor = std::find_if(result.frames.begin(), result.frames.end(),
+                                   [sequence](const auto& f) { return f.camera_sequence == sequence; });
+        if (cursor != result.frames.end())
+            result.frames.erase(result.frames.begin(), cursor);
+        return result;
+    }
     /// Accept a library-generated correction; execution is confirmed by snapshot().correction.
     virtual CorrectionStatus adjust(const Pulse& pulse) = 0;
     /// Request baseline restoration; snapshot() must report its observed completion.

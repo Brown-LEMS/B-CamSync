@@ -21,6 +21,9 @@ public:
     TimingSnapshot snapshot() const override {
         PYBIND11_OVERRIDE_PURE(TimingSnapshot, SyncUnit, snapshot,);
     }
+    TimingSnapshot snapshot_from(std::uint64_t sequence) const override {
+        PYBIND11_OVERRIDE(TimingSnapshot, SyncUnit, snapshot_from, sequence);
+    }
     CorrectionStatus adjust(const Pulse& pulse) override {
         PYBIND11_OVERRIDE_PURE(CorrectionStatus, SyncUnit, adjust, pulse);
     }
@@ -59,6 +62,8 @@ void bind_sync(py::module_& module) {
         .def(py::init<>())
         .def_readwrite("unit_id", &TimingSnapshot::unit_id)
         .def_readwrite("snapshot_timestamp_ns", &TimingSnapshot::snapshot_timestamp_ns)
+        .def_readwrite("minimum_duration_us", &TimingSnapshot::minimum_duration_us)
+        .def_readwrite("maximum_duration_us", &TimingSnapshot::maximum_duration_us)
         .def_readwrite("frames", &TimingSnapshot::frames)
         .def_readwrite("correction", &TimingSnapshot::correction);
     py::class_<Pulse>(module, "Pulse")
@@ -130,6 +135,7 @@ void bind_sync(py::module_& module) {
         .def(py::init<>())
         .def("bind", &SyncUnit::bind, py::arg("session_id"), py::arg("round_id"))
         .def("snapshot", &SyncUnit::snapshot)
+        .def("snapshot_from", &SyncUnit::snapshot_from, py::arg("sequence"))
         .def("adjust", &SyncUnit::adjust, py::arg("pulse"))
         .def("cancel", &SyncUnit::cancel)
         .def("fault", &SyncUnit::fault);

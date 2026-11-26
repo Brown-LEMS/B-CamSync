@@ -41,6 +41,10 @@ pub struct TimingSnapshot {
     pub snapshot_timestamp_ns: i64,
     pub frames: Vec<FrameTiming>,
     pub correction: CorrectionStatus,
+    #[serde(default)]
+    pub minimum_duration_us: i64,
+    #[serde(default)]
+    pub maximum_duration_us: i64,
 }
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct Pulse {

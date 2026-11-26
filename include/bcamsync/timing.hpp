@@ -23,6 +23,8 @@ struct TimingSnapshot {
     std::int64_t snapshot_timestamp_ns = 0;
     std::vector<FrameTiming> frames;
     CorrectionStatus correction;
+    /// Legal frame period range for commands in the current capture mode.
+    std::int64_t minimum_duration_us = 0, maximum_duration_us = 0;
 };
 /// Library-generated frame-period correction for a target SyncUnit, not an application schedule.
 struct Pulse {

@@ -660,6 +660,8 @@ public:
         std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
         TimingSnapshot result;
         result.unit_id = config_.id;
+        result.minimum_duration_us = minimum_duration_;
+        result.maximum_duration_us = maximum_duration_;
         result.snapshot_timestamp_ns = boot_ns();
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
