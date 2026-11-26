@@ -201,6 +201,60 @@ class HttpPreviewTests(unittest.TestCase):
                         redirect_stdout(io.StringIO()), self.assertRaisesRegex(RuntimeError, "capture reached"):
                     example.main()
 
+    def test_dual_http_preview_starts_at_the_selected_exposures(self):
+        boards = ("board-1", "board-2")
+        units = [SimpleNamespace(unit_id=board, phase_ms=0., p95_ms=0., max_ms=0.,
+                                 aligned_from_sequence=boundary)
+                 for board, boundary in zip(boards, (18, 0))]
+        states = ("calibrating", "aligned", "tracking", "tracking", "fault")
+        frames = (((17, 90), (0, 91)), ((17, 100), (0, 101)), ((18, 198), (1, 199)),
+                  ((19, 200), (2, 201)), ((20, 202), (3, 203)))
+        for mode, visible in (("aligned", ((), (1,), (0, 1), (0, 1), (0, 1))),
+                              ("ready", ((), (), (), (0, 1), (0, 1)))):
+            with self.subTest(mode=mode):
+                cv2 = encoder()
+                preview = dual.WebPreview("127.0.0.1", 0, boards, cv2=cv2)
+                self.addCleanup(preview.close)
+                capture = Mock(units={}, images={}, image_timing={}, lock=threading.Lock(), error=None)
+                session = Mock()
+                step = 0
+
+                def status():
+                    for i, board in enumerate(boards):
+                        capture.images[board] = np.full((2, 8), 40 * step + i, dtype=np.uint8)
+                        capture.image_timing[board] = frames[step][i]
+                    state = states[step]
+                    return SimpleNamespace(state=state, ready=state == "tracking",
+                                           fault="clock fault" if state == "fault" else "",
+                                           units=units if state in ("aligned", "tracking") else [])
+
+                def poll(_):
+                    nonlocal step
+                    self.assertEqual(json.loads(request(preview, "/status")[2])["state"], states[step])
+                    for i, board in enumerate(boards):
+                        code, _, jpeg = request(preview, f"/{board}.jpg")
+                        if i in visible[step]:
+                            self.assertEqual(code, 200)
+                            with Image.open(BytesIO(jpeg)) as image:
+                                self.assertEqual(image.getpixel((0, 0)), 40 * step + i)
+                        else:
+                            self.assertEqual(code, 204)
+                    step += 1
+                    if step == len(states):
+                        raise KeyboardInterrupt
+
+                session.status.side_effect = status
+                with patch.dict(sys.modules, {"cv2": cv2}), \
+                        patch.object(sys, "argv", ["opencv_sync_http.py", "--start-at", mode, *boards]), \
+                        patch.object(dual, "boot_time_ns", return_value=200) as clock, \
+                        patch.object(dual, "Capture", return_value=capture), \
+                        patch.object(dual, "SyncSession", return_value=session), \
+                        patch.object(dual, "WebPreview", return_value=preview), \
+                        patch.object(dual.time, "sleep", side_effect=poll), redirect_stdout(io.StringIO()):
+                    dual.main()
+                self.assertEqual(cv2.imencode.call_count, sum(map(len, visible)))
+                self.assertEqual(clock.call_count, int(mode == "ready"))
+
     def test_single_camera_retries_then_requeues_and_stops_without_gui_calls(self):
         with tempfile.TemporaryFile() as storage:
             storage.write(bytes(range(16)))

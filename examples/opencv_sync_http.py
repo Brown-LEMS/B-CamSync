@@ -11,7 +11,7 @@ import selectors
 import threading
 import time
 
-from bcamsync import NodeConfig, SyncConfig, SyncSession, SyncUnitConfig
+from bcamsync import NodeConfig, SyncConfig, SyncSession, SyncUnitConfig, boot_time_ns
 from bcamsync.adapters.libcamera import CameraTiming
 
 
@@ -223,6 +223,7 @@ class Capture:
         self.cookies = count()
         self.allocators, self.configurations = [], []
         self.images = {}
+        self.image_timing = {}
         self.lock = threading.Lock()
         self.done = threading.Event()
         self.error = None
@@ -313,6 +314,7 @@ class Capture:
             self.submitted.pop(cookie, None)
         with self.lock:
             self.images.pop(board.timing.unit_id, None)
+            self.image_timing.pop(board.timing.unit_id, None)
         self.prepare(board)
         self.start_board(board)
 
@@ -357,6 +359,7 @@ class Capture:
                                         image = image[:, :stream.size.width].copy()
                                     with self.lock:
                                         self.images[timing.unit_id] = image
+                                        self.image_timing[timing.unit_id] = observation[:2]
                             elif starting:
                                 board.break_streak()
                             request.reuse()
@@ -395,11 +398,42 @@ class Capture:
         self.stops.close()
 
 
+class PreviewStart:
+    """Select latest preview images by their exposure, even if delivery is delayed."""
+
+    def __init__(self, mode):
+        self.mode = mode
+        self.sequences = None
+        self.ready_ns = None
+
+    def images(self, capture, status):
+        if self.mode == "aligned" and self.sequences is None:
+            if status.state not in ("aligned", "tracking"):
+                return {}
+            self.sequences = {u.unit_id: u.aligned_from_sequence for u in status.units}
+        if self.mode == "ready" and self.ready_ns is None:
+            if not status.ready:
+                return {}
+            # On this Pi SensorTimestamp and boot_time_ns() use CLOCK_BOOTTIME.
+            self.ready_ns = boot_time_ns()
+        with capture.lock:
+            if self.sequences is not None:
+                return {unit: image for unit, image in capture.images.items()
+                        if self.sequences[unit] is not None
+                        and capture.image_timing[unit][0] >= self.sequences[unit]}
+            if self.ready_ns is not None:
+                return {unit: image for unit, image in capture.images.items()
+                        if capture.image_timing[unit][1] >= self.ready_ns}
+            return dict(capture.images)
+
+
 def main(*, cli=False):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("camera_ids", nargs="*", metavar="CAMERA_ID",
                         help="two board IDs; defaults to the first two IDs in sorted order")
     parser.add_argument("--list", action="store_true", help="list camera IDs without starting capture")
+    parser.add_argument("--start-at", choices=("first", "aligned", "ready"), default="first",
+                        help="show the first available images, aligned images, or images exposed after readiness")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="show camera diagnostics and synchronization statistics")
     parser.add_argument("--bind", default="0.0.0.0", help="HTTP listening address")
@@ -448,15 +482,15 @@ def run_preview(args, parser):
         try:
             session.start()
             preview.start()
-            print("Capturing both boards; use Ctrl+C to exit.", flush=True)
+            preview_start = PreviewStart(args.start_at)
+            print(f"Preview start: {args.start_at}. Use Ctrl+C to exit.", flush=True)
             next_report = 0
             last_sync = None
             while True:
                 if capture.error is not None:
                     raise capture.error
                 status = session.status()
-                with capture.lock:
-                    images = dict(capture.images)
+                images = preview_start.images(capture, status)
                 preview.publish(images, {"state": status.state, "ready": status.ready,
                                          "fault": status.fault,
                                          "units": [{"id": unit.unit_id, "phase_ms": unit.phase_ms,
@@ -469,6 +503,8 @@ def run_preview(args, parser):
                         print(f"Synchronization failed: {status.fault}", flush=True)
                     elif status.ready:
                         print("Synchronization ready", flush=True)
+                    elif status.state == "aligned":
+                        print("Synchronization aligned; checking frame timing quality", flush=True)
                     else:
                         print(f"Synchronization {status.state}", flush=True)
                     last_sync = sync
@@ -476,7 +512,8 @@ def run_preview(args, parser):
                     print(f"sync={status.state}, ready={status.ready}, fault={status.fault}", flush=True)
                     for unit in status.units:
                         print(f"  {unit.unit_id}: phase={unit.phase_ms:.3f} ms, "
-                              f"p95={unit.p95_ms:.3f} ms, max={unit.max_ms:.3f} ms", flush=True)
+                              f"p95={unit.p95_ms:.3f} ms, max={unit.max_ms:.3f} ms, "
+                              f"aligned_from_sequence={unit.aligned_from_sequence}", flush=True)
                     next_report = time.monotonic() + 1
                 time.sleep(0.1)
         except KeyboardInterrupt:
