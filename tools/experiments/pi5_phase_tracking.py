@@ -43,7 +43,7 @@ def identify(path, nominal):
     return reference, base - reference, (minus, shifts[minus]), (plus, shifts[plus])
 
 
-def limit_phase_policy(config, follower, deadband_us=None):
+def limit_phase_policy(config, follower, deadband_us=None, excursion_seconds=None):
     """Both trial modes use the same pre-lock policy within actual camera headroom."""
     headroom = min(follower.baseline_us - follower.minimum_us,
                    follower.maximum_us - follower.baseline_us)
@@ -54,10 +54,13 @@ def limit_phase_policy(config, follower, deadband_us=None):
     policy.tracking_delta_us = min(policy.tracking_delta_us, headroom)
     if deadband_us is not None:
         policy.deadband_ms = deadband_us / 1000
+    if excursion_seconds is not None:
+        policy.excursion_timeout_seconds = excursion_seconds
     config.phase_policy = policy
     config.validate()
     print(f"Shared stock lock: startup amplitude ≤{policy.startup_delta_us} us, "
-          f"tracking amplitude ≤{policy.tracking_delta_us} us, deadband {policy.deadband_ms} ms", flush=True)
+          f"tracking amplitude ≤{policy.tracking_delta_us} us, deadband {policy.deadband_ms} ms, "
+          f"excursion timeout {policy.excursion_timeout_seconds} s", flush=True)
 
 
 class Tracker:
@@ -90,7 +93,7 @@ def run(args):
     model = identify(args.calibration, 1_000_000 // args.fps)
     print(f"{args.fps} Hz calibration (reference_us, drift_us/frame, command/response_us): {model}", flush=True)
     with capture_pair(args.fps, args.output) as (config, capture, probes):
-        limit_phase_policy(config, probes[1], args.stock_deadband_us)
+        limit_phase_policy(config, probes[1], args.stock_deadband_us, args.stock_excursion_seconds)
         for probe in probes:
             probe.stage = "initial_lock"
         session = SyncSession(config, config.nodes[0].id, capture.units)
@@ -123,6 +126,8 @@ if __name__ == "__main__":
     parser.add_argument("--mode", choices=["stock", "adaptive"], required=True)
     parser.add_argument("--stock-deadband-us", type=float,
                         help="override the stock controller deadband for lock and stock tracking")
+    parser.add_argument("--stock-excursion-seconds", type=float,
+                        help="override the stock persistent excursion watchdog for an entire trial")
     parser.add_argument("--calibration", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     os.environ.setdefault("LIBCAMERA_LOG_LEVELS", "*:ERROR")
