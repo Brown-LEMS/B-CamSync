@@ -30,13 +30,16 @@ class QuantizedCamera:
     def capture(self):
         try:
             pending = deque(self.timing.next_submission() for _ in range(8))
-            register = deque([0] * self.lag)
+            shorter = deque([0] * self.lag[0])
+            longer = deque([0] * self.lag[1])
             sensor = self.initial - self.period
             while not self.done.is_set():
                 tag = pending.popleft()
                 delta = tag.duration_us - self.timing.baseline_us
-                register.append(delta)
-                movement = self.quantum * math.floor((register.popleft() + self.offset) / self.quantum)
+                shorter.append(min(0, delta))
+                longer.append(max(0, delta))
+                effective = shorter.popleft() + longer.popleft()
+                movement = self.quantum * math.floor((effective + self.offset) / self.quantum)
                 sensor += self.period + 1000 * movement
                 seq = len(self.frames)
                 # Simulated physical exposure and the read-only timing measurement are distinct.
@@ -60,10 +63,10 @@ class QuantizedCamera:
 def verify(fps):
     # None of these sensor mode parameters or initial offsets are passed to the controller.
     quantum, offset, lag, initial_fraction, drift = {
-        24: (24.5, 16.2, 3, .32, -4),
-        30: (18.5, 7.2, 4, -.37, 8),
-        40: (24.5, 12.1, 4, .44, -7),
-        44: (24.5, 12.3, 3, -.42, 6),
+        24: (24.5, 16.2, (3, 3), .32, -4),
+        30: (18.5, 7.2, (2, 10), -.37, 8),
+        40: (24.5, 12.1, (4, 4), .44, -7),
+        44: (24.5, 12.3, (3, 3), -.42, 6),
     }[fps]
     first = boot_time_ns() + 100_000_000
     reference = QuantizedCamera("reference", fps, first, 0, quantum, offset, lag)

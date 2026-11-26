@@ -394,13 +394,8 @@ impl PhaseController {
         }
         let seq = slave.frames.last().unwrap().camera_sequence;
         if p.purpose == Purpose::Identify {
-            let lead = tagged - p.issued_seq;
-            let known = model.lag().saturating_sub(lead);
-            let search = if model.lag() > 0 {
-                known as usize + 3
-            } else {
-                INITIAL_RESPONSE_SPAN
-            };
+            // Shorter and longer periods can take different numbers of frames to apply.
+            let search = INITIAL_RESPONSE_SPAN;
             let available = slave.frames.len() - tag - n;
             let end = (tag + n + search).min(slave.frames.len());
             if cadence_gap(
