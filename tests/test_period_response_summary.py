@@ -4,9 +4,28 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from tools.experiments.summarize_period_response import summarize
+from tools.experiments.summarize_tracking import score
 
 
 class PeriodResponseSummaryTest(unittest.TestCase):
+    def test_fixed_pairing_counts_missing_frames_and_preserves_phase_excursion(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "tracking.csv"
+            with path.open("w", newline="") as stream:
+                writer = csv.writer(stream)
+                writer.writerow(["unit", "sequence", "sensor_ns", "requested_us", "stage"])
+                for i in range(12):
+                    t = i * 25_000_000
+                    writer.writerow(["board-1", i + 100, t, 25000, "adaptive"])
+                    if i != 6:
+                        offset = 15000000 if i == 7 else 10000
+                        writer.writerow(["board-2", i + 20, t + offset, 25000, "adaptive"])
+            result = score(path, "adaptive", 40, 0, .2)
+            self.assertEqual(result["sequence_offset"], -80)
+            self.assertEqual(result["expected_by_sequence"], 8)
+            self.assertEqual(result["pairs"], 7)
+            self.assertEqual(result["max_us"], 15000)
+
     def test_measures_from_sensor_time_and_excludes_settling_and_gaps(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "frames.csv"
