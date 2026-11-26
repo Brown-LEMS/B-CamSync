@@ -40,6 +40,23 @@ The dual-board example constructs its single-node configuration in `sync_config(
 
 The terminal reports synchronization state changes. With `-v`, it also shows phase, p95, and maximum error once per second. Preview is available during startup and continues if synchronization stops or faults; a visible image alone does not establish synchronization. Readiness uses sensor timestamps and does not replace optical validation. See [the first-run guide](../docs/getting-started.md) for interpretation.
 
+## Choose when the dual-board preview starts
+
+On a single Pi, both dual-board scripts accept `--start-at`. Camera capture and synchronization run throughout startup. The option selects which exposures are eligible for display.
+
+| Option | First eligible preview image |
+| --- | --- |
+| `first` (default) | The latest available image as soon as preview opens. |
+| `aligned` | An image at or beyond that board's inclusive `aligned_from_sequence`. The group has reached initial alignment and may still have `ready=False`. |
+| `ready` | An image whose sensor timestamp is at or after the application first observes `ready=True`. Older buffered images are skipped. |
+
+```sh
+.venv/bin/python examples/opencv_sync.py --start-at aligned
+.venv/bin/python examples/opencv_sync_http.py --start-at ready
+```
+
+The examples display the latest eligible image from each board, so preview can skip the exact boundary frame. An application that needs that frame can retain buffers by camera sequence. After preview opens, it continues through a later synchronization fault and reports group status separately. [Selecting buffered frames in an application](../docs/integration.md#choose-the-first-frames-to-use)
+
 ## HTTP web preview
 
 Choose either command below on the Pi, including in a plain SSH session; no Pi graphical desktop is needed:
@@ -102,6 +119,6 @@ Open `http://192.168.0.105:8000/` and `http://192.168.0.106:8000/` on your compu
 
 For OpenCV windows on each Pi's graphical desktop, replace `two_nodes_sync_http.py` with `two_nodes_sync.py` and keep the same network and optional camera arguments. No remote image relay or combined four-board browser page is provided by these minimal examples.
 
-Before capture, each script prints its detected local count and waits for the other node's inventory; Ctrl+C cancels that wait. Once counts agree, preview starts while synchronization joins the group and estimates clocks. The terminal reports waiting nodes, clock validity/uncertainty, global readiness, and phase/p95/max for the detected logical boards. Wait for `ready=True`; default phase acceptance targets remain p95 ≤ 0.5 ms and max ≤ 1 ms across two settled windows. These two-node demos explicitly allow 0.2 ms (200 µs) of clock mapping uncertainty in both clock validation and phase estimation; the core's default remains 0.1 ms. This is a demo acceptance budget, not an improvement in measured clock precision. A later sample exceeding 200 µs still ends synchronization and requires an explicit restart. These are acceptance thresholds, not measured results from a two-Pi experiment. The example checks use simulated devices; two physical Pis and their connected B0267 boards still require a joint device run and separate optical validation.
+Before capture, each script prints its detected local count and waits for the other node's inventory; Ctrl+C cancels that wait. Once counts agree, preview starts while synchronization joins the group and estimates clocks. The terminal reports waiting nodes, clock validity/uncertainty, global readiness, and phase/p95/max for the detected logical boards. During `aligned`, the terminal and web status show the first aligned camera sequence for every board. At `ready=True`, the group has passed the configured quality windows. The default targets are p95 ≤ 0.5 ms and max ≤ 1 ms across two settled windows. These two-node demos explicitly allow 0.2 ms (200 µs) of clock mapping uncertainty in both clock validation and phase estimation; the core's default remains 0.1 ms. This is a demo acceptance budget, not an improvement in measured clock precision. A later sample exceeding 200 µs still ends synchronization and requires an explicit restart. These are acceptance thresholds, not measured results from a two-Pi experiment. The example checks use simulated devices; two physical Pis and their connected B0267 boards still require a joint device run and separate optical validation.
 
 Press Ctrl+C in an HTTP terminal, or q/Esc in an OpenCV window, to stop that local application. Stopping either node ends synchronization throughout the joined group and restores baseline frame periods. The other node continues its local preview, reports the group stop or fault, and marks readiness false. A disconnected peer also ends synchronization after communication failure detection. Close both applications and start both explicitly for a new round; the examples do not automatically restart synchronization. Closing a browser tab does not stop capture.
