@@ -11,7 +11,8 @@ def report(status, start):
     print(json.dumps({
         "elapsed_s": round(time.monotonic() - start, 3),
         "state": status.state, "ready": status.ready, "fault": status.fault,
-        "units": [{"unit": u.unit_id, "state": u.state, "phase_ms": u.phase_ms,
+        "units": [{"unit": u.unit_id, "state": u.state, "aligned_from_sequence": u.aligned_from_sequence,
+                   "phase_ms": u.phase_ms,
                    "p95_ms": u.p95_ms, "max_ms": u.max_ms} for u in status.units],
     }), flush=True)
 
