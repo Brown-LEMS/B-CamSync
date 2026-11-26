@@ -57,7 +57,7 @@ Synchronization never automatically rejoins after a group exit. Once the core se
 
 ### Choose the first frames to use
 
-An application can consume frames as soon as capture starts. During `calibrating`, the library measures and adjusts frame timing. Group state `aligned` means all followers have finished initial phase acquisition and entered fine tracking with a valid reference. At this stage `status.ready` is still false and startup frame quality is provisional. Once the configured quality windows pass, group state becomes `tracking` and `wait_ready()` succeeds. A reference-only group can proceed directly to `tracking`.
+An application can consume frames as soon as capture starts. During `calibrating`, the library measures and adjusts frame timing. Group state `aligned` means all followers have finished initial phase acquisition and entered fine tracking with a valid reference. At this stage `status.ready` is still false and startup frame quality is provisional. Once the configured quality windows pass, group state becomes `tracking` and `wait_ready()` succeeds. A reference-only group proceeds directly to `tracking` using the latest valid reference frame observed at attachment, including when capture is already running.
 
 For early aligned capture, keep the original camera sequences with buffered frames. Each `UnitStatus.aligned_from_sequence` gives the inclusive sequence of that camera's frame in the first matched group. The markers appear together and remain available through `tracking`, including for applications that first read status after the transition. Sequence numbers are local to each camera, and zero is a valid marker. Stop or fault clears the markers. Read fresh markers when starting another synchronization round.
 

@@ -1167,13 +1167,9 @@ impl Runtime {
                         Ok(_) => {
                             us.ready = true;
                             if !eligible_from.contains_key(&unit.id) {
-                                if let Some(frame) = snapshots[&unit.id]
-                                    .frames
-                                    .iter()
-                                    .find(|f| f.timestamp_ns >= active_since)
-                                {
-                                    eligible_from.insert(unit.id.clone(), frame.camera_sequence);
-                                }
+                                // The reference may already be streaming when the session attaches.
+                                let frame = snapshots[&unit.id].frames.last().unwrap();
+                                eligible_from.insert(unit.id.clone(), frame.camera_sequence);
                             }
                         }
                         Err(error) if error.kind == 3 => {
