@@ -8,10 +8,18 @@ from types import SimpleNamespace
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "experiments"))
-from pi5_phase_tracking import Tracker, identify
+from pi5_phase_tracking import Tracker, identify, limit_phase_policy
 
 
 class PhaseProbeTests(unittest.TestCase):
+    def test_initial_lock_respects_mode_headroom_for_stock_and_adaptive(self):
+        policy = SimpleNamespace(startup_delta_us=1000, tracking_delta_us=200)
+        cfg = SimpleNamespace(phase_policy=policy, validate=lambda: None)
+        camera = SimpleNamespace(baseline_us=22727, minimum_us=22221, maximum_us=199993)
+        limit_phase_policy(cfg, camera)
+        self.assertEqual(cfg.phase_policy.startup_delta_us, 506)
+        self.assertEqual(cfg.phase_policy.tracking_delta_us, 200)
+
     def test_request_cancels_either_drift_sign_with_quantized_effect_and_latency(self):
         for fps, bias in [(24, -0.18), (40, 0.12)]:
             period = 1_000_000 // fps
