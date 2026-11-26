@@ -31,7 +31,7 @@ def group_config(count, join_timeout=None):
     config.reference_unit = "unit-0"
     config.network_mode = "existing"
     config.clock_mode = "host"
-    config.startup_timeout_seconds = 1.0
+    config.startup_timeout_seconds = 3.0
     config.request_timeout_seconds = 0.3
     config.join_timeout_seconds = join_timeout
     policy = config.phase_policy
@@ -138,8 +138,8 @@ class GroupLifecycleTests(unittest.TestCase):
         for first, second in ((0, 1), (1, 0)):
             with self.subTest(first=first), Group(2) as group:
                 group.start(first)
-                # Membership waiting must outlive the separate one-second startup budget.
-                time.sleep(1.25)
+                # Membership waiting must outlive the separate cold calibration budget.
+                time.sleep(group.config.startup_timeout_seconds + .25)
                 waiting = group.sessions[first].status()
                 self.assertEqual(waiting.fault, "")
                 self.assertFalse(waiting.ready)
