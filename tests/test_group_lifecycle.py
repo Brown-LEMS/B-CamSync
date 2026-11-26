@@ -153,7 +153,25 @@ class GroupLifecycleTests(unittest.TestCase):
     def test_follower_stops_three_node_group_and_remote_sessions_restart_directly(self):
         with Group(3) as group:
             group.start(0, 1, 2)
+            # Every node publishes the group boundary while its public ready flag is still false.
+            markers = {}
+
+            def all_nodes_observed_alignment():
+                for node, session in group.sessions.items():
+                    status = session.status()
+                    if status.state == "aligned":
+                        self.assertFalse(status.ready)
+                        markers[node] = {u.unit_id: u.aligned_from_sequence for u in status.units}
+                return len(markers) == len(group.sessions)
+
+            await_condition(all_nodes_observed_alignment)
+            first = markers[0]
+            self.assertEqual(set(first), {"unit-0", "unit-1", "unit-2"})
+            self.assertNotIn(None, first.values())
+            self.assertTrue(all(boundaries == first for boundaries in markers.values()))
             group.ready()
+            for session in group.sessions.values():
+                self.assertEqual({u.unit_id: u.aligned_from_sequence for u in session.status().units}, first)
             group.sessions[1].stop()
             group.stopped()
             for session in group.sessions.values():
@@ -161,10 +179,14 @@ class GroupLifecycleTests(unittest.TestCase):
                 self.assertEqual(status.fault, "")
                 self.assertEqual((status.stop_node, status.stop_reason), ("node-1", "requested"))
                 self.assertFalse(status.ready)
+                self.assertTrue(all(u.aligned_from_sequence is None for u in status.units))
             group.capture_continues()
             # Nodes 0 and 2 have only exited remotely; no explicit local stop cleans them up.
             group.start(2, 0, 1)
             group.ready()
+            for session in group.sessions.values():
+                for unit in session.status().units:
+                    self.assertGreater(unit.aligned_from_sequence, first[unit.unit_id])
             group.sessions[2].stop()
             group.stopped()
             group.capture_continues()
@@ -234,6 +256,7 @@ class GroupLifecycleTests(unittest.TestCase):
                 status = group.sessions[0].status()
                 self.assertFalse(status.ready)
                 self.assertEqual((status.stop_node, status.stop_reason), ("node-1", "fault"))
+                self.assertTrue(all(u.aligned_from_sequence is None for u in status.units))
                 group.capture_continues()
             finally:
                 if process.poll() is None:
