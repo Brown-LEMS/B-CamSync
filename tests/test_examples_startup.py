@@ -1,9 +1,10 @@
 """Camera startup ordering and cleanup with simulated SDK and timing ports."""
 
-from contextlib import ExitStack, redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -44,7 +45,33 @@ def completed(requests):
 
 
 class StartupTests(unittest.TestCase):
-    def fixture(self, example, stack):
+    def test_cli_reports_a_terminal_camera_error_and_respects_operator_log_levels(self):
+        for name in ("single_board", "single_board_http", "opencv_sync", "opencv_sync_http"):
+            example = load_example(name)
+            for flags, environment, expected in (([], {}, "*:FATAL"), (["-v"], {}, None),
+                                                 ([], {"LIBCAMERA_LOG_LEVELS": "Camera:DEBUG"}, "Camera:DEBUG"),
+                                                 ([], {"LIBCAMERA_LOG_FILE": "camera.log"}, None)):
+                with self.subTest(example=name, flags=flags, environment=environment), ExitStack() as stack:
+                    sdk = Mock()
+                    def fail():
+                        self.assertEqual(os.environ.get("LIBCAMERA_LOG_LEVELS"), expected)
+                        raise RuntimeError("camera manager unavailable")
+                    sdk.CameraManager.singleton.side_effect = fail
+                    stack.enter_context(patch.dict(os.environ, environment, clear=True))
+                    stack.enter_context(patch.dict(sys.modules, {"libcamera": sdk}))
+                    stack.enter_context(patch.object(sys, "argv", [name, "--list", *flags]))
+                    error = stack.enter_context(redirect_stderr(io.StringIO()))
+                    if flags:
+                        with self.assertRaisesRegex(RuntimeError, "camera manager unavailable"):
+                            example.main(cli=True)
+                    else:
+                        with self.assertRaises(SystemExit) as failure:
+                            example.main(cli=True)
+                        self.assertEqual(failure.exception.code, 1)
+                        self.assertEqual(error.getvalue().splitlines(),
+                                         ["Camera preview failed: camera manager unavailable (use -v for details)"])
+
+    def fixture(self, example, stack, **options):
         events, cameras, requests = [], [], []
         storage = stack.enter_context(tempfile.TemporaryFile())
         storage.write(bytes(16))
@@ -101,7 +128,7 @@ class StartupTests(unittest.TestCase):
         arguments = ([camera.id for camera in cameras], SimpleNamespace(units=units, fps=40))
         if example.__name__.startswith("two_nodes"):
             arguments += ("local",)
-        capture = example.Capture(*arguments, stack)
+        capture = example.Capture(*arguments, stack, **options)
         stack.callback(capture.close)
         return capture, cameras, requests, manager, events
 
@@ -167,7 +194,10 @@ class StartupTests(unittest.TestCase):
                 return [old, *current] if current[0] is not old else current
 
             manager.get_ready_requests.side_effect = ready
-            capture.start(np)
+            with redirect_stdout(io.StringIO()) as output:
+                capture.start(np)
+            self.assertEqual(output.getvalue().splitlines(), [
+                "board-1: retry 1/20", "board-1: camera ready (attempt 2)", "board-2: camera ready (attempt 1)"])
             self.assertEqual([camera.start.call_count for camera in cameras], [2, 1])
             self.assertEqual(cameras[0].stop.call_count, 1)
             self.assertNotEqual(requests[0].cookie, old.cookie)
@@ -181,7 +211,7 @@ class StartupTests(unittest.TestCase):
     def test_http_persistent_cancellations_exhaust_exactly_twenty_retries(self):
         example = load_example("opencv_sync_http")
         with ExitStack() as stack:
-            capture, cameras, requests, manager, _ = self.fixture(example, stack)
+            capture, cameras, requests, manager, _ = self.fixture(example, stack, verbose=True)
 
             def cancelled():
                 requests[0].status = "cancelled"

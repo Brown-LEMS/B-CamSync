@@ -23,9 +23,12 @@ parser = argparse.ArgumentParser()
 parser.add_argument("camera_ids", nargs="+")
 parser.add_argument("--bind")
 parser.add_argument("--port", type=int)
+parser.add_argument("--verbose", action="store_true")
 args = parser.parse_args()
 for index, camera_id in enumerate(args.camera_ids, 1):
     print(f"board-{index}: {camera_id}", flush=True)
+    if not args.verbose:
+        continue
     event = dict(unit=f"board-{index}", camera_id=camera_id, attempt=1, valid_frames=0,
                  first_frame_ms=None, total_ms=100, elapsed_ms=100)
     if camera_id == "exhausted":
@@ -36,7 +39,7 @@ for index, camera_id in enumerate(args.camera_ids, 1):
         print("B-CamSync startup " + json.dumps(dict(event, outcome="retry", reason="cancelled")), flush=True)
         event.update(attempt=2, total_ms=200)
     print("B-CamSync startup " + json.dumps(dict(event, outcome="ready", reason="", valid_frames=3)), flush=True)
-if "watchdog" in args.camera_ids:
+if args.verbose and "watchdog" in args.camera_ids:
     print("Camera frontend has timed out!", flush=True)
 
 class Handler(BaseHTTPRequestHandler):

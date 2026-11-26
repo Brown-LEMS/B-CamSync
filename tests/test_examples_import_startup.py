@@ -143,8 +143,8 @@ class ImportStartupTests(unittest.TestCase):
             if synchronized:
                 capture_type = example.Capture
 
-                def capture(*args):
-                    instance = capture_type(*args)
+                def capture(*args, **options):
+                    instance = capture_type(*args, **options)
                     instance.ready = deadline
                     return instance
 

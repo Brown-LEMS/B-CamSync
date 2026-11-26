@@ -63,7 +63,7 @@ def trial(command, boards):
     with TemporaryFile() as output:
         started = time.monotonic()
         deadline = started + STARTUP_SECONDS
-        process = subprocess.Popen([*command, "--bind", HOST, "--port", str(port)],
+        process = subprocess.Popen([*command, "--verbose", "--bind", HOST, "--port", str(port)],
                                    stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
         try:
             while process.poll() is None and time.monotonic() < deadline:
@@ -110,7 +110,7 @@ def measured_round(number, command, cameras, directory, camera_timeout, sync_tim
     with log_path.open("xb") as log:
         started = time.monotonic()
         deadline = started + camera_timeout
-        process = subprocess.Popen([*command, "--bind", HOST, "--port", str(port)],
+        process = subprocess.Popen([*command, "--verbose", "--bind", HOST, "--port", str(port)],
                                    stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         try:
             while process.poll() is None and time.monotonic() < deadline:

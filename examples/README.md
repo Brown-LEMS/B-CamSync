@@ -24,7 +24,7 @@ Start synchronized preview with two boards:
 
 The scripts enumerate libcamera devices, sort their IDs, and select the first one or two. They print the selected IDs and, for dual-board capture, the reference board. Enumeration does not identify board models; these examples expect the selected devices to be B0267 boards. Missing devices produce an error. No JSON configuration or additional example files are needed. Press q or Esc in an OpenCV window, or Ctrl+C in the terminal, to exit.
 
-The one-Pi examples qualify each board with three consecutive valid frames. A startup cancellation or an expired two-second startup window reopens capture on the affected board, up to 20 retries. Each attempt emits a `B-CamSync startup` JSON record. For two boards, the synchronization session starts after both streams qualify and their latest timestamps are within two frame periods. The status field `ready` indicates when synchronization itself is ready. [Startup measurement tool](../tools/README.md#capture-and-recording)
+The one-Pi examples qualify each board with three consecutive valid frames. A startup cancellation or an expired two-second startup window reopens capture on the affected board, up to 20 retries. The terminal prints one line per retry and one when each board is ready. Use `-v` or `--verbose` for libcamera diagnostics and a `B-CamSync startup` JSON record per attempt. For two boards, the synchronization session starts after both streams qualify and their latest timestamps are within two frame periods. The status field `ready` indicates when synchronization itself is ready. [Startup measurement tool](../tools/README.md#capture-and-recording)
 
 To inspect IDs or choose specific boards, use:
 
@@ -38,7 +38,7 @@ All six scripts support `--list`, which uses the camera SDK without opening came
 
 The dual-board example constructs its single-node configuration in `sync_config()` and uses the first board as the phase reference. The application submits requests and reports sensor metadata through `CameraTiming`; this library chooses frame-period corrections automatically. The capture thread continues during synchronization shutdown so the adapter can confirm baseline restoration before cameras close.
 
-The terminal reports synchronization state, readiness, phase, p95, and maximum error once per second. Preview is available during startup and continues if synchronization stops or faults; a visible image alone does not establish synchronization. Readiness uses sensor timestamps and does not replace optical validation. See [the first-run guide](../docs/getting-started.md) for interpretation.
+The terminal reports synchronization state changes. With `-v`, it also shows phase, p95, and maximum error once per second. Preview is available during startup and continues if synchronization stops or faults; a visible image alone does not establish synchronization. Readiness uses sensor timestamps and does not replace optical validation. See [the first-run guide](../docs/getting-started.md) for interpretation.
 
 ## HTTP web preview
 

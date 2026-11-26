@@ -69,7 +69,7 @@ class LocalGuiStartupTests(unittest.TestCase):
             allocator.allocate.return_value = 0
             allocator.buffers.return_value = [buffer]
             with (patch.dict(sys.modules, {"libcamera": sdk, "cv2": gui, "bcamsync": None}),
-                  patch.object(sys, "argv", ["single_board.py", "camera-a"]),
+                  patch.object(sys, "argv", ["single_board.py", "-v", "camera-a"]),
                   patch.object(example.selectors, "DefaultSelector", return_value=selector),
                   redirect_stdout(output)):
                 try:

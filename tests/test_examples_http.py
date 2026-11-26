@@ -155,9 +155,11 @@ class HttpPreviewTests(unittest.TestCase):
                 patch.object(dual, "Capture", return_value=capture), \
                 patch.object(dual, "SyncSession", return_value=session), \
                 patch.object(dual, "WebPreview", side_effect=create_preview), \
-                patch.object(dual.time, "sleep", side_effect=pause), redirect_stdout(io.StringIO()):
+                patch.object(dual.time, "sleep", side_effect=pause), redirect_stdout(io.StringIO()) as output:
             dual.main()
         self.assertEqual(len(iterations), 2)
+        self.assertEqual(output.getvalue().count("Synchronization failed: clock fault"), 1)
+        self.assertNotIn("phase=", output.getvalue())
         self.assertEqual(events, ["capture-start", "sync-stop", "capture-close"])
         self.assertFalse(previews[0].thread.is_alive())
         self.assertEqual(previews[0].server.socket.fileno(), -1)
@@ -179,7 +181,8 @@ class HttpPreviewTests(unittest.TestCase):
                         imported.add(name)
                     return original_import(name, *args, **kwargs)
 
-                def capture(*_):
+                def capture(*_, verbose=False):
+                    self.assertFalse(verbose)
                     self.assertEqual(imported, {"cv2", "numpy"})
                     raise RuntimeError("capture reached")
 

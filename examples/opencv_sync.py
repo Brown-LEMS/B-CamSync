@@ -5,6 +5,7 @@ from contextlib import ExitStack
 from itertools import count
 import json
 import mmap
+import os
 import selectors
 import threading
 import time
@@ -40,9 +41,10 @@ def sync_config():
 class CameraStream:
     """Own a board's requests and the evidence for its current startup attempt."""
 
-    def __init__(self, camera, controls, stream, timing, buffers):
+    def __init__(self, camera, controls, stream, timing, buffers, verbose=False):
         self.camera, self.controls, self.stream, self.timing = camera, controls, stream, timing
         self.buffers = buffers
+        self.verbose = verbose
         self.requests = {}
         self.running = False
         self.attempt = 0
@@ -96,6 +98,12 @@ class CameraStream:
             self.qualified_count = self.valid_frames
 
     def report(self, outcome, reason):
+        if not self.verbose:
+            if outcome == "retry":
+                print(f"{self.timing.unit_id}: retry {self.attempt}/{STARTUP_RETRIES}", flush=True)
+            elif outcome == "ready":
+                print(f"{self.timing.unit_id}: camera ready (attempt {self.attempt})", flush=True)
+            return
         now = self.qualified if outcome == "ready" else time.monotonic()
         print("B-CamSync startup " + json.dumps({
             "unit": self.timing.unit_id, "camera_id": self.camera.id, "attempt": self.attempt,
@@ -109,7 +117,7 @@ class CameraStream:
 class Capture:
     """Application capture; only timing and frame-period controls enter this library."""
 
-    def __init__(self, camera_ids, config, stack):
+    def __init__(self, camera_ids, config, stack, *, verbose=False):
         import libcamera
         self.sdk = libcamera
         self.manager = libcamera.CameraManager.singleton()
@@ -160,7 +168,7 @@ class Capture:
                         libcamera.controls.AnalogueGainMode: 1,
                         libcamera.controls.ExposureTime: 10000,
                         libcamera.controls.AnalogueGain: 1.0}
-            board = CameraStream(camera, controls, stream, timing, allocator.buffers(stream.stream))
+            board = CameraStream(camera, controls, stream, timing, allocator.buffers(stream.stream), verbose)
             self.cameras.append(board)
             self.stops.callback(board.stop)
             self.prepare(board)
@@ -289,16 +297,29 @@ class Capture:
         self.stops.close()
 
 
-def main():
+def main(*, cli=False):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("camera_ids", nargs="*", metavar="CAMERA_ID",
                         help="two board IDs; defaults to the first two IDs in sorted order")
     parser.add_argument("--list", action="store_true", help="list camera IDs without starting capture")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="show camera diagnostics and synchronization statistics")
     args = parser.parse_args()
+    try:
+        run_preview(args, parser)
+    except (RuntimeError, OSError) as error:
+        if not cli or args.verbose:
+            raise
+        parser.exit(1, f"Camera preview failed: {error} (use -v for details)\n")
+
+
+def run_preview(args, parser):
     if len(args.camera_ids) not in (0, 2):
         parser.error("provide either no camera IDs or two distinct camera IDs")
     if len(args.camera_ids) == 2 and args.camera_ids[0] == args.camera_ids[1]:
         parser.error("the two boards must have distinct camera IDs")
+    if not args.verbose and not os.environ.get("LIBCAMERA_LOG_FILE"):
+        os.environ.setdefault("LIBCAMERA_LOG_LEVELS", "*:FATAL")
     if args.list or not args.camera_ids:
         import libcamera
         camera_ids = sorted(camera.id for camera in libcamera.CameraManager.singleton().cameras)
@@ -316,7 +337,7 @@ def main():
 
     config = sync_config()
     with ExitStack() as stack:
-        capture = Capture(args.camera_ids, config, stack)
+        capture = Capture(args.camera_ids, config, stack, verbose=args.verbose)
         stack.callback(capture.close)
         stack.callback(cv2.destroyAllWindows)
         capture.start(np)
@@ -325,6 +346,7 @@ def main():
             session.start()
             print("Previewing both boards; press q or Esc in a window, or Ctrl+C, to exit.")
             next_report = 0
+            last_sync = None
             while True:
                 if capture.error is not None:
                     raise capture.error
@@ -333,7 +355,16 @@ def main():
                     images = dict(capture.images)
                 for unit, image in images.items():
                     cv2.imshow(unit, image)
-                if time.monotonic() >= next_report:
+                sync = (status.state, status.ready, status.fault)
+                if not args.verbose and sync != last_sync:
+                    if status.fault:
+                        print(f"Synchronization failed: {status.fault}", flush=True)
+                    elif status.ready:
+                        print("Synchronization ready", flush=True)
+                    else:
+                        print(f"Synchronization {status.state}", flush=True)
+                    last_sync = sync
+                if args.verbose and time.monotonic() >= next_report:
                     print(f"sync={status.state}, ready={status.ready}, fault={status.fault}", flush=True)
                     for unit in status.units:
                         print(f"  {unit.unit_id}: phase={unit.phase_ms:.3f} ms, "
@@ -349,4 +380,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(cli=True)

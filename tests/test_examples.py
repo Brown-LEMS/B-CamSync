@@ -117,7 +117,8 @@ class PreviewTests(unittest.TestCase):
                 imported.add(name)
             return original_import(name, *args, **kwargs)
 
-        def capture(*_):
+        def capture(*_, verbose):
+            self.assertFalse(verbose)
             self.assertEqual(imported, {"cv2", "numpy"})
             raise RuntimeError("capture reached")
 
@@ -236,7 +237,8 @@ class PreviewTests(unittest.TestCase):
                 capture.start.side_effect = lambda _: events.append("capture-start")
                 capture.close.side_effect = lambda: events.append("capture-close")
 
-                def create_capture(camera_ids, config, stack):
+                def create_capture(camera_ids, config, stack, *, verbose):
+                    self.assertFalse(verbose)
                     self.assertEqual(camera_ids, ["camera-1", "camera-2"])
                     self.assertEqual(len(config.units), 2)
                     return capture

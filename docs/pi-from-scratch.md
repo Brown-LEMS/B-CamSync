@@ -235,7 +235,7 @@ Open the same `http://PI_IP:8000/` page on your computer. Expect two strips, eac
 .venv/bin/python examples/opencv_sync_http.py 'REFERENCE_CAMERA_ID' 'SECOND_CAMERA_ID'
 ```
 
-The terminal prints `sync=...`, `ready=...`, and `fault=...` once per second, followed by each board's phase, p95, and maximum error in milliseconds. Wait for **`ready=True` in the terminal** (`"ready": true` in the browser). Early zero metrics or visible pictures alone do not establish synchronization. p95 is the error at the 95th percentile of the measurement window; max is its largest error.
+The terminal reports camera retries, camera readiness and synchronization state changes. Wait for **`Synchronization ready` in the terminal** (`"ready": true` in the browser). Use `-v` to see libcamera diagnostics and each board's phase, p95, and maximum error in milliseconds once per second. Early zero metrics or visible pictures alone do not establish synchronization. p95 is the error at the 95th percentile of the measurement window; max is its largest error.
 
 Default readiness targets are p95 ≤ 0.5 ms and max ≤ 1 ms over two settled windows. These are configured acceptance thresholds based on sensor timestamps, rather than measured results promised for your setup. Optical alignment and sustained recording throughput require separate experiments. If `ready` remains false or a fault appears, retain the reported state and fault for diagnosis. Preview can continue after synchronization faults; those frames must be treated as unsynchronized.
 

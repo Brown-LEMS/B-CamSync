@@ -5,6 +5,7 @@ from contextlib import ExitStack
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import mmap
+import os
 import selectors
 import threading
 import time
@@ -112,16 +113,28 @@ refreshStatus();
         self.server.server_close()
 
 
-def main():
+def main(*, cli=False):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("camera_id", nargs="?", help="board ID; defaults to the first ID in sorted order")
     parser.add_argument("--list", action="store_true", help="list camera IDs without starting capture")
+    parser.add_argument("-v", "--verbose", action="store_true", help="show libcamera diagnostics and detailed startup events")
     parser.add_argument("--bind", default="0.0.0.0", help="HTTP listening address")
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
+    try:
+        run_preview(args, parser)
+    except (RuntimeError, OSError) as error:
+        if not cli or args.verbose:
+            raise
+        parser.exit(1, f"Camera preview failed: {error} (use -v for details)\n")
+
+
+def run_preview(args, parser):
     if not 1 <= args.port <= 65535:
         parser.error("port must be in 1..65535")
 
+    if not args.verbose and not os.environ.get("LIBCAMERA_LOG_FILE"):
+        os.environ.setdefault("LIBCAMERA_LOG_LEVELS", "*:FATAL")
     import libcamera
 
     manager = libcamera.CameraManager.singleton()
@@ -200,6 +213,12 @@ def main():
                     next_preview = 0
 
                     def report(outcome, reason):
+                        if not args.verbose:
+                            if outcome == "retry":
+                                print(f"board-1: retry {attempt}/{STARTUP_RETRIES}", flush=True)
+                            elif outcome == "ready":
+                                print(f"board-1: camera ready (attempt {attempt})", flush=True)
+                            return
                         now = time.monotonic()
                         print("B-CamSync startup " + json.dumps({
                             "unit": "board-1", "camera_id": camera.id, "attempt": attempt,
@@ -273,4 +292,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(cli=True)
